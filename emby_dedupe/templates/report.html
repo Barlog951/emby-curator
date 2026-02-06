@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emby Deduplication Report</title>
+    <link rel="stylesheet" href="report.css">
+</head>
+<body>
+    <header>
+        <h1>Emby Deduplication Report</h1>
+        <p>Identifying and managing duplicate media in your Emby libraries</p>
+    </header>
+
+    <!-- Stats Section -->
+    <div class="summary">
+        <h2>Summary Statistics</h2>
+        
+        {% if language_priorities_list %}
+        <div class="language-priority-banner {{ 'priority-applied' if language_priorities_changed_selection else 'priority-considered' }}">
+            {% if language_priorities_changed_selection %}
+            <span class="priority-icon">🔤</span> Language prioritization changed selection decisions with the priority order: <strong>{{ language_priorities_list|join(", ") }}</strong>
+            {% elif language_priorities_used %}
+            <span class="priority-icon">📢</span> Language priorities ({{ language_priorities_list|join(", ") }}) were used but didn't change selection decisions
+            {% else %}
+            <span class="priority-icon">ℹ️</span> Language priorities ({{ language_priorities_list|join(", ") }}) were considered but didn't affect selection
+            {% endif %}
+        </div>
+        {% endif %}
+        
+        {% if has_excluded_ids %}
+        <div class="exclusion-banner">
+            <span class="exclusion-icon">🚫</span> The following provider IDs were excluded from deduplication: <strong>{{ excluded_ids|join(", ") }}</strong>
+        </div>
+        {% endif %}
+        
+        
+        <div class="stats-container">
+            <!-- Overview stats -->
+            <div class="stats-card">
+                <h3>Overview</h3>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value">{{ total_groups }}</div>
+                        <div class="stat-label">Duplicate Groups</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ total_items_to_keep }}</div>
+                        <div class="stat-label">Items Kept</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ total_items_to_delete }}</div>
+                        <div class="stat-label">Items to Remove</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Deletion stats -->
+            <div class="stats-card">
+                <h3>Deletion Status</h3>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value">{{ deleted_items }}</div>
+                        <div class="stat-label">Deleted Successfully</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ failed_deletions }}</div>
+                        <div class="stat-label">Failed Deletions</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ skipped_deletions }}</div>
+                        <div class="stat-label">Skipped</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Space stats -->
+            <div class="stats-card">
+                <h3>Space Analysis</h3>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value">{{ formatted_size_to_keep }}</div>
+                        <div class="stat-label">Size Kept</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ formatted_size_to_delete }}</div>
+                        <div class="stat-label">Size Removed</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ percentage_saved }}%</div>
+                        <div class="stat-label">Space Saved</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="summary">
+        <h2>Duplicate Details</h2>
+        <p><strong>Note:</strong> Files with identical paths are automatically filtered out as they are likely false positives from Emby's API.</p>
+    </div>
+
+
+    <!-- Duplicate Groups Section -->
+    {% for group in duplicate_groups %}
+    <div class="group">
+        <h2>Group {{ loop.index }}: {{ group.keep.name }}</h2>
+        
+        <div class="date-comparison-info">
+            <div class="date-analysis">
+                <h3>Date Analysis</h3>
+                <div class="date-container">
+                    <div class="date-item newest">
+                        <span class="date-label">Newest File:</span>
+                        <span class="date-time">{{ group.newest_date_added }}</span>
+                        <div class="file-path"><strong>Path:</strong> {{ group.newest_path }}</div>
+                        <div class="status-note">{{ group.newest_status }}</div>
+                    </div>
+                    <div class="date-item oldest">
+                        <span class="date-label">Oldest File:</span>
+                        <span class="date-time">{{ group.oldest_date_added }}</span>
+                        <div class="file-path"><strong>Path:</strong> {{ group.oldest_path }}</div>
+                        <div class="status-note">{{ group.oldest_status }}</div>
+                    </div>
+                </div>
+                <div class="sort-info">Files are sorted by their "Added to Library" date. The one with the highest quality rating ({{ group.keep.name }}) is kept.</div>
+            </div>
+        </div>
+        
+        <div class="keep-item">
+            <img class="item-image" src="{{ group.keep.image_url }}" alt="{{ group.keep.name }}">
+            <div class="item-details">
+                <h3>Keeping this file</h3>
+                
+                {% if group.language_priority_message and (group.selected_by_language and group.changed_by_language_priority) %}
+                <div class="language-priority-info priority-applied">
+                    <div class="language-priority-message">{{ group.language_priority_message }}</div>
+                </div>
+                {% endif %}
+                
+                <div class="media-details">
+                    <h4>Media Info</h4>
+                    {% if group.keep.is_episode %}
+                    <div class="series-info">
+                        <span class="series-badge">TV Series: {{ group.keep.series_name }}</span>
+                        {% if group.keep.season_number != "" and group.keep.episode_number != "" %}
+                        <span class="series-badge">Season {{ group.keep.season_number }}, Episode {{ group.keep.episode_number }}</span>
+                        {% endif %}
+                    </div>
+                    {% endif %}
+                    <div class="quality-info">
+                        <span class="quality-badge">Codec: {{ group.keep.quality_description.video.codec }}</span>
+                        <span class="quality-badge">Resolution: {{ group.keep.quality_description.video.resolution }}</span>
+                        <span class="quality-badge">Size: {{ group.keep.quality_description.size_formatted }}</span>
+                    </div>
+                    
+                    <div class="audio-info">
+                        <h4>Audio</h4>
+                        <div><strong>Codec:</strong> {{ group.keep.quality_description.audio.codec }}</div>
+                        <div><strong>Channels:</strong> {{ group.keep.quality_description.audio.channels }}</div>
+                        <div><strong>Languages:</strong> {{ group.keep.quality_description.audio.languages|join(', ') }}</div>
+                    </div>
+                    
+                    <div class="file-info">
+                        <h4>File Info</h4>
+                        <div><strong>Added to Library:</strong> {{ group.keep.quality_description.date_added }}</div>
+                    </div>
+                </div>
+                
+                <a href="{{ group.keep_url }}" target="_blank" class="url-link">View in Emby</a>
+            </div>
+        </div>
+        
+        <div class="delete-items">
+            <h3>{% if group.has_deleted_items %}Deleted{% else %}Duplicate{% endif %} file{{ 's' if group.delete|length > 1 else '' }} ({{ group.delete|length }})</h3>
+            
+            {% for item in group.delete %}
+            <div class="delete-item">
+                <img class="item-image" src="{{ item.image_url }}" alt="{{ item.name }}">
+                <div class="item-details">
+                    <div><strong>Status:</strong> <span class="{{ item.status_class }}">{{ item.status_text }}</span></div>
+                    
+                    <div class="media-details">
+                        <h4>Media Info</h4>
+                        {% if item.is_episode %}
+                        <div class="series-info">
+                            <span class="series-badge">TV Series: {{ item.series_name }}</span>
+                            {% if item.season_number != "" and item.episode_number != "" %}
+                            <span class="series-badge">Season {{ item.season_number }}, Episode {{ item.episode_number }}</span>
+                            {% endif %}
+                        </div>
+                        {% endif %}
+                        <div class="quality-info">
+                            <span class="quality-badge">Codec: {{ item.quality_description.video.codec }}</span>
+                            <span class="quality-badge">Resolution: {{ item.quality_description.video.resolution }}</span>
+                            <span class="quality-badge">Size: {{ item.quality_description.size_formatted }}</span>
+                        </div>
+                        
+                        <div class="audio-info">
+                            <h4>Audio</h4>
+                            <div><strong>Codec:</strong> {{ item.quality_description.audio.codec }}</div>
+                            <div><strong>Channels:</strong> {{ item.quality_description.audio.channels }}</div>
+                            <div><strong>Languages:</strong> {{ item.quality_description.audio.languages|join(', ') }}</div>
+                        </div>
+                        
+                        <div class="file-info">
+                            <h4>File Info</h4>
+                            <div><strong>Added to Library:</strong> {{ item.quality_description.date_added }}</div>
+                        </div>
+                    </div>
+                    
+                    {% if item.deletion_result and item.deletion_result.status == "success" %}
+                        <!-- Item was deleted, show external links instead -->
+                        <div class="external-links">
+                            {% if item.provider_id and item.provider_id.startswith('tt') %}
+                            <a href="https://www.imdb.com/title/{{ item.provider_id }}" target="_blank" class="url-link">View on IMDB</a>
+                            {% endif %}
+                            
+                            {% if item.provider_id and item.provider_id.isdigit() %}
+                            <a href="https://www.themoviedb.org/movie/{{ item.provider_id }}" target="_blank" class="url-link">View on TMDB</a>
+                            {% endif %}
+                        </div>
+                    {% else %}
+                        <!-- Item still exists in Emby, show the Emby link -->
+                        <a href="{{ item.url }}" target="_blank" class="url-link">View in Emby</a>
+                    {% endif %}
+                    
+                    {% if item.error %}
+                    <div class="error-message">Error: {{ item.error }}</div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+
+
+    {% if has_excluded_ids %}
+    <div class="summary">
+        <h2>Excluded Media (Not Deduplicated)</h2>
+        <p>The following provider IDs were excluded from the deduplication process: <strong>{{ excluded_ids|length }} excluded IDs ({{ excluded_groups_count }} duplicate groups)</strong></p>
+    </div>
+    
+    {% for id in excluded_ids %}
+    {% set excluded_item_data = {"title": "Excluded Media ID: " ~ id, "image_url": "", "year": "" } %}
+    
+    {% if excluded_titles and id in excluded_titles %}
+        {% set excluded_item_data = excluded_titles[id] %}
+    {% endif %}
+    <div class="group">
+        <h2>Excluded Media: {{ excluded_item_data.title }}</h2>
+        
+        <div class="keep-item">
+            {% if excluded_item_data.image_url %}
+            <img class="item-image" src="{{ excluded_item_data.image_url }}" alt="{{ excluded_item_data.title }}">
+            {% else %}
+            <div class="item-image" style="background-color: #444; display: flex; align-items: center; justify-content: center;">
+                <span style="color: #aaa; font-size: 14px; text-align: center;">No image<br>available</span>
+            </div>
+            {% endif %}
+            
+            <div class="item-details">
+                <h3>{{ excluded_item_data.title }} {% if excluded_item_data.year %}({{ excluded_item_data.year }}){% endif %}</h3>
+                
+                <div class="quality-info">
+                    {% if id.startswith('tt') %}
+                    <span class="quality-badge">IMDB ID: {{ id }}</span>
+                    {% elif id.isdigit() %}
+                    <span class="quality-badge">TMDB/TVDB ID: {{ id }}</span>
+                    {% else %}
+                    <span class="quality-badge">Provider ID: {{ id }}</span>
+                    {% endif %}
+                </div>
+                
+                <div class="external-links" style="margin-top: 15px;">
+                    {% if id.startswith('tt') %}
+                    <a href="https://www.imdb.com/title/{{ id }}" target="_blank" class="url-link">View on IMDB</a>
+                    {% endif %}
+                    {% if id.isdigit() %}
+                    <a href="https://www.themoviedb.org/movie/{{ id }}" target="_blank" class="url-link">View on TMDB</a>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    <footer>
+        <p>Generated by Emby Dedupe - https://github.com/troykelly/emby-dedupe</p>
+    </footer>
+</body>
+</html>

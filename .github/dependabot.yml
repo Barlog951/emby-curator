@@ -1,10 +1,47 @@
 version: 2
 updates:
+  # Python dependencies
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+    groups:
+      # Group production dependencies
+      production-dependencies:
+        patterns:
+          - "httpx"
+          - "tqdm"
+          - "backoff"
+          - "jinja2"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group development/testing dependencies
+      development-dependencies:
+        patterns:
+          - "pytest*"
+          - "mypy"
+          - "ruff"
+        update-types:
+          - "minor"
+          - "patch"
+    # Automatically assign PRs to the repository owner
+    assignees:
+      - "troykelly"
+    # Only allow security updates to create PRs for major versions
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+        
+  # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "daily"
+      interval: "weekly"
+    groups:
+      # Group all GitHub Actions into a single PR
+      github-actions:
+        patterns:
+          - "*"
+    # Only include security updates for patches
+    open-pull-requests-limit: 10
