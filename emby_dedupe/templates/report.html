@@ -149,18 +149,33 @@
                     </div>
                     {% endif %}
                     <div class="quality-info">
-                        <span class="quality-badge">Codec: {{ group.keep.quality_description.video.codec }}</span>
-                        <span class="quality-badge">Resolution: {{ group.keep.quality_description.video.resolution }}</span>
+                        <span class="quality-badge">Codec: {{ group.keep.quality_description.get('video', {}).get('codec', 'unknown') }}</span>
+                        <span class="quality-badge">Resolution: {{ group.keep.quality_description.get('video', {}).get('resolution', 'unknown') }}</span>
                         <span class="quality-badge">Size: {{ group.keep.quality_description.size_formatted }}</span>
+                        {% if group.keep.quality_description.get('is_ai_upscale') %}
+                        <span class="quality-badge" style="background-color: rgba(255, 152, 0, 0.25); color: #ffb86c;">⚠️ AI Upscaled</span>
+                        {% endif %}
+                        {% if group.keep.quality_description.get('source_quality_multiplier') %}
+                        {% set multiplier = group.keep.quality_description.get('source_quality_multiplier') %}
+                        {% if multiplier >= 1.3 %}
+                        <span class="quality-badge" style="background-color: rgba(80, 250, 123, 0.25); color: #50fa7b;">🎬 BluRay REMUX</span>
+                        {% elif multiplier >= 1.15 %}
+                        <span class="quality-badge" style="background-color: rgba(139, 195, 74, 0.25); color: #8bc34a;">💿 BluRay</span>
+                        {% elif multiplier >= 1.0 %}
+                        <span class="quality-badge" style="background-color: rgba(139, 233, 253, 0.25); color: #8be9fd;">🌐 WEB-DL</span>
+                        {% elif multiplier >= 0.9 %}
+                        <span class="quality-badge" style="background-color: rgba(255, 87, 34, 0.25); color: #ff5555;">📺 HDTV</span>
+                        {% endif %}
+                        {% endif %}
                     </div>
-                    
+
                     <div class="audio-info">
                         <h4>Audio</h4>
-                        <div><strong>Codec:</strong> {{ group.keep.quality_description.audio.codec }}</div>
-                        <div><strong>Channels:</strong> {{ group.keep.quality_description.audio.channels }}</div>
-                        <div><strong>Languages:</strong> {{ group.keep.quality_description.audio.languages|join(', ') }}</div>
+                        <div><strong>Codec:</strong> {{ group.keep.quality_description.get('audio', {}).get('codec', 'unknown') }}</div>
+                        <div><strong>Channels:</strong> {{ group.keep.quality_description.get('audio', {}).get('channels', 'unknown') }}</div>
+                        <div><strong>Languages:</strong> {{ group.keep.quality_description.get('audio', {}).get('languages', ['unknown'])|join(', ') }}</div>
                     </div>
-                    
+
                     <div class="file-info">
                         <h4>File Info</h4>
                         <div><strong>Added to Library:</strong> {{ group.keep.quality_description.date_added }}</div>
@@ -191,18 +206,33 @@
                         </div>
                         {% endif %}
                         <div class="quality-info">
-                            <span class="quality-badge">Codec: {{ item.quality_description.video.codec }}</span>
-                            <span class="quality-badge">Resolution: {{ item.quality_description.video.resolution }}</span>
+                            <span class="quality-badge">Codec: {{ item.quality_description.get('video', {}).get('codec', 'unknown') }}</span>
+                            <span class="quality-badge">Resolution: {{ item.quality_description.get('video', {}).get('resolution', 'unknown') }}</span>
                             <span class="quality-badge">Size: {{ item.quality_description.size_formatted }}</span>
+                            {% if item.quality_description.get('is_ai_upscale') %}
+                            <span class="quality-badge" style="background-color: rgba(255, 152, 0, 0.25); color: #ffb86c;">⚠️ AI Upscaled</span>
+                            {% endif %}
+                            {% if item.quality_description.get('source_quality_multiplier') %}
+                            {% set multiplier = item.quality_description.get('source_quality_multiplier') %}
+                            {% if multiplier >= 1.3 %}
+                            <span class="quality-badge" style="background-color: rgba(80, 250, 123, 0.25); color: #50fa7b;">🎬 BluRay REMUX</span>
+                            {% elif multiplier >= 1.15 %}
+                            <span class="quality-badge" style="background-color: rgba(139, 195, 74, 0.25); color: #8bc34a;">💿 BluRay</span>
+                            {% elif multiplier >= 1.0 %}
+                            <span class="quality-badge" style="background-color: rgba(139, 233, 253, 0.25); color: #8be9fd;">🌐 WEB-DL</span>
+                            {% elif multiplier >= 0.9 %}
+                            <span class="quality-badge" style="background-color: rgba(255, 87, 34, 0.25); color: #ff5555;">📺 HDTV</span>
+                            {% endif %}
+                            {% endif %}
                         </div>
-                        
+
                         <div class="audio-info">
                             <h4>Audio</h4>
-                            <div><strong>Codec:</strong> {{ item.quality_description.audio.codec }}</div>
-                            <div><strong>Channels:</strong> {{ item.quality_description.audio.channels }}</div>
-                            <div><strong>Languages:</strong> {{ item.quality_description.audio.languages|join(', ') }}</div>
+                            <div><strong>Codec:</strong> {{ item.quality_description.get('audio', {}).get('codec', 'unknown') }}</div>
+                            <div><strong>Channels:</strong> {{ item.quality_description.get('audio', {}).get('channels', 'unknown') }}</div>
+                            <div><strong>Languages:</strong> {{ item.quality_description.get('audio', {}).get('languages', ['unknown'])|join(', ') }}</div>
                         </div>
-                        
+
                         <div class="file-info">
                             <h4>File Info</h4>
                             <div><strong>Added to Library:</strong> {{ item.quality_description.date_added }}</div>

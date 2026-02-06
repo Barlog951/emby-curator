@@ -373,3 +373,140 @@ class TestDeduplication:
         original_item_data = {"image_url": items[2]["image_url"]}
         
         assert original_item_data["image_url"] == "http://emby.server/Items/delete3/Images/Primary?tag=ghi"
+        
+    def test_tv_episode_pattern_detection(self):
+        """Test detection of various TV episode naming patterns."""
+        import re
+        from emby_dedupe.api.deduplication import determine_items_to_delete
+        
+        # Create test items with different path formats
+        test_items = [
+            # Standard S01E01 format
+            {
+                "Id": "101",
+                "Name": "Episode 1",
+                "SeriesName": "Test Series",
+                "Path": "/path/to/Test Series - S01E01 - Episode 1.mkv",
+                "MediaStreams": [{"Type": "Video", "Height": 1080}]
+            },
+            # 1x01 format
+            {
+                "Id": "102",
+                "Name": "Episode 2",
+                "SeriesName": "Test Series",
+                "Path": "/path/to/Test Series - 1x02 - Episode 2.mkv",
+                "MediaStreams": [{"Type": "Video", "Height": 1080}]
+            },
+            # S01.E03 format
+            {
+                "Id": "103",
+                "Name": "Episode 3",
+                "SeriesName": "Test Series",
+                "Path": "/path/to/Test Series - S01.E03 - Episode 3.mkv",
+                "MediaStreams": [{"Type": "Video", "Height": 1080}]
+            },
+            # S01_E04 format
+            {
+                "Id": "104",
+                "Name": "Episode 4",
+                "SeriesName": "Test Series",
+                "Path": "/path/to/Test Series - S01_E04 - Episode 4.mkv",
+                "MediaStreams": [{"Type": "Video", "Height": 1080}]
+            },
+            # 3-digit format (105 = season 1, episode 05)
+            {
+                "Id": "105",
+                "Name": "Episode 5",
+                "SeriesName": "Test Series",
+                "Path": "/path/to/Test Series - 105 - Episode 5.mkv",
+                "MediaStreams": [{"Type": "Video", "Height": 1080}]
+            }
+        ]
+        
+        # Testing with episodes from the same season but different episode numbers
+        # They should NOT be considered duplicates
+        
+        # Test case 1: S01E01 vs 1x02
+        result = determine_items_to_delete(["101", "102"], [test_items[0], test_items[1]])
+        # Should not consider them duplicates, so result should be empty
+        assert result == {"keep": {}, "delete": []}
+        
+        # Test case 2: 1x02 vs S01.E03
+        result = determine_items_to_delete(["102", "103"], [test_items[1], test_items[2]])
+        assert result == {"keep": {}, "delete": []}
+        
+        # Test case 3: S01.E03 vs S01_E04
+        result = determine_items_to_delete(["103", "104"], [test_items[2], test_items[3]])
+        assert result == {"keep": {}, "delete": []}
+        
+        # Test case 4: S01_E04 vs 105 (3-digit format)
+        result = determine_items_to_delete(["104", "105"], [test_items[3], test_items[4]])
+        assert result == {"keep": {}, "delete": []}
+        
+        # Testing with different quality versions of the SAME episode
+        # They SHOULD be considered duplicates
+        
+        # Make a duplicate of episode 1 with lower quality
+        duplicate_item = test_items[0].copy()
+        duplicate_item.update({
+            "Id": "101_dupe",
+            "Path": "/path/to/Test Series - S01E01 - Episode 1 (Lower Quality).mkv",
+            "MediaStreams": [{"Type": "Video", "Height": 720}]
+        })
+        
+        result = determine_items_to_delete(["101", "101_dupe"], [test_items[0], duplicate_item])
+        # Should identify them as duplicates
+        assert "keep" in result and "delete" in result
+        assert len(result["delete"]) == 1
+        # The 1080p version should be kept, 720p should be deleted
+        assert result["keep"]["id"] == "101" 
+        assert result["delete"][0]["id"] == "101_dupe"
+        
+        # Test direct regex patterns for different naming conventions
+        paths = [
+            "/path/to/Star Trek - DS9 - 1x19.Duet.XviD-CooL.avi",           # 1x19 format
+            "/path/to/Star Trek - DS9 - 1x20.In.The.Hands.Of.Prophets.avi", # 1x20 format
+            "/path/to/Series - S01E01 - Episode Title.mkv",                 # S01E01 format
+            "/path/to/Series - s01.e02 - Episode Title.mkv",                # s01.e02 format
+            "/path/to/Series - s01_e03 - Episode Title.mkv",                # s01_e03 format
+            "/path/to/Series - 104 - Episode Title.mkv",                    # 3-digit format
+            "/path/to/Series.S01E05.Title.mkv"                              # No spaces format
+        ]
+        
+        # Standard S01E01 pattern
+        standard_pattern = r'[Ss](\d+)[Ee](\d+)'
+        # 1x01 format
+        alt_pattern = r'(\d+)[xX](\d+)'
+        # s01.e01 format
+        dot_pattern = r'[sS](\d+)\.?[eE](\d+)'
+        # s01_e01 format
+        underscore_pattern = r'[sS](\d+)_[eE](\d+)'
+        # 3-digit format like 104
+        digit_pattern = r'(?<!\d)([1-9])(\d{2})(?!\d)'
+        
+        # Test each path against each pattern
+        results = []
+        for path in paths:
+            for pattern_name, pattern in [
+                ("standard", standard_pattern),
+                ("alt", alt_pattern),
+                ("dot", dot_pattern),
+                ("underscore", underscore_pattern),
+                ("digit", digit_pattern)
+            ]:
+                match = re.search(pattern, path)
+                if match:
+                    season, episode = match.groups()
+                    results.append((path, pattern_name, f"S{season}E{episode}"))
+        
+        # Verify that each path was matched by at least one pattern
+        matched_paths = set(r[0] for r in results)
+        assert len(matched_paths) == len(paths)
+        
+        # Specifically check our problem case: Star Trek DS9 episodes
+        ds9_matches = [r for r in results if "Star Trek - DS9" in r[0]]
+        assert len(ds9_matches) >= 2
+        ds9_episodes = set(r[2] for r in ds9_matches)
+        # Should detect as different episodes
+        assert "S1E19" in ds9_episodes
+        assert "S1E20" in ds9_episodes

@@ -13,6 +13,8 @@ setup(
         "tqdm>=4.66.2",
         "backoff>=2.2.1",
         "jinja2>=3.1.3",
+        "pyyaml>=6.0",  # For config file support
+        "rank-torrent-name>=1.0.0",  # For quality source detection
     ],
     extras_require={
         "dev": [
@@ -38,11 +40,10 @@ setup(
         "Intended Audience :: End Users/Desktop",
         "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.9",
-        "Programming Language :: Python :: 3.10",
-        "Programming Language :: Python :: 3.11",
-        "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.12",
         "Topic :: Multimedia :: Video",
+        "Topic :: Utilities",
+        "Environment :: Console",
     ],
     python_requires=">=3.12",
 )

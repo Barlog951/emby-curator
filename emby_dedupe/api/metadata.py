@@ -6,6 +6,7 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
+from emby_dedupe.api.quality_compare import detect_ai_upscale, detect_source_quality
 from emby_dedupe.utils.logging import logger
 
 
@@ -197,7 +198,8 @@ def get_quality_description(item: Dict[str, Any]) -> Dict[str, Any]:
     if item.get("SeriesName"):
         quality_description["is_episode"] = True
         quality_description["series_name"] = item.get("SeriesName", "unknown")
-        quality_description["season_number"] = item.get("SeasonNumber", "unknown")
+        # Emby API uses ParentIndexNumber for season, IndexNumber for episode
+        quality_description["season_number"] = item.get("ParentIndexNumber", "unknown")
         quality_description["episode_number"] = item.get("IndexNumber", "unknown")
 
         # Enhance the display info
@@ -307,13 +309,32 @@ def rate_media_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "date_added": (date_rating, 0.8),  # Higher weight for date added - prefer newer files
         }
 
-        # Calculate the weighted quality rating
-        quality_rating = sum(
+        # Calculate the base weighted quality rating
+        base_quality_rating = sum(
             value * weight for value, weight in quality_factors.values()
         )
 
+        # Apply source quality and AI upscale multipliers
+        item_path = item.get("Path")
+        item_name = item.get("Name", "")
+
+        # Detect source quality multiplier
+        source_multiplier = detect_source_quality(item_path, item_name)
+
+        # Detect AI upscale and apply penalty (0.7x if detected)
+        is_ai_upscale = detect_ai_upscale(item_path, item_name)
+        ai_upscale_multiplier = 0.7 if is_ai_upscale else 1.0
+
+        # Apply multipliers to get final quality rating
+        quality_rating = base_quality_rating * source_multiplier * ai_upscale_multiplier
+
         # Get detailed quality description
         quality_description = get_quality_description(item) if video_stream and audio_stream else {}
+
+        # Add source quality info to quality description
+        if quality_description:
+            quality_description["source_quality_multiplier"] = source_multiplier
+            quality_description["is_ai_upscale"] = is_ai_upscale
 
         # For TV episodes, add the series/season/episode info to the name for better display
         item_name = item["Name"]
@@ -330,7 +351,8 @@ def rate_media_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "library_name": item.get("LibraryName", "Unknown"),
                 "is_episode": "SeriesName" in item,
                 "series_name": item.get("SeriesName", ""),
-                "season_number": item.get("SeasonNumber", ""),
+                # Emby API uses ParentIndexNumber for season, IndexNumber for episode
+                "season_number": item.get("ParentIndexNumber", ""),
                 "episode_number": item.get("IndexNumber", ""),
                 "rating": quality_rating,
                 "quality_description": quality_description

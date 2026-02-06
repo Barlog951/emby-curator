@@ -104,7 +104,7 @@ def format_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata:
             continue
         valid_decisions.append(decision)
 
-    logger.info(f"Found {len(valid_decisions)} valid decisions out of {len(decisions)} total")
+    logger.debug(f"Found {len(valid_decisions)} valid decisions out of {len(decisions)} total")
 
     # Check if language prioritization was used and if it changed any decisions
     language_priorities_used = False
@@ -211,9 +211,14 @@ def format_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata:
                     # Create URL for this item
                     item_url = f"{base_url}/web/index.html#!/item?id={item['id']}&serverId={keep_item['serverid']}"
 
-                    # Ensure audio languages are proper lists
+                    # Ensure audio and video fields are proper
                     item_quality_desc = item.get("quality_description", {})
                     if item_quality_desc:
+                        # Ensure video section exists
+                        if "video" not in item_quality_desc:
+                            item_quality_desc["video"] = {"codec": "unknown", "resolution": "unknown"}
+                        
+                        # Ensure audio section exists
                         if "audio" not in item_quality_desc:
                             item_quality_desc["audio"] = {"codec": "unknown", "channels": "unknown", "languages": ["unknown"]}
                         elif "languages" not in item_quality_desc["audio"]:
@@ -235,7 +240,9 @@ def format_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata:
                         "is_episode": item.get("is_episode", False),
                         "series_name": item.get("series_name", ""),
                         "season_number": item.get("season_number", ""),
-                        "episode_number": item.get("episode_number", "")
+                        "episode_number": item.get("episode_number", ""),
+                        "deletion_result": deletion_status,
+                        "provider_id": item.get("provider_id", "")
                     })
 
                 # Check if item was selected by language priority
@@ -253,9 +260,14 @@ def format_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata:
                 elif language_priority_list:
                     language_priority_message = f"Language priorities ({', '.join(language_priority_list)}) were considered but didn't change selection"
 
-                # Ensure keep_item's quality_description has proper audio languages
+                # Ensure keep_item's quality_description has proper audio and video fields
                 keep_quality_desc = keep_item.get("quality_description", {})
                 if keep_quality_desc:
+                    # Ensure video section exists
+                    if "video" not in keep_quality_desc:
+                        keep_quality_desc["video"] = {"codec": "unknown", "resolution": "unknown"}
+                    
+                    # Ensure audio section exists
                     if "audio" not in keep_quality_desc:
                         keep_quality_desc["audio"] = {"codec": "unknown", "channels": "unknown", "languages": ["unknown"]}
                     elif "languages" not in keep_quality_desc["audio"]:
@@ -301,7 +313,26 @@ def format_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata:
 
     # Load and render the template
     template = env.get_template('report.html')
-    return template.render(**template_data)
+    try:
+        return template.render(**template_data)
+    except Exception as e:
+        logger.error(f"Template rendering error: {e}")
+        logger.error("Template data structure:")
+        logger.error(f"Number of duplicate groups: {len(template_data.get('duplicate_groups', []))}")
+        
+        # Debug the first group structure if available
+        if template_data.get('duplicate_groups'):
+            first_group = template_data['duplicate_groups'][0]
+            logger.error(f"First group keep item structure: {type(first_group.get('keep'))}")
+            if 'keep' in first_group:
+                keep_item = first_group['keep']
+                quality_desc = keep_item.get('quality_description', {})
+                logger.error(f"Quality description type: {type(quality_desc)}")
+                logger.error(f"Quality description keys: {list(quality_desc.keys()) if isinstance(quality_desc, dict) else 'Not a dict'}")
+                if isinstance(quality_desc, dict) and 'video' in quality_desc:
+                    logger.error(f"Video section type: {type(quality_desc['video'])}")
+                    logger.error(f"Video section content: {quality_desc['video']}")
+        raise
 
 
 def generate_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None) -> str:

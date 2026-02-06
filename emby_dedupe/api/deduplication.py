@@ -3,6 +3,7 @@ Core deduplication logic for identifying and processing duplicate media items.
 """
 
 import logging
+import os
 import re
 
 import httpx
@@ -83,7 +84,7 @@ def build_disjoint_set(media_items_by_provider):
         if isinstance(provider_dict, dict)  # Skip non-dict values like 'library_name'
     )
 
-    logger.info(f"Building sets: processing {total_items} total items")
+    logger.debug(f"Building sets: processing {total_items} total items")
 
     with tqdm(total=total_items, desc="Building sets", unit="item") as items_progress:
         # Process each provider
@@ -243,7 +244,7 @@ def build_disjoint_set(media_items_by_provider):
     items_progress.close()
 
     # Log how many progress updates were made
-    logger.info(f"Progress updates: TV episodes merges: {tv_episodes_update_count}, Movie group merges: {movie_groups_update_count}, " +
+    logger.debug(f"Progress updates: TV episodes merges: {tv_episodes_update_count}, Movie group merges: {movie_groups_update_count}, " +
                 f"Single TV items: {single_tv_update_count}, Single movie items: {single_movie_update_count}, " +
                 f"Total updates: {tv_episodes_update_count + movie_groups_update_count + single_tv_update_count + single_movie_update_count} vs. Total expected: {total_items}")
 
@@ -376,15 +377,38 @@ def rationalize_duplicates(media_items_by_provider):
             else:
                 # For TV series, create a more specific key including season and episode
                 if season_num and episode_num:
-                    series_key = f"{series_name}|S{season_num}E{episode_num}"
+                    # Normalize season/episode numbers for consistent grouping
+                    norm_season = str(int(season_num)) if season_num else ""
+                    norm_episode = str(int(episode_num)) if episode_num else ""
+                    series_key = f"{series_name}|S{norm_season}E{norm_episode}"
                     # Add path-based verification for extra safety
                     path = item_data.get("path", "")
                     if path:
-                        # Extract episode number from path as extra verification
-                        import re
-                        ep_match = re.search(r'[Ss](\d+)[Ee](\d+)', path)
+                        # Extract FILENAME from path to avoid matching folder names
+                        filename = os.path.basename(path)
+                        # Extract episode number from filename as extra verification
+                        # Support all Emby TV show naming conventions
+                        # Try standard patterns first (S01E01, s01e01)
+                        ep_match = re.search(r'[Ss](\d+)[Ee](\d+)', filename)
+                        # Try alternative common patterns if standard doesn't match
+                        if not ep_match:
+                            # 1x01 format
+                            ep_match = re.search(r'(\d+)[xX](\d+)', filename)
+                        if not ep_match:
+                            # s01.e01 format
+                            ep_match = re.search(r'[sS](\d+)\.?[eE](\d+)', filename)
+                        if not ep_match:
+                            # s01_e01 format
+                            ep_match = re.search(r'[sS](\d+)_[eE](\d+)', filename)
+                        if not ep_match:
+                            # 3-digit format like 101, 102 (season 1 episode 1, season 1 episode 2)
+                            # Only match if it's exactly 3 digits to avoid false positives
+                            ep_match = re.search(r'(?<!\d)([1-9])(\d{2})(?!\d)', filename)
                         if ep_match:
                             path_season, path_episode = ep_match.groups()
+                            # Normalize path-extracted numbers too
+                            path_season = str(int(path_season))
+                            path_episode = str(int(path_episode))
                             # Add path-extracted info to the key
                             series_key = f"{series_key}|PATH_S{path_season}E{path_episode}"
                 else:
@@ -462,10 +486,32 @@ def determine_items_to_delete(duplicate_ids: list, all_items_details: list, lang
         series_name = item.get("SeriesName", "")
 
         if series_name and item_path:
-            # Try to extract season and episode from the path
-            ep_match = re.search(r'[Ss](\d+)[Ee](\d+)', item_path)
+            # Extract filename from path to avoid matching folder names like "S02" or "S02E05-E08"
+            filename = os.path.basename(item_path)
+
+            # Try to extract season and episode from the FILENAME (not full path)
+            # Support all Emby TV show naming conventions
+            # Try standard patterns first (S01E01, s01e01)
+            ep_match = re.search(r'[Ss](\d+)[Ee](\d+)', filename)
+            # Try alternative common patterns if standard doesn't match
+            if not ep_match:
+                # 1x01 format
+                ep_match = re.search(r'(\d+)[xX](\d+)', filename)
+            if not ep_match:
+                # s01.e01 format
+                ep_match = re.search(r'[sS](\d+)\.?[eE](\d+)', filename)
+            if not ep_match:
+                # s01_e01 format
+                ep_match = re.search(r'[sS](\d+)_[eE](\d+)', filename)
+            if not ep_match:
+                # 3-digit format like 101, 102 (season 1 episode 1, season 1 episode 2)
+                # Only match if it's exactly 3 digits to avoid false positives
+                ep_match = re.search(r'(?<!\d)([1-9])(\d{2})(?!\d)', filename)
             if ep_match:
                 path_season, path_episode = ep_match.groups()
+                # Normalize episode numbers (E6 -> E06) to ensure consistent grouping
+                path_season = str(int(path_season))  # Remove leading zeros from season
+                path_episode = str(int(path_episode))  # Remove leading zeros from episode
                 path_key = f"{series_name}|S{path_season}E{path_episode}"
 
                 if path_key not in episode_path_groups:
@@ -474,7 +520,7 @@ def determine_items_to_delete(duplicate_ids: list, all_items_details: list, lang
 
                 # Log diagnostic info only in debug mode
                 if logger.isEnabledFor(logging.DEBUG):
-                    logger.debug(f"Item {item.get('Id', 'unknown')} - Path-extracted episode: S{path_season}E{path_episode} - {item_path}")
+                    logger.debug(f"Item {item.get('Id', 'unknown')} - Path-extracted episode: S{path_season}E{path_episode} - {filename}")
             else:
                 # No episode pattern found in path
                 non_episode_items.append(item)
@@ -513,8 +559,8 @@ def determine_items_to_delete(duplicate_ids: list, all_items_details: list, lang
 
             # If we've seen this exact path before, skip the item
             if item_path in seen_paths:
-                logger.warning(f"Skipping item with duplicate path: {item_path} (ID: {item_id})")
-                logger.warning(f"Already seen with ID: {seen_paths[item_path]}")
+                logger.debug(f"Skipping item with duplicate path: {item_path} (ID: {item_id})")
+                logger.debug(f"Already seen with ID: {seen_paths[item_path]}")
                 continue
 
             # For movies with different paths but same Provider ID (IMDB, TMDB, etc.),
@@ -538,11 +584,11 @@ def determine_items_to_delete(duplicate_ids: list, all_items_details: list, lang
                 seen_paths.add(item_path)
                 unique_path_items.append(item)
             else:
-                logger.warning(f"Skipping item with duplicate path: {item_path} (ID: {item.get('Id', 'unknown')})")
+                logger.debug(f"Skipping item with duplicate path: {item_path} (ID: {item.get('Id', 'unknown')})")
 
     # If filtering left only 0 or 1 items, this isn't a real duplicate group
     if len(unique_path_items) <= 1:
-        logger.warning(f"After filtering duplicates, no true duplicates remain in group with IDs: {duplicate_ids}")
+        logger.debug(f"After filtering duplicates, no true duplicates remain in group with IDs: {duplicate_ids}")
         return {"keep": {}, "delete": []}
 
     # Process and rate each item based on quality factors
@@ -561,16 +607,30 @@ def determine_items_to_delete(duplicate_ids: list, all_items_details: list, lang
     if lang_priorities and len(lang_priorities) > 0:
         logger.debug(f"Applying language prioritization: {lang_priorities}")
 
+        # Language normalization mapping (same as in CLI)
+        lang_mapping = {
+            "slo": "sk",  # Slovak ISO 639-2 -> ISO 639-1
+            "slovak": "sk",  # Slovak full name
+            "sk": "sk",   # Slovak ISO 639-1
+            "cze": "cs",  # Czech ISO 639-2 -> ISO 639-1  
+            "ces": "cs",  # Czech ISO 639-2 alternate
+            "czech": "cs",  # Czech full name
+            "cs": "cs"    # Czech ISO 639-1
+        }
+
         # Check language priority for each item
         for item in rated_items:
             # Get the audio languages from the quality description
             languages = item.get("quality_description", {}).get("audio", {}).get("languages", [])
             languages = [lang.lower() for lang in languages if lang and lang != "unknown"]
+            
+            # Normalize languages using the same mapping
+            normalized_languages = [lang_mapping.get(lang, lang) for lang in languages]
 
             # Calculate language priority score (lower is better)
             lang_score = 9999  # Default high score (low priority)
             highest_prio_lang = None
-            for lang in languages:
+            for lang in normalized_languages:
                 if lang in lang_priorities:
                     # Use the position in the priority list (0 is highest priority)
                     priority_pos = lang_priorities.index(lang)
@@ -584,9 +644,68 @@ def determine_items_to_delete(duplicate_ids: list, all_items_details: list, lang
             item["has_priority_lang"] = lang_score < 9999
             item["priority_language"] = highest_prio_lang
 
-        # Sort first by having any priority language, then by the highest priority language found,
-        # then by quality rating for items with the same priority language
-        rated_items.sort(key=lambda x: (not x["has_priority_lang"], x["lang_priority"], -x["rating"]))
+        # Apply smarter language priority logic
+        # If the highest quality item has multiple languages and significantly better quality,
+        # don't let a single-language lower-priority item override it
+        
+        # Find the best quality item and best language priority item
+        best_quality_item = max(rated_items, key=lambda x: x["rating"])
+        best_lang_items = [item for item in rated_items if item["has_priority_lang"]]
+        
+        if best_lang_items:
+            best_lang_item = min(best_lang_items, key=lambda x: (x["lang_priority"], -x["rating"]))
+            
+            # Check if language priority would override a much better quality item
+            if (best_quality_item["id"] != best_lang_item["id"] and 
+                best_quality_item["has_priority_lang"]):
+                
+                # Get language counts and quality difference
+                best_quality_langs = best_quality_item.get("quality_description", {}).get("audio", {}).get("languages", [])
+                best_quality_langs = [lang for lang in best_quality_langs if lang and lang != "unknown"]
+                
+                best_lang_langs = best_lang_item.get("quality_description", {}).get("audio", {}).get("languages", [])
+                best_lang_langs = [lang for lang in best_lang_langs if lang and lang != "unknown"]
+                
+                quality_ratio = best_quality_item["rating"] / best_lang_item["rating"] if best_lang_item["rating"] > 0 else float('inf')
+
+                logger.debug(f"Smart language priority check: " +
+                           f"Best quality: ID {best_quality_item['id']}, langs: {best_quality_langs}, rating: {best_quality_item['rating']:.1f} | " +
+                           f"Best lang: ID {best_lang_item['id']}, langs: {best_lang_langs}, rating: {best_lang_item['rating']:.1f} | " +
+                           f"Quality ratio: {quality_ratio:.2f}")
+
+                # Smart override: Quality wins over language priority when significantly better
+                # Two scenarios:
+                # 1. Single-lang Slovak vs multi-lang better quality (1.5x threshold)
+                # 2. Multi-lang with Slovak vs multi-lang without Slovak but much better (3x threshold)
+                should_override = False
+
+                if len(best_lang_langs) == 1 and len(best_quality_langs) >= 2 and quality_ratio > 1.5:
+                    # Original logic: single-lang vs multi-lang
+                    should_override = True
+                    logger.info(f"Quality override (single-lang): Keeping multi-language item {best_quality_item['id']} " +
+                              f"(languages: {best_quality_langs}, quality: {best_quality_item['rating']:.1f}) " +
+                              f"over single-language higher-priority item {best_lang_item['id']} " +
+                              f"(language: {best_lang_langs}, quality: {best_lang_item['rating']:.1f})")
+                elif not best_quality_item["has_priority_lang"] and quality_ratio > 3.0:
+                    # New logic: Quality item lacks priority language but is 3x+ better
+                    should_override = True
+                    logger.info(f"Quality override (no-priority-lang): Keeping better quality item {best_quality_item['id']} " +
+                              f"(languages: {best_quality_langs}, quality: {best_quality_item['rating']:.1f}, ratio: {quality_ratio:.2f}x) " +
+                              f"over priority language item {best_lang_item['id']} " +
+                              f"(languages: {best_lang_langs}, quality: {best_lang_item['rating']:.1f})")
+
+                if should_override:
+                    # Use quality-based sorting instead of language priority
+                    rated_items.sort(key=lambda x: -x["rating"])
+                else:
+                    # Use language priority as normal
+                    rated_items.sort(key=lambda x: (not x["has_priority_lang"], x["lang_priority"], -x["rating"]))
+            else:
+                # Use language priority as normal
+                rated_items.sort(key=lambda x: (not x["has_priority_lang"], x["lang_priority"], -x["rating"]))
+        else:
+            # No items with priority languages, sort by quality only
+            rated_items.sort(key=lambda x: -x["rating"])
 
         # Log the reason why the top item was selected
         top_item = rated_items[0]
@@ -601,7 +720,7 @@ def determine_items_to_delete(duplicate_ids: list, all_items_details: list, lang
                 logger.info(f"Language priority changed selection: Selected item {top_item['id']} (language '{prio_lang}') " +
                           f"instead of item {default_top_item['id']} (higher quality)")
             else:
-                logger.info(f"Selected item {top_item['id']} based on priority language '{prio_lang}' and quality rating {top_item['rating']}")
+                logger.debug(f"Selected item {top_item['id']} based on priority language '{prio_lang}' and quality rating {top_item['rating']}")
 
             # Add language prioritization info to the decision
             top_item["selected_by_language_priority"] = True
@@ -684,10 +803,12 @@ def process_duplicate_groups(
                 provider_ids = item.get("ProviderIds", {})
 
                 # Check each provider ID against our exclusion lists
+                # Use case-insensitive lookup as Emby API returns inconsistent casing
                 if provider_ids:
-                    imdb_id = provider_ids.get("Imdb", "").lower()
-                    tmdb_id = provider_ids.get("Tmdb", "")
-                    tvdb_id = provider_ids.get("Tvdb", "")
+                    provider_ids_lower = {k.lower(): v for k, v in provider_ids.items()}
+                    imdb_id = provider_ids_lower.get("imdb", "").lower()
+                    tmdb_id = provider_ids_lower.get("tmdb", "")
+                    tvdb_id = provider_ids_lower.get("tvdb", "")
 
                     # Check if this item should be excluded
                     if imdb_id and imdb_id in excluded_provider_map["imdb"]:
@@ -813,7 +934,7 @@ def process_duplicate_groups(
                     "server_id": excluded_item.get("ServerId", "")
                 }
 
-                logger.info(f"Skipping group with excluded provider ID {excluded_provider_id}: {title}. Items: {[i.get('Id') for i in items_details]}")
+                logger.debug(f"Skipping group with excluded provider ID {excluded_provider_id}: {title}. Items: {[i.get('Id') for i in items_details]}")
                 progress_bar.update(1)
                 continue
 
@@ -874,15 +995,18 @@ def process_duplicate_groups(
                                 # Store all provider IDs in the delete_item
                                 delete_item["provider_ids"] = provider_ids
 
+                                # Use case-insensitive lookup as Emby API returns inconsistent casing
+                                provider_ids_lower = {k.lower(): v for k, v in provider_ids.items()}
+
                                 # Extract IMDB ID (preferred for image fallback)
-                                if "Imdb" in provider_ids:
-                                    delete_item["provider_id"] = provider_ids["Imdb"]
+                                if "imdb" in provider_ids_lower:
+                                    delete_item["provider_id"] = provider_ids_lower["imdb"]
                                 # Fall back to TMDB ID
-                                elif "Tmdb" in provider_ids:
-                                    delete_item["provider_id"] = provider_ids["Tmdb"]
+                                elif "tmdb" in provider_ids_lower:
+                                    delete_item["provider_id"] = provider_ids_lower["tmdb"]
                                 # Fall back to TVDB ID
-                                elif "Tvdb" in provider_ids:
-                                    delete_item["provider_id"] = provider_ids["Tvdb"]
+                                elif "tvdb" in provider_ids_lower:
+                                    delete_item["provider_id"] = provider_ids_lower["tvdb"]
 
                             # Add is_episode flag to delete item if it's a TV episode
                             delete_item["is_episode"] = False
@@ -902,7 +1026,7 @@ def process_duplicate_groups(
 
             progress_bar.update(1)
 
-    logger.info(f"Processed {len(duplicate_groups)} duplicate groups: {len(decisions)} decisions, {excluded_groups_count} excluded groups")
+    logger.debug(f"Processed {len(duplicate_groups)} duplicate groups: {len(decisions)} decisions, {excluded_groups_count} excluded groups")
 
     # Add exclusion info to the decisions metadata
     exclusion_metadata = {
@@ -989,43 +1113,37 @@ def process_deletion_and_generate_report(
                 "episode_number": item.get("episode_number", "")
             }
 
-            # Replace Emby server image URLs with TMDB/IMDB image URLs for deleted items
+            # For deleted items, use the image URL of the kept item (same movie/show)
             try:
-                # Check if we have provider IDs to create a fallback image URL
-                if "provider_id" in item:
-                    provider_id = item["provider_id"]
-
-                    # IMDB ID format
-                    if provider_id.startswith("tt"):
-                        fallback_url = f"https://m.media-amazon.com/images/M/{provider_id}.jpg"
-                        logger.debug(f"Using IMDB fallback image URL for {item.get('name')}: {fallback_url}")
-                        original_item_data["image_url"] = fallback_url
-
-                    # TMDB ID format (numeric)
-                    elif provider_id.isdigit():
+                # Find the item's group
+                item_group = None
+                for decision in decisions:
+                    if item["id"] in [delete_item["id"] for delete_item in decision.get("delete", [])]:
+                        item_group = decision
+                        break
+                
+                if item_group and "keep" in item_group and "image_url" in item_group["keep"]:
+                    # Use the image URL from the item that's being kept
+                    kept_image_url = item_group["keep"]["image_url"]
+                    logger.debug(f"Using kept item's image URL for deleted item {item.get('name')}: {kept_image_url}")
+                    original_item_data["image_url"] = kept_image_url
+                else:
+                    # Fallback to TMDB if we have a numeric ID
+                    if "provider_id" in item and item["provider_id"].isdigit():
+                        provider_id = item["provider_id"]
                         fallback_url = f"https://image.tmdb.org/t/p/w300/{provider_id}.jpg"
                         logger.debug(f"Using TMDB fallback image URL for {item.get('name')}: {fallback_url}")
                         original_item_data["image_url"] = fallback_url
-
-                # If we couldn't extract provider_id but have provider_ids dictionary, try to get a URL from there
-                elif "provider_ids" in item and item["provider_ids"]:
-                    provider_ids = item["provider_ids"]
-
-                    # Try IMDB first
-                    if "Imdb" in provider_ids:
-                        imdb_id = provider_ids["Imdb"]
-                        fallback_url = f"https://m.media-amazon.com/images/M/{imdb_id}.jpg"
-                        logger.debug(f"Using IMDB fallback image URL from provider_ids for {item.get('name')}: {fallback_url}")
-                        original_item_data["image_url"] = fallback_url
-
-                    # Then try TMDB
-                    elif "Tmdb" in provider_ids:
-                        tmdb_id = provider_ids["Tmdb"]
-                        fallback_url = f"https://image.tmdb.org/t/p/w300/{tmdb_id}.jpg"
-                        logger.debug(f"Using TMDB fallback image URL from provider_ids for {item.get('name')}: {fallback_url}")
-                        original_item_data["image_url"] = fallback_url
+                    # If we have provider_ids dictionary, try TMDB (case-insensitive)
+                    elif "provider_ids" in item and item["provider_ids"]:
+                        pids_lower = {k.lower(): v for k, v in item["provider_ids"].items()}
+                        if "tmdb" in pids_lower:
+                            tmdb_id = pids_lower["tmdb"]
+                            fallback_url = f"https://image.tmdb.org/t/p/w300/{tmdb_id}.jpg"
+                            logger.debug(f"Using TMDB fallback image URL from provider_ids for {item.get('name')}: {fallback_url}")
+                            original_item_data["image_url"] = fallback_url
             except Exception as e:
-                logger.warning(f"Error creating fallback image URL: {e}")
+                logger.warning(f"Error setting image URL for deleted item: {e}")
 
             # Perform the deletion
             item["deletion_result"] = delete_item(

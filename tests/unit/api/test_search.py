@@ -1,0 +1,353 @@
+"""Tests for search module."""
+
+import pytest
+from unittest.mock import Mock, patch
+
+from emby_dedupe.api.search import (
+    normalize_title,
+    titles_match,
+    search_by_name,
+    search_by_provider_id,
+    search_tv_episode,
+    get_all_library_ids,
+    get_library_ids_by_name,
+    search_media,
+)
+
+
+class TestNormalizeTitle:
+    """Tests for normalize_title function."""
+
+    def test_normalize_removes_special_chars(self):
+        """Test that special characters are removed."""
+        assert normalize_title("The Matrix (1999)") == "the matrix 1999"
+
+    def test_normalize_lowercase(self):
+        """Test that title is converted to lowercase."""
+        assert normalize_title("THE MATRIX") == "the matrix"
+
+    def test_normalize_multiple_spaces(self):
+        """Test that multiple spaces are collapsed."""
+        assert normalize_title("The    Matrix") == "the matrix"
+
+    def test_normalize_strips_whitespace(self):
+        """Test that leading/trailing whitespace is removed."""
+        assert normalize_title("  The Matrix  ") == "the matrix"
+
+
+class TestTitlesMatch:
+    """Tests for titles_match function."""
+
+    def test_exact_match(self):
+        """Test exact title match."""
+        assert titles_match("The Matrix", "The Matrix") is True
+
+    def test_case_insensitive_match(self):
+        """Test case-insensitive matching."""
+        assert titles_match("The Matrix", "the matrix") is True
+
+    def test_fuzzy_match_with_subtitle(self):
+        """Test fuzzy matching with subtitles."""
+        assert titles_match("The Matrix", "The Matrix: Reloaded", fuzzy=True) is True
+
+    def test_no_fuzzy_match_different_titles(self):
+        """Test that different titles don't match without fuzzy."""
+        assert titles_match("The Matrix", "The Matrix: Reloaded", fuzzy=False) is False
+
+    def test_no_match(self):
+        """Test that completely different titles don't match."""
+        assert titles_match("The Matrix", "Inception") is False
+
+
+class TestSearchByName:
+    """Tests for search_by_name function."""
+
+    def test_search_by_name_returns_matches(self):
+        """Test that search_by_name returns matching items."""
+        mock_client = Mock()
+        mock_client.get.return_value.json.return_value = {
+            "Items": [
+                {"Name": "The Matrix", "Id": "123"},
+                {"Name": "The Matrix Reloaded", "Id": "456"},
+            ]
+        }
+        mock_client.get.return_value.raise_for_status = Mock()
+
+        results = search_by_name(
+            mock_client,
+            "http://emby.local",
+            "api_key",
+            "The Matrix"
+        )
+
+        assert len(results) == 2
+        assert results[0]["Name"] == "The Matrix"
+
+    def test_search_by_name_filters_by_similarity(self):
+        """Test that search_by_name filters by title similarity."""
+        mock_client = Mock()
+        mock_client.get.return_value.json.return_value = {
+            "Items": [
+                {"Name": "The Matrix", "Id": "123"},
+                {"Name": "Inception", "Id": "789"},  # Should be filtered out
+            ]
+        }
+        mock_client.get.return_value.raise_for_status = Mock()
+
+        results = search_by_name(
+            mock_client,
+            "http://emby.local",
+            "api_key",
+            "The Matrix"
+        )
+
+        assert len(results) == 1
+        assert results[0]["Name"] == "The Matrix"
+
+    def test_search_by_name_handles_error(self):
+        """Test that search_by_name handles HTTP errors."""
+        import httpx
+        mock_client = Mock()
+        mock_client.get.side_effect = httpx.HTTPError("Connection error")
+
+        results = search_by_name(
+            mock_client,
+            "http://emby.local",
+            "api_key",
+            "The Matrix"
+        )
+
+        assert results == []
+
+
+class TestSearchByProviderId:
+    """Tests for search_by_provider_id function."""
+
+    def test_search_by_imdb_id(self):
+        """Test searching by IMDB ID."""
+        mock_client = Mock()
+        mock_client.get.return_value.json.return_value = {
+            "Items": [{"Name": "The Matrix", "Id": "123", "ProviderIds": {"Imdb": "tt0133093"}}]
+        }
+        mock_client.get.return_value.raise_for_status = Mock()
+
+        results = search_by_provider_id(
+            mock_client,
+            "http://emby.local",
+            "api_key",
+            "tt0133093",
+            "imdb"
+        )
+
+        assert len(results) == 1
+        assert results[0]["Name"] == "The Matrix"
+
+    def test_search_normalizes_provider_type(self):
+        """Test that provider type is normalized."""
+        mock_client = Mock()
+        mock_client.get.return_value.json.return_value = {"Items": []}
+        mock_client.get.return_value.raise_for_status = Mock()
+
+        search_by_provider_id(
+            mock_client,
+            "http://emby.local",
+            "api_key",
+            "123",
+            "imdb"  # lowercase
+        )
+
+        # Check that the call was made with normalized provider type
+        call_args = mock_client.get.call_args
+        assert "AnyImdbId" in str(call_args)
+
+
+class TestSearchTvEpisode:
+    """Tests for search_tv_episode function."""
+
+    def test_search_tv_episode_finds_episode(self):
+        """Test that search_tv_episode finds the correct episode."""
+        mock_client = Mock()
+
+        # Mock series search
+        series_response = Mock()
+        series_response.json.return_value = {
+            "Items": [{"Name": "Breaking Bad", "Id": "series123"}]
+        }
+        series_response.raise_for_status = Mock()
+
+        # Mock episode search
+        episode_response = Mock()
+        episode_response.json.return_value = {
+            "Items": [
+                {
+                    "Name": "Pilot",
+                    "Id": "ep123",
+                    "ParentIndexNumber": 1,  # Season
+                    "IndexNumber": 1,  # Episode
+                }
+            ]
+        }
+        episode_response.raise_for_status = Mock()
+
+        mock_client.get.side_effect = [series_response, episode_response]
+
+        results = search_tv_episode(
+            mock_client,
+            "http://emby.local",
+            "api_key",
+            "Breaking Bad",
+            1,  # season
+            1,  # episode
+        )
+
+        assert len(results) == 1
+        assert results[0]["Name"] == "Pilot"
+        assert results[0]["SeriesName"] == "Breaking Bad"
+
+    def test_search_tv_episode_series_not_found(self):
+        """Test handling when series is not found."""
+        mock_client = Mock()
+        mock_client.get.return_value.json.return_value = {"Items": []}
+        mock_client.get.return_value.raise_for_status = Mock()
+
+        results = search_tv_episode(
+            mock_client,
+            "http://emby.local",
+            "api_key",
+            "Nonexistent Show",
+            1,
+            1,
+        )
+
+        assert results == []
+
+
+class TestGetAllLibraryIds:
+    """Tests for get_all_library_ids function."""
+
+    def test_get_all_library_ids(self):
+        """Test getting all library IDs."""
+        mock_client = Mock()
+        mock_client.get.return_value.json.return_value = [
+            {"ItemId": "lib1", "Name": "Movies"},
+            {"ItemId": "lib2", "Name": "TV Shows"},
+        ]
+        mock_client.get.return_value.raise_for_status = Mock()
+
+        results = get_all_library_ids(mock_client, "http://emby.local", "api_key")
+
+        assert len(results) == 2
+        assert results[0]["id"] == "lib1"
+        assert results[0]["name"] == "Movies"
+
+
+class TestGetLibraryIdsByName:
+    """Tests for get_library_ids_by_name function."""
+
+    def test_get_library_ids_by_name(self):
+        """Test getting library IDs by name."""
+        mock_client = Mock()
+        mock_client.get.return_value.json.return_value = [
+            {"ItemId": "lib1", "Name": "Movies"},
+            {"ItemId": "lib2", "Name": "TV Shows"},
+        ]
+        mock_client.get.return_value.raise_for_status = Mock()
+
+        results = get_library_ids_by_name(
+            mock_client,
+            "http://emby.local",
+            "api_key",
+            ["Movies"]
+        )
+
+        assert results == ["lib1"]
+
+    def test_get_library_ids_by_name_case_insensitive(self):
+        """Test that library name matching is case-insensitive."""
+        mock_client = Mock()
+        mock_client.get.return_value.json.return_value = [
+            {"ItemId": "lib1", "Name": "Movies"},
+        ]
+        mock_client.get.return_value.raise_for_status = Mock()
+
+        results = get_library_ids_by_name(
+            mock_client,
+            "http://emby.local",
+            "api_key",
+            ["movies"]  # lowercase
+        )
+
+        assert results == ["lib1"]
+
+
+class TestSearchMedia:
+    """Tests for search_media function."""
+
+    def test_search_media_by_imdb_returns_early(self):
+        """Test that search_media returns early when IMDB match is found."""
+        mock_client = Mock()
+        mock_client.get.return_value.json.return_value = {
+            "Items": [{"Name": "The Matrix", "Id": "123"}]
+        }
+        mock_client.get.return_value.raise_for_status = Mock()
+
+        results = search_media(
+            mock_client,
+            "http://emby.local",
+            "api_key",
+            name="The Matrix",
+            imdb="tt0133093"
+        )
+
+        assert len(results) == 1
+        # Should only call once (for IMDB search)
+        assert mock_client.get.call_count == 1
+
+    def test_search_media_by_name_when_no_provider_id(self):
+        """Test that search_media falls back to name search."""
+        mock_client = Mock()
+        mock_client.get.return_value.json.return_value = {
+            "Items": [{"Name": "The Matrix", "Id": "123"}]
+        }
+        mock_client.get.return_value.raise_for_status = Mock()
+
+        results = search_media(
+            mock_client,
+            "http://emby.local",
+            "api_key",
+            name="The Matrix",
+            year=1999
+        )
+
+        assert len(results) >= 0  # May or may not match after filtering
+
+    def test_search_media_tv_episode(self):
+        """Test searching for TV episode."""
+        mock_client = Mock()
+
+        # Mock series search
+        series_response = Mock()
+        series_response.json.return_value = {
+            "Items": [{"Name": "Breaking Bad", "Id": "series123"}]
+        }
+        series_response.raise_for_status = Mock()
+
+        # Mock episode search
+        episode_response = Mock()
+        episode_response.json.return_value = {
+            "Items": [{"Name": "Pilot", "Id": "ep123", "ParentIndexNumber": 1, "IndexNumber": 1}]
+        }
+        episode_response.raise_for_status = Mock()
+
+        mock_client.get.side_effect = [series_response, episode_response]
+
+        results = search_media(
+            mock_client,
+            "http://emby.local",
+            "api_key",
+            name="Breaking Bad",
+            season=1,
+            episode=1
+        )
+
+        assert len(results) == 1

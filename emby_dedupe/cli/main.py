@@ -5,6 +5,17 @@ Main command-line interface for the Emby Dedupe tool.
 import json
 import logging
 import sys
+from pathlib import Path
+
+# Load environment variables from .env file if it exists
+try:
+    from dotenv import load_dotenv
+    env_path = Path(__file__).parent.parent.parent / '.env'
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    # python-dotenv not available, environment variables must be set manually
+    pass
 
 import httpx
 
@@ -55,6 +66,12 @@ def main() -> None:
     """
     args = parse_args()
 
+    # Route to check command if specified
+    if hasattr(args, 'command') and args.command == 'check':
+        from emby_dedupe.cli.check import run_check
+        exit_code = run_check(args)
+        sys.exit(exit_code)
+
     env_verbosity = get_env_variable(ENV_DEDUPE_LOGGING)
     env_host = get_env_variable(ENV_DEDUPE_EMBY_HOST)
     env_port = get_env_variable(ENV_DEDUPE_EMBY_PORT)
@@ -90,8 +107,30 @@ def main() -> None:
     lang_prio_str = args.lang_prio or env_lang_prio
     lang_priorities = []
     if lang_prio_str:
-        lang_priorities = [lang.strip().lower() for lang in lang_prio_str.split(',') if lang.strip()]
-        logger.info(f"Language priorities set: {', '.join(lang_priorities)} (in order of preference)")
+        # Create normalized language priority list treating Slovak/Czech variants as equivalent
+        lang_mapping = {
+            "slo": "sk",  # Slovak ISO 639-2 -> ISO 639-1
+            "sk": "sk",   # Slovak ISO 639-1
+            "cze": "cs",  # Czech ISO 639-2 -> ISO 639-1  
+            "ces": "cs",  # Czech ISO 639-2 alternate
+            "cs": "cs"    # Czech ISO 639-1
+        }
+        
+        raw_langs = [lang.strip().lower() for lang in lang_prio_str.split(',') if lang.strip()]
+        seen_langs = set()
+        
+        for lang in raw_langs:
+            # Normalize Slovak/Czech variants, keep others as-is
+            normalized_lang = lang_mapping.get(lang, lang)
+            
+            # Only add if we haven't seen this normalized language before
+            if normalized_lang not in seen_langs:
+                lang_priorities.append(normalized_lang)
+                seen_langs.add(normalized_lang)
+                
+        logger.info(f"Language priorities set: {', '.join(lang_priorities)} (Slovak/Czech variants normalized)")
+        if raw_langs != [lang_mapping.get(lang, lang) for lang in raw_langs]:
+            logger.debug(f"Original input: {', '.join(raw_langs)}")
     else:
         logger.debug("No language priorities specified, using default quality-based evaluation")
 
@@ -136,7 +175,7 @@ def main() -> None:
 
         # Process each library
         for library_name in library:
-            logger.info(f"Processing library: {library_name}")
+            logger.debug(f"Processing library: {library_name}")
 
             library_id = get_library_id(client, base_url, library_name)
             if library_id is None:
@@ -177,7 +216,7 @@ def main() -> None:
             logging.DEBUG
         ) else None
 
-        logger.info(f"Processing {len(decisions)} decisions for markdown report generation")
+        logger.debug(f"Processing {len(decisions)} decisions for markdown report generation")
 
         # Create metadata dictionary for report generation
         report_metadata = {
@@ -212,7 +251,7 @@ def main() -> None:
 
         if html_report:
             try:
-                logger.info(f"Generating HTML report with {len(decisions)} decisions total")
+                logger.debug(f"Generating HTML report with {len(decisions)} decisions total")
 
                 html_report_path = generate_html_report(base_url, decisions, report_metadata)
 

@@ -241,6 +241,177 @@ class TestAdvancedDeduplication:
         assert decision["keep"]["changed_by_language_priority"] == True
         assert decision["keep"]["priority_language_used"] == "eng"
     
+    # Smart Language Priority Tests
+    # These tests validate the enhanced language priority logic that prevents
+    # small single-language movies from being kept over much larger multi-language movies
+    # when there's a significant quality difference.
+    
+    def test_smart_language_priority_quality_override(self):
+        """Test smart language priority - quality override for single vs multi-language."""
+        # Create items: small single-language high-priority vs large multi-language lower-priority
+        items = [
+            {
+                "Id": "single_lang_sk",  # Single SK language, smaller, higher priority
+                "Name": "Movie Slovak Only",
+                "Path": "/movies/movie_sk.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920, "BitRate": 3000000},
+                    {"Type": "Audio", "Codec": "aac", "Channels": 2, "Language": "slo"}
+                ],
+                "Size": 2000000000,  # 2GB - much smaller
+                "Bitrate": 3500000
+            },
+            {
+                "Id": "multi_lang_cz_en",  # Multi-language CZ/EN, larger, lower priority
+                "Name": "Movie Czech English",
+                "Path": "/movies/movie_cz_en.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h265", "Height": 2160, "Width": 3840, "BitRate": 15000000},
+                    {"Type": "Audio", "Codec": "dts", "Channels": 8, "Language": "cze"},
+                    {"Type": "Audio", "Codec": "dts", "Channels": 8, "Language": "eng"}
+                ],
+                "Size": 50000000000,  # 50GB - much larger
+                "Bitrate": 18000000
+            }
+        ]
+        
+        # Set language priorities (Slovak first, Czech second)
+        lang_priorities = ["sk", "cs", "eng"]  # Using normalized language codes
+        
+        # Run determination with language priorities
+        decision = determine_items_to_delete(["single_lang_sk", "multi_lang_cz_en"], items, lang_priorities)
+        
+        # Should choose the multi-language, higher-quality item despite language priority
+        # because single-language item vs multi-language item with significant quality difference
+        assert decision["keep"]["id"] == "multi_lang_cz_en"
+        assert len(decision["delete"]) == 1
+        assert decision["delete"][0]["id"] == "single_lang_sk"
+    
+    def test_smart_language_priority_normal_behavior(self):
+        """Test smart language priority - normal behavior when both items have multiple languages."""
+        # Create items where both have multiple languages
+        items = [
+            {
+                "Id": "multi_lang_cz_en",  # Multi-language CZ/EN, higher quality
+                "Name": "Movie Czech English",
+                "Path": "/movies/movie_cz_en.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h265", "Height": 2160, "Width": 3840, "BitRate": 15000000},
+                    {"Type": "Audio", "Codec": "dts", "Channels": 8, "Language": "cze"},
+                    {"Type": "Audio", "Codec": "dts", "Channels": 8, "Language": "eng"}
+                ],
+                "Size": 50000000000,
+                "Bitrate": 18000000
+            },
+            {
+                "Id": "multi_lang_sk_en",  # Multi-language SK/EN, lower quality but higher priority
+                "Name": "Movie Slovak English",
+                "Path": "/movies/movie_sk_en.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920, "BitRate": 8000000},
+                    {"Type": "Audio", "Codec": "aac", "Channels": 6, "Language": "slo"},
+                    {"Type": "Audio", "Codec": "aac", "Channels": 6, "Language": "eng"}
+                ],
+                "Size": 25000000000,
+                "Bitrate": 9000000
+            }
+        ]
+        
+        # Set language priorities (Slovak first, Czech second)
+        lang_priorities = ["sk", "cs", "eng"]  # Using normalized language codes
+        
+        # Run determination with language priorities
+        decision = determine_items_to_delete(["multi_lang_cz_en", "multi_lang_sk_en"], items, lang_priorities)
+        
+        # Should use normal language priority since both have multiple languages
+        assert decision["keep"]["id"] == "multi_lang_sk_en"
+        assert len(decision["delete"]) == 1
+        assert decision["delete"][0]["id"] == "multi_lang_cz_en"
+        assert decision["keep"]["selected_by_language_priority"] == True
+    
+    def test_smart_language_priority_insufficient_quality_difference(self):
+        """Test smart language priority - no override when quality difference is insufficient."""
+        # Create items with single vs multi-language but insufficient quality difference
+        items = [
+            {
+                "Id": "single_lang_sk",  # Single SK language, higher priority
+                "Name": "Movie Slovak Only",
+                "Path": "/movies/movie_sk.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920, "BitRate": 8000000},
+                    {"Type": "Audio", "Codec": "aac", "Channels": 6, "Language": "slo"}
+                ],
+                "Size": 25000000000,
+                "Bitrate": 9000000
+            },
+            {
+                "Id": "multi_lang_cz_en",  # Multi-language, only slightly better quality
+                "Name": "Movie Czech English",
+                "Path": "/movies/movie_cz_en.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920, "BitRate": 10000000},
+                    {"Type": "Audio", "Codec": "dts", "Channels": 6, "Language": "cze"},
+                    {"Type": "Audio", "Codec": "dts", "Channels": 6, "Language": "eng"}
+                ],
+                "Size": 30000000000,  # Only slightly larger
+                "Bitrate": 11000000
+            }
+        ]
+        
+        # Set language priorities (Slovak first, Czech second)
+        lang_priorities = ["sk", "cs", "eng"]  # Using normalized language codes
+        
+        # Run determination with language priorities
+        decision = determine_items_to_delete(["single_lang_sk", "multi_lang_cz_en"], items, lang_priorities)
+        
+        # Should use normal language priority since quality difference isn't significant (< 1.5x)
+        assert decision["keep"]["id"] == "single_lang_sk"
+        assert len(decision["delete"]) == 1
+        assert decision["delete"][0]["id"] == "multi_lang_cz_en"
+        assert decision["keep"]["selected_by_language_priority"] == True
+    
+    def test_smart_language_priority_reverse_scenario(self):
+        """Test smart language priority - when best quality has single language."""
+        # Create items where the best quality item has single language
+        items = [
+            {
+                "Id": "single_lang_high_quality",  # Single language but highest quality
+                "Name": "Movie English Ultra",
+                "Path": "/movies/movie_en_ultra.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h265", "Height": 2160, "Width": 3840, "BitRate": 25000000},
+                    {"Type": "Audio", "Codec": "truehd", "Channels": 8, "Language": "eng"}
+                ],
+                "Size": 80000000000,  # Very large
+                "Bitrate": 30000000
+            },
+            {
+                "Id": "multi_lang_lower_quality",  # Multi-language but lower quality
+                "Name": "Movie Slovak Czech",
+                "Path": "/movies/movie_sk_cz.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920, "BitRate": 5000000},
+                    {"Type": "Audio", "Codec": "aac", "Channels": 6, "Language": "slo"},
+                    {"Type": "Audio", "Codec": "aac", "Channels": 6, "Language": "cze"}
+                ],
+                "Size": 15000000000,
+                "Bitrate": 7000000
+            }
+        ]
+        
+        # Set language priorities (Slovak first)
+        lang_priorities = ["sk", "cs", "eng"]  # Using normalized language codes
+        
+        # Run determination with language priorities
+        decision = determine_items_to_delete(["single_lang_high_quality", "multi_lang_lower_quality"], items, lang_priorities)
+        
+        # Should use normal language priority - no quality override since criteria don't match
+        # (best language item has multiple languages, not single)
+        assert decision["keep"]["id"] == "multi_lang_lower_quality"
+        assert len(decision["delete"]) == 1
+        assert decision["delete"][0]["id"] == "single_lang_high_quality"
+        assert decision["keep"]["selected_by_language_priority"] == True
+
     def test_determine_items_with_episode_path_filtering(self):
         """Test filtering of TV episodes based on path pattern."""
         # Create items with different episode paths
@@ -360,3 +531,241 @@ class TestAdvancedDeduplication:
             assert "episode1" in result.parent
             assert "episode2" in result.parent
             assert "episode3" in result.parent
+
+    def test_language_normalization_slovak_czech_variants(self):
+        """Test that Slovak/Czech language variants (slo/sk, cze/ces/cs) are treated with same priority."""
+        # Create items with different Slovak/Czech language variants
+        items = [
+            {
+                "Id": "slovak_slo",  # Uses "slo" language code
+                "Name": "Movie Slovak SLO", 
+                "Path": "/movies/movie_slovak_slo.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h265", "Height": 1080, "Width": 1920, "BitRate": 10000000},
+                    {"Type": "Audio", "Codec": "dts", "Channels": 6, "Language": "slo"}  # Slovak ISO 639-2
+                ],
+                "Size": 40000000000,  # 40GB
+                "Bitrate": 10000000
+            },
+            {
+                "Id": "slovak_sk", # Uses "sk" language code  
+                "Name": "Movie Slovak SK",
+                "Path": "/movies/movie_slovak_sk.mkv", 
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h265", "Height": 1080, "Width": 1920, "BitRate": 12000000},
+                    {"Type": "Audio", "Codec": "dts", "Channels": 6, "Language": "sk"}  # Slovak ISO 639-1
+                ],
+                "Size": 45000000000,  # 45GB - slightly better quality
+                "Bitrate": 12000000
+            },
+            {
+                "Id": "czech_cze", # Uses "cze" language code
+                "Name": "Movie Czech CZE",
+                "Path": "/movies/movie_czech_cze.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h265", "Height": 1080, "Width": 1920, "BitRate": 11000000}, 
+                    {"Type": "Audio", "Codec": "dts", "Channels": 6, "Language": "cze"}  # Czech ISO 639-2
+                ],
+                "Size": 42000000000,  # 42GB
+                "Bitrate": 11000000
+            },
+            {
+                "Id": "czech_ces", # Uses "ces" language code  
+                "Name": "Movie Czech CES",
+                "Path": "/movies/movie_czech_ces.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h265", "Height": 1080, "Width": 1920, "BitRate": 9000000},
+                    {"Type": "Audio", "Codec": "dts", "Channels": 6, "Language": "ces"}  # Czech ISO 639-2 alternate
+                ],
+                "Size": 35000000000,  # 35GB - lower quality
+                "Bitrate": 9000000
+            },
+            {
+                "Id": "english", # English item - should be lowest priority
+                "Name": "Movie English",
+                "Path": "/movies/movie_english.mkv", 
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h265", "Height": 2160, "Width": 3840, "BitRate": 20000000},
+                    {"Type": "Audio", "Codec": "dts", "Channels": 8, "Language": "eng"}  # English
+                ],
+                "Size": 60000000000,  # 60GB - highest quality but English
+                "Bitrate": 20000000
+            }
+        ]
+        
+        # Language priorities: Slovak first (slo/sk should be treated as same), Czech second (cze/ces should be same), English last
+        lang_priorities = ["sk", "cs", "eng"]  # Using normalized forms
+        
+        # Run determination with language priorities
+        decision = determine_items_to_delete(["slovak_slo", "slovak_sk", "czech_cze", "czech_ces", "english"], items, lang_priorities)
+        
+        # Should choose the best Slovak item (slovak_sk has slightly better quality)
+        # since all Slovak variants should be treated with same priority, quality should be the tiebreaker
+        assert decision["keep"]["id"] == "slovak_sk"
+        assert len(decision["delete"]) == 4
+        
+        # Verify that language priority was applied
+        kept_item = decision["keep"]
+        assert kept_item.get("selected_by_language_priority") == True
+        assert kept_item.get("priority_language_used") == "sk"  # Should be normalized to "sk"
+        
+        # Make sure the deleted items include both Slovak and Czech variants and English
+        deleted_ids = [item["id"] for item in decision["delete"]]
+        assert "slovak_slo" in deleted_ids  # Other Slovak variant
+        assert "czech_cze" in deleted_ids   # Czech variants  
+        assert "czech_ces" in deleted_ids
+        assert "english" in deleted_ids     # English (lowest priority)
+        
+    def test_language_normalization_priority_vs_quality_balance(self):
+        """Test that language normalization works correctly when balancing language priority vs quality."""
+        items = [
+            {
+                "Id": "czech_ces_high_quality", # Czech CES variant, very high quality
+                "Name": "Movie Czech CES HQ",
+                "Path": "/movies/movie_czech_ces_hq.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h265", "Height": 2160, "Width": 3840, "BitRate": 25000000},
+                    {"Type": "Audio", "Codec": "dts", "Channels": 8, "Language": "ces"}  # Czech ISO 639-2 alternate
+                ],
+                "Size": 70000000000,  # 70GB - very high quality
+                "Bitrate": 25000000
+            },
+            {
+                "Id": "slovak_slo_lower_quality", # Slovak SLO variant, lower quality
+                "Name": "Movie Slovak SLO",
+                "Path": "/movies/movie_slovak_slo.mkv", 
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h264", "Height": 720, "Width": 1280, "BitRate": 5000000},
+                    {"Type": "Audio", "Codec": "aac", "Channels": 2, "Language": "slo"}  # Slovak ISO 639-2
+                ],
+                "Size": 15000000000,  # 15GB - much lower quality
+                "Bitrate": 5000000
+            }
+        ]
+        
+        # Language priorities: Slovak first (sk), Czech second (cs)  
+        lang_priorities = ["sk", "cs"]  # Using normalized forms
+        
+        # Run determination
+        decision = determine_items_to_delete(["czech_ces_high_quality", "slovak_slo_lower_quality"], items, lang_priorities)
+        
+        # Should choose Slovak despite lower quality, as it has higher language priority
+        assert decision["keep"]["id"] == "slovak_slo_lower_quality"
+        assert len(decision["delete"]) == 1
+        assert decision["delete"][0]["id"] == "czech_ces_high_quality"
+        
+        # Verify language priority was applied and changed the decision
+        kept_item = decision["keep"]
+        assert kept_item.get("selected_by_language_priority") == True
+        assert kept_item.get("changed_by_language_priority") == True  # Should indicate priority overrode quality
+        assert kept_item.get("priority_language_used") == "sk"  # Normalized from "slo" to "sk"
+
+    def test_tv_episode_path_parsing_uses_filename_not_folder(self):
+        """Test that episode parsing uses filename, not folder names.
+
+        This test verifies the fix for a bug where folder names like "S02" or
+        "Wednesday.S02E05-E08" were incorrectly matched instead of the actual
+        episode number from the filename.
+
+        Example paths that should all be parsed as S02E06:
+        - /Wednesday/S02/Wednesday.S02E05-E08.../Wednesday.S02E06.mkv
+        - /Wednesday/Wednesday.S02.2160p.../Wednesday.S02E06.mkv
+        - /Wednesday/Wednesday.S02.1080p.../Wednesday.S02E6.mkv (E6 = E06)
+        """
+        items = [
+            {
+                "Id": "20200212",
+                "Name": "Woe Thyself",
+                "SeriesName": "Wednesday",
+                # Folder contains S02E05-E08 but filename is S02E06
+                "Path": "/Movies/Serials/Wednesday/S02/Wednesday.S02E05-E08.2160p/Wednesday.S02E06.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h265", "Height": 2160, "Width": 3840},
+                    {"Type": "Audio", "Codec": "eac3", "Channels": 6}
+                ],
+                "Size": 8000000000
+            },
+            {
+                "Id": "20224286",
+                "Name": "Woe Thyself",
+                "SeriesName": "Wednesday",
+                "Path": "/Movies/Serials/Wednesday/Wednesday.S02.2160p/Wednesday.S02E06.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h265", "Height": 2160, "Width": 3840},
+                    {"Type": "Audio", "Codec": "eac3", "Channels": 6}
+                ],
+                "Size": 8000000000
+            },
+            {
+                "Id": "20254909",
+                "Name": "Woe Thyself",
+                "SeriesName": "Wednesday",
+                # Note: S02E6 (without leading zero) should be normalized to match S02E06
+                "Path": "/Movies/Serials/Wednesday/Wednesday.S02.1080p/Wednesday.S02E6.mkv",
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920},
+                    {"Type": "Audio", "Codec": "aac", "Channels": 6}
+                ],
+                "Size": 4000000000
+            }
+        ]
+
+        # Run determination
+        decision = determine_items_to_delete(
+            ["20200212", "20224286", "20254909"],
+            items
+        )
+
+        # All 3 items should be grouped as duplicates (same episode)
+        assert decision["keep"], "Should have an item to keep"
+        assert len(decision["delete"]) == 2, f"Should delete 2 items, got {len(decision.get('delete', []))}"
+
+        # Verify the kept item is one of the expected IDs
+        keep_id = decision["keep"]["id"]
+        assert keep_id in ["20200212", "20224286", "20254909"]
+
+        # Verify the deleted items are the other two
+        delete_ids = [item["id"] for item in decision["delete"]]
+        assert len(delete_ids) == 2
+        assert keep_id not in delete_ids
+
+    def test_tv_episode_number_normalization(self):
+        """Test that episode numbers E6 and E06 are normalized to the same value.
+
+        This ensures that files with different episode number formats
+        (e.g., S02E6 vs S02E06) are correctly grouped as duplicates.
+        """
+        items = [
+            {
+                "Id": "item_e06",
+                "Name": "Test Episode",
+                "SeriesName": "TestShow",
+                "Path": "/shows/TestShow.S01E06.mkv",  # With leading zero
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920},
+                    {"Type": "Audio", "Codec": "aac", "Channels": 2}
+                ],
+                "Size": 1000000000
+            },
+            {
+                "Id": "item_e6",
+                "Name": "Test Episode",
+                "SeriesName": "TestShow",
+                "Path": "/shows/TestShow.S01E6.mkv",  # Without leading zero
+                "MediaStreams": [
+                    {"Type": "Video", "Codec": "h264", "Height": 720, "Width": 1280},
+                    {"Type": "Audio", "Codec": "aac", "Channels": 2}
+                ],
+                "Size": 500000000
+            }
+        ]
+
+        decision = determine_items_to_delete(["item_e06", "item_e6"], items)
+
+        # Both items should be recognized as the same episode
+        assert decision["keep"], "Should keep one item"
+        assert len(decision["delete"]) == 1, "Should delete one item"
+
+        # Higher quality (1080p) should be kept
+        assert decision["keep"]["id"] == "item_e06"
+        assert decision["delete"][0]["id"] == "item_e6"
