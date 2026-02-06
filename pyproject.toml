@@ -7,10 +7,15 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 python_classes = "Test*"
 python_functions = "test_*"
-addopts = "--cov=emby_dedupe --cov-report=term-missing --cov-report=xml:coverage.xml"
+addopts = ""
 filterwarnings = [
     # Suppress warnings from tqdm progress bars that can't be properly closed in test environment
     "ignore::pytest.PytestUnraisableExceptionWarning"
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests requiring external services",
+    "api_dependent: marks tests requiring Emby API access",
 ]
 
 [tool.mypy]

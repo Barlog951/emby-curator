@@ -6,7 +6,6 @@ Supports both deduplication and missing episodes functionality.
 """
 
 import sys
-import os
 from pathlib import Path
 
 # Load environment variables from .env file if it exists
@@ -30,12 +29,13 @@ def main():
         # Check if we have the --missing-episodes flag
         if "--missing-episodes" in sys.argv:
             # Import missing episodes functionality only when needed
-            from emby_dedupe.cli.missing_episodes import run_missing_episodes_command
             import argparse
-            
+
+            from emby_dedupe.cli.missing_episodes import run_missing_episodes_command
+
             # Create a parser for all arguments including missing episodes
             parser = argparse.ArgumentParser(description="Emby Media Deduplication and Missing Episodes Tool.")
-            
+
             # Add all existing arguments
             parser.add_argument("-v", "--verbosity", action="count", default=0, help="Increase verbosity of logging for each occurrence.")
             parser.add_argument("--host", type=str, help="The hostname of the Emby server.")
@@ -50,21 +50,21 @@ def main():
             parser.add_argument("--html-only", action="store_true", help="Generate only HTML report without terminal output.")
             parser.add_argument("--lang-prio", type=str, help="Comma-separated list of language codes in priority order.")
             parser.add_argument("--exclude-ids", type=str, help="Comma-separated list of provider IDs to exclude from deduplication.")
-            
+
             # Add missing episodes specific arguments
             parser.add_argument("--missing-episodes", action="store_true", help="Search for missing episodes instead of duplicates")
             parser.add_argument("--format", choices=["console", "html", "json", "structured_json"], default="console", help="Output format for missing episodes report")
             parser.add_argument("--output", type=str, help="Output file path for JSON formats (default: missing_episodes-YYYYMMDD_HHMMSS.json)")
-            
+
             # Parse all arguments
             args = parser.parse_args()
-            
+
             # Run missing episodes command
             run_missing_episodes_command(args)
         else:
             # Run existing deduplication functionality unchanged
             dedupe_main()
-            
+
     except KeyboardInterrupt:
         print("\nOperation cancelled by user.")
         sys.exit(1)

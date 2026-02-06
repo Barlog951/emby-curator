@@ -8,7 +8,6 @@ Usage:
 """
 
 import json
-import sys
 from typing import Any
 
 from emby_dedupe.api.checker import EmbyChecker
@@ -113,7 +112,7 @@ def _extract_quality_params(args) -> dict[str, Any]:
     if hasattr(args, 'audio') and args.audio:
         params['audio'] = args.audio
     if hasattr(args, 'audio_lang') and args.audio_lang:
-        params['audio_languages'] = [l.strip() for l in args.audio_lang.split(',')]
+        params['audio_languages'] = [lang.strip() for lang in args.audio_lang.split(',')]
     if hasattr(args, 'size_mb') and args.size_mb:
         params['size_mb'] = args.size_mb
     if hasattr(args, 'bitrate_kbps') and args.bitrate_kbps:

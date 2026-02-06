@@ -9,6 +9,9 @@ from emby_dedupe.api.quality_compare import (
     ProposedQuality,
     apply_language_priority,
     compare_quality,
+    _create_proposed_as_existing,
+    _apply_bluray_native_exception,
+    _apply_smart_override_if_needed,
 )
 
 
@@ -733,3 +736,217 @@ class TestCompareQuality:
         # Should recommend download - exception doesn't trigger for 720p
         # AI 4K wins due to much better resolution and larger file
         assert result.recommendation == "download"
+
+
+class TestCompareQualityHelpers:
+    """Tests for helper functions extracted in Phase 3 Step 8."""
+
+    def test_create_proposed_as_existing_basic(self):
+        """Test converting ProposedQuality to ExistingQuality."""
+        proposed = ProposedQuality(
+            resolution="1080p",
+            audio="5.1",
+            audio_languages=["en", "es"],
+            size_mb=5200,
+            bitrate_kbps=10000,
+            path="/path/to/movie.mkv",
+            name="Movie.1080p.BluRay.x264",
+        )
+
+        result = _create_proposed_as_existing(proposed)
+
+        assert result.id == "proposed"
+        assert result.name == "Proposed"
+        assert result.width == 1920
+        assert result.height == 1080
+        assert result.audio_channels == 6
+        assert result.audio_languages == ["en", "es"]
+
+    def test_create_proposed_as_existing_4k(self):
+        """Test converting 4K ProposedQuality."""
+        proposed = ProposedQuality(
+            resolution="2160p",
+            audio="7.1",
+            size_mb=25000,
+            path="/path/to/movie.4k.mkv",
+            name="Movie.2160p.WEB-DL.x265",
+        )
+
+        result = _create_proposed_as_existing(proposed)
+
+        assert result.width == 3840
+        assert result.height == 2160
+        assert result.audio_channels == 8
+
+    def test_create_proposed_as_existing_detects_bluray(self):
+        """Test BluRay source detection in conversion."""
+        proposed = ProposedQuality(
+            resolution="1080p",
+            path="/path/to/movie.bluray.mkv",
+            name="Movie.1080p.BluRay.x264",
+        )
+
+        result = _create_proposed_as_existing(proposed)
+
+        assert result.source_quality_tier == "bluray"
+
+    def test_create_proposed_as_existing_detects_ai_upscale(self):
+        """Test AI upscale detection in conversion."""
+        proposed = ProposedQuality(
+            resolution="2160p",
+            path="/movies/Movie.AI.UPSCALE.2160p.mkv",  # Use pattern from existing test
+            name="Movie.2160p.AI.x265",
+        )
+
+        result = _create_proposed_as_existing(proposed)
+
+        # AI upscale detection is case-insensitive and pattern-based
+        assert result.is_ai_upscale is True
+
+    def test_apply_bluray_native_exception_triggers(self):
+        """Test BluRay exception triggers for 1080p BluRay vs AI 4K."""
+        # Create 1080p BluRay item (larger)
+        bluray_1080p = ExistingQuality(
+            id="existing",
+            name="BluRay",
+            width=1920,
+            height=1080,
+            audio_channels=8,
+            size_bytes=30 * 1024**3,  # 30GB
+            path="/path/movie.bluray.mkv",
+            source_quality_tier="bluray",
+            is_ai_upscale=False,
+        )
+
+        # Create AI upscaled 4K item (smaller)
+        ai_4k = ExistingQuality(
+            id="proposed",
+            name="AI 4K",
+            width=3840,
+            height=2160,
+            audio_channels=6,
+            size_bytes=15 * 1024**3,  # 15GB (half the size)
+            path="/path/movie.topaz.mkv",
+            is_ai_upscale=True,
+        )
+
+        # Test when AI 4K is proposed
+        result = _apply_bluray_native_exception(ai_4k, bluray_1080p, "download")
+
+        # Exception should trigger - prefer native BluRay
+        assert result == "skip"
+
+    def test_apply_bluray_native_exception_no_trigger_similar_size(self):
+        """Test exception doesn't trigger when sizes are similar."""
+        bluray_1080p = ExistingQuality(
+            id="existing",
+            name="BluRay 1080p",
+            width=1920,
+            height=1080,
+            size_bytes=20 * 1024**3,  # 20GB
+            path="/path/movie.bluray.mkv",
+            source_quality_tier="bluray",
+            is_ai_upscale=False,
+        )
+
+        ai_4k = ExistingQuality(
+            id="proposed",
+            name="AI 4K",
+            width=3840,
+            height=2160,
+            size_bytes=18 * 1024**3,  # 18GB (1.11x ratio, < 1.5x threshold)
+            path="/path/movie.topaz.mkv",
+            is_ai_upscale=True,
+        )
+
+        result = _apply_bluray_native_exception(ai_4k, bluray_1080p, "download")
+
+        # Exception should not trigger
+        assert result == "download"
+
+    def test_apply_bluray_native_exception_no_trigger_not_bluray(self):
+        """Test exception doesn't trigger for non-BluRay sources."""
+        webdl_1080p = ExistingQuality(
+            id="existing",
+            name="WEB-DL 1080p",
+            width=1920,
+            height=1080,
+            size_bytes=30 * 1024**3,
+            path="/path/movie.web-dl.mkv",
+            source_quality_tier="web-dl",  # Not BluRay
+            is_ai_upscale=False,
+        )
+
+        ai_4k = ExistingQuality(
+            id="proposed",
+            name="AI 4K",
+            width=3840,
+            height=2160,
+            size_bytes=15 * 1024**3,
+            path="/path/movie.topaz.mkv",
+            is_ai_upscale=True,
+        )
+
+        result = _apply_bluray_native_exception(ai_4k, webdl_1080p, "download")
+
+        # Exception should not trigger - not BluRay
+        assert result == "download"
+
+    def test_apply_bluray_native_exception_both_native(self):
+        """Test exception doesn't apply when both are native."""
+        item1 = ExistingQuality(
+            id="existing",
+            name="Native 1080p",
+            width=1920,
+            height=1080,
+            size_bytes=30 * 1024**3,
+            path="/path/movie1.mkv",
+            is_ai_upscale=False,
+        )
+
+        item2 = ExistingQuality(
+            id="proposed",
+            name="Native 4K",
+            width=3840,
+            height=2160,
+            size_bytes=15 * 1024**3,
+            path="/path/movie2.mkv",
+            is_ai_upscale=False,
+        )
+
+        result = _apply_bluray_native_exception(item2, item1, "download")
+
+        # No change - both native
+        assert result == "download"
+
+    def test_apply_smart_override_no_priorities(self):
+        """Test smart override with no language priorities."""
+        items = [
+            ExistingQuality(id="1", name="Item1", width=1920, height=1080),
+            ExistingQuality(id="2", name="Item2", width=3840, height=2160),
+        ]
+        sorted_items = items.copy()
+
+        result = _apply_smart_override_if_needed(items, sorted_items, None)
+
+        # Should return unchanged
+        assert result == sorted_items
+
+    def test_apply_smart_override_same_best_item(self):
+        """Test when language priority and quality agree."""
+        item1 = ExistingQuality(
+            id="1", name="Best", width=3840, height=2160,
+            audio_languages=["cs"], size_bytes=20*1024**3
+        )
+        item2 = ExistingQuality(
+            id="2", name="Worse", width=1920, height=1080,
+            audio_languages=["en"], size_bytes=10*1024**3
+        )
+
+        all_items = [item1, item2]
+        sorted_items = [item1, item2]  # Already sorted correctly
+
+        result = _apply_smart_override_if_needed(all_items, sorted_items, ["cs"])
+
+        # No override needed - same item is best
+        assert result == sorted_items

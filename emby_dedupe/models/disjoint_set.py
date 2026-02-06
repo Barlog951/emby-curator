@@ -1,7 +1,7 @@
 """
 DisjointSet data structure for efficiently grouping related items.
 """
-from typing import Dict, Union
+from typing import Dict
 
 
 class DisjointSet:
@@ -15,7 +15,7 @@ class DisjointSet:
         # Initially, each item is its own parent
         self.parent: Dict[str, str] = {}
 
-    def find(self, item: Union[str, dict]) -> str:
+    def find(self, item: str | dict) -> str:
         """
         Find the root parent of the item recursively.
         Uses path compression for optimization.
@@ -33,7 +33,7 @@ class DisjointSet:
             self.parent[item_id] = self.find(self.parent[item_id])  # Path compression
         return self.parent[item_id]
 
-    def union(self, set1: Union[str, dict], set2: Union[str, dict]) -> None:
+    def union(self, set1: str | dict, set2: str | dict) -> None:
         """
         Perform union of two sets represented by their root items.
 

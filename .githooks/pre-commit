@@ -1,0 +1,29 @@
+#!/bin/bash
+#
+# Pre-commit hook for Emby Dedupe
+# Enforces SonarQube quality gate before allowing commits
+#
+
+echo ""
+echo "🔒 Running pre-commit quality gate..."
+echo ""
+
+# Run SonarQube analysis (includes tests + quality gate check)
+if ! make sonar; then
+    echo ""
+    echo "❌ COMMIT REJECTED: Quality gate failed"
+    echo ""
+    echo "🚨 Quality gate failures must be fixed before committing:"
+    echo "   - Run 'make sonar-bugs' to see bug details"
+    echo "   - Run 'make sonar-critical' to see critical issues"
+    echo "   - Run 'make sonar-gate-check' to see quality gate status"
+    echo ""
+    echo "💡 To bypass (NOT RECOMMENDED): git commit --no-verify"
+    exit 1
+fi
+
+echo ""
+echo "✅ Quality gate passed - proceeding with commit"
+echo ""
+
+exit 0

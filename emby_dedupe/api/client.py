@@ -263,12 +263,70 @@ def ensure_authenticated_for_delete(
             client, base_url, username, password
         )
         logger.info("Authenticated for DELETE operations.")
-    except (EmbyServerConnectionError, Exception) as e:
+    except Exception as e:
         logger.error(f"Failed to authenticate for DELETE operations: {str(e)}")
         authenticated_token_for_delete = None
         authenticated_token_user_id = None
 
     return authenticated_token_for_delete, authenticated_token_user_id
+
+
+def _process_item_ids_and_libraries(item_ids: list) -> tuple:
+    """Process item IDs which may be dicts or strings, extract library names."""
+    processed_ids = []
+    library_names = {}  # Map item IDs to library names
+
+    for item in item_ids:
+        if isinstance(item, dict):
+            processed_ids.append(item["id"])
+            library_names[item["id"]] = item.get("library_name", "Unknown")
+        else:
+            processed_ids.append(item)
+            library_names[item] = "Unknown"
+
+    return processed_ids, library_names
+
+
+def _check_for_wanted_item_ids(item_ids: list) -> bool:
+    """Check if special wanted IDs are present in the list."""
+    wanted_ids = ["99424", "20131603"]
+    return any(id in wanted_ids for id in item_ids) or any(
+        isinstance(item, dict) and item.get("id") in wanted_ids for item in item_ids
+    )
+
+
+def _add_library_names_to_items(items: list, library_names: dict) -> None:
+    """Add library name to each item from the library names mapping."""
+    for item in items:
+        item_id = item.get("Id")
+        if item_id and item_id in library_names:
+            item["LibraryName"] = library_names[item_id]
+
+
+def _log_special_case_angels_demons(items: list, processed_ids: list, has_wanted_ids: bool) -> None:
+    """Log special case handling for Angels & Demons duplicate items."""
+    if not has_wanted_ids or "99424" not in processed_ids or "20131603" not in processed_ids:
+        return
+
+    logger.info("Found special case items - Angels & Demons duplicates")
+    # Look up the items
+    item1 = next((item for item in items if item.get("Id") == "99424"), None)
+    item2 = next((item for item in items if item.get("Id") == "20131603"), None)
+
+    if not (item1 and item2):
+        return
+
+    logger.info(f"Special case items found: {item1.get('Name')} and {item2.get('Name')}")
+
+    # Make sure they share provider IDs for deduplication
+    if "ProviderIds" not in item1 or "ProviderIds" not in item2:
+        return
+
+    item1_providers = item1["ProviderIds"]
+    item2_providers = item2["ProviderIds"]
+
+    if "Imdb" in item1_providers and "Imdb" in item2_providers:
+        logger.info(f"Special case IMDB IDs: {item1_providers['Imdb']} and {item2_providers['Imdb']}")
 
 
 def fetch_items_details(client: httpx.Client, base_url: str, item_ids: list) -> list:
@@ -284,20 +342,10 @@ def fetch_items_details(client: httpx.Client, base_url: str, item_ids: list) -> 
         list: A list of media items with detailed information.
     """
     # Process item IDs which may be dicts or strings
-    processed_ids = []
-    library_names = {}  # Map item IDs to library names
+    processed_ids, library_names = _process_item_ids_and_libraries(item_ids)
 
     # Check for specific item IDs we know should be duplicates
-    wanted_ids = ["99424", "20131603"]
-    has_wanted_ids = any(id in wanted_ids for id in item_ids) or any(isinstance(item, dict) and item.get("id") in wanted_ids for item in item_ids)
-
-    for item in item_ids:
-        if isinstance(item, dict):
-            processed_ids.append(item["id"])
-            library_names[item["id"]] = item.get("library_name", "Unknown")
-        else:
-            processed_ids.append(item)
-            library_names[item] = "Unknown"
+    has_wanted_ids = _check_for_wanted_item_ids(item_ids)
 
     # Comma-separated item IDs for the query parameter
     ids_param = ",".join(processed_ids)
@@ -316,30 +364,73 @@ def fetch_items_details(client: httpx.Client, base_url: str, item_ids: list) -> 
                 logger.debug(f"DateCreated example: {items[0]['DateCreated']}")
 
         # Add the library name to each item
-        for item in items:
-            item_id = item.get("Id")
-            if item_id and item_id in library_names:
-                item["LibraryName"] = library_names[item_id]
+        _add_library_names_to_items(items, library_names)
 
         # Special handling for specific item IDs we know should be duplicates
-        if has_wanted_ids and "99424" in processed_ids and "20131603" in processed_ids:
-            logger.info("Found special case items - Angels & Demons duplicates")
-            # Look up the items
-            item1 = next((item for item in items if item.get("Id") == "99424"), None)
-            item2 = next((item for item in items if item.get("Id") == "20131603"), None)
-            if item1 and item2:
-                logger.info(f"Special case items found: {item1.get('Name')} and {item2.get('Name')}")
-                # Make sure they share provider IDs for deduplication
-                if "ProviderIds" in item1 and "ProviderIds" in item2:
-                    item1_providers = item1["ProviderIds"]
-                    item2_providers = item2["ProviderIds"]
-                    if "Imdb" in item1_providers and "Imdb" in item2_providers:
-                        logger.info(f"Special case IMDB IDs: {item1_providers['Imdb']} and {item2_providers['Imdb']}")
+        _log_special_case_angels_demons(items, processed_ids, has_wanted_ids)
 
         return items
     except (httpx.HTTPStatusError, httpx.RequestError) as e:
         logger.error(f"Failed to fetch details for items: {e}")
         return []
+
+
+def _fetch_total_item_count(
+    client: httpx.Client, base_url: str, library_id: str
+) -> int:
+    """Fetch total number of items in a library.
+
+    Args:
+        client: The httpx client.
+        base_url: Base URL of the Emby server.
+        library_id: The library ID to query.
+
+    Returns:
+        Total number of items.
+
+    Raises:
+        httpx.HTTPStatusError, httpx.RequestError: If fetch fails.
+    """
+    url = f"{base_url}/Items?StartIndex=0&Limit=0&Recursive=True&ParentId={library_id}&Fields=ProviderIds&Is3D=False&IsFolder=False"
+    response = make_http_request(client, "GET", url)
+    total_items = response.json().get("TotalRecordCount", 0)
+    logger.debug(f"Total media items to fetch: {total_items}")
+    return total_items
+
+
+def _fetch_paginated_items(
+    client: httpx.Client,
+    base_url: str,
+    library_id: str,
+    total_items: int,
+    provider_tables: dict,
+) -> None:
+    """Fetch items in paginated manner and build provider tables.
+
+    Args:
+        client: The httpx client.
+        base_url: Base URL of the Emby server.
+        library_id: The library ID.
+        total_items: Total number of items to fetch.
+        provider_tables: Provider tables dict to populate (modified in-place).
+
+    Raises:
+        httpx.HTTPStatusError, httpx.RequestError: If fetch fails.
+    """
+    start_index = 0
+    progress_bar = tqdm(total=total_items, desc="Fetching media items", unit="item")
+
+    try:
+        while start_index < total_items:
+            url = f"{base_url}/Items?StartIndex={start_index}&Limit={PAGE_SIZE}&Recursive=True&ParentId={library_id}&Fields=ProviderIds,SeriesName,ParentIndexNumber,IndexNumber&Is3D=False&IsFolder=False"
+            response = make_http_request(client, "GET", url)
+            media_items = response.json().get("Items", [])
+            build_provider_id_tables(media_items, provider_tables)
+            processed_items = len(media_items)
+            start_index += processed_items
+            progress_bar.update(processed_items)
+    finally:
+        progress_bar.close()
 
 
 def delete_item(
@@ -369,7 +460,7 @@ def delete_item(
     deletion_status = {"id": item_id, "status": "not_attempted", "error": None}
     if doit:
         # Ensure authentication is in place for DELETE operations
-        auth_token, user_id = ensure_authenticated_for_delete(
+        auth_token, _ = ensure_authenticated_for_delete(
             client, base_url, username, password
         )
         if auth_token is None:
@@ -409,7 +500,7 @@ def delete_item(
 
 def fetch_and_process_media_items(
     client: httpx.Client, base_url: str, library_id: str, library_name: str = "Unknown"
-) -> Tuple[dict, dict, dict]:
+) -> dict:
     """
     Fetches media items in a paginated manner and builds the provider ID tables.
 
@@ -420,46 +511,71 @@ def fetch_and_process_media_items(
         library_name (str, optional): The name of the library for reporting. Defaults to "Unknown".
 
     Returns:
-        Tuple[dict, dict, dict]: Three dictionaries (imdb, tvdb, tmdb) containing provider ID mappings.
+        dict: A dictionary with keys 'imdb', 'tvdb', 'tmdb', and 'library_name' containing provider ID mappings.
     """
-    start_index = 0  # Starting index for pagination
-
     provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "library_name": library_name}
 
-    # Fetch the total number of items
-    url = f"{base_url}/Items?StartIndex=0&Limit=0&Recursive=True&ParentId={library_id}&Fields=ProviderIds&Is3D=False&IsFolder=False"
-    try:
-        response = make_http_request(client, "GET", url)
-        total_items = response.json().get("TotalRecordCount", 0)
-        logger.debug(f"Total media items to fetch: {total_items}")
-    except (httpx.HTTPStatusError, httpx.RequestError) as e:
-        logger.error("Failed to fetch the total number of media items.")
-        raise e
+    # Fetch total item count
+    total_items = _fetch_total_item_count(client, base_url, library_id)
 
-    # Initialize progress bar
-    progress_bar = tqdm(total=total_items, desc="Fetching media items", unit="item")
+    # Fetch all items in pages and build provider tables
+    _fetch_paginated_items(client, base_url, library_id, total_items, provider_tables)
 
-    try:
-        # Continue fetching until all pages are processed
-        while start_index < total_items:
-            url = f"{base_url}/Items?StartIndex={start_index}&Limit={PAGE_SIZE}&Recursive=True&ParentId={library_id}&Fields=ProviderIds,SeriesName,ParentIndexNumber,IndexNumber&Is3D=False&IsFolder=False"
-            try:
-                response = make_http_request(client, "GET", url)
-                media_items = response.json().get("Items", [])
-                build_provider_id_tables(media_items, provider_tables)
-                processed_items = len(media_items)  # Get the number of items processed
-                start_index += processed_items
-                progress_bar.update(processed_items)  # Update progress bar
-            except (httpx.HTTPStatusError, httpx.RequestError) as e:
-                logger.error(
-                    f"Error fetching page of media items starting at index {start_index}"
-                )
-                raise e  # Raise the exception to indicate failure in the higher-level process
-    finally:
-        progress_bar.close()  # Ensure the progress bar is closed after processing is complete
-
-    # Return provider ID tables
     return provider_tables
+
+
+def _create_item_info(item: dict, library_name: str, provider_id: str) -> dict:
+    """Create item info dict with TV series metadata if applicable.
+
+    Args:
+        item: Media item from Emby.
+        library_name: Name of the library.
+        provider_id: Provider ID value for this item.
+
+    Returns:
+        Dict with id, library_name, and TV metadata if applicable.
+    """
+    item_info = {
+        "id": item["Id"],
+        "library_name": library_name,
+        "provider_id": provider_id,
+    }
+
+    # Add TV series metadata if available
+    if item.get("SeriesName"):
+        item_info["is_episode"] = True
+        item_info["series_name"] = item.get("SeriesName")
+        item_info["season_number"] = item.get("ParentIndexNumber")
+        item_info["episode_number"] = item.get("IndexNumber")
+    else:
+        item_info["is_episode"] = False
+
+    return item_info
+
+
+def _process_provider_id(provider, table_name, id_value, provider_tables, item, library_name, ignored_imdb_id):
+    """
+    Process a single provider ID and add to tables.
+
+    Args:
+        provider: Provider name (imdb, tvdb, tmdb).
+        table_name: Table name in provider_tables.
+        id_value: Provider ID value.
+        provider_tables: Dictionary of provider tables.
+        item: Media item.
+        library_name: Library name.
+        ignored_imdb_id: IMDb ID to ignore.
+    """
+    # Skip the IMDb ID if it is the one we're ignoring
+    if provider == "imdb" and id_value == ignored_imdb_id:
+        return
+
+    if id_value:
+        if id_value not in provider_tables[table_name]:
+            provider_tables[table_name][id_value] = []
+
+        item_info = _create_item_info(item, library_name, id_value)
+        provider_tables[table_name][id_value].append(item_info)
 
 
 def build_provider_id_tables(media_items: list, provider_tables: dict):
@@ -490,30 +606,4 @@ def build_provider_id_tables(media_items: list, provider_tables: dict):
             ("tmdb", "tmdb"),
         ]:
             id_value = provider_ids_lower.get(provider)
-
-            # Skip the IMDb ID if it is the one we're ignoring
-            if provider == "imdb" and id_value == IGNORED_IMDB_ID:
-                continue
-
-            if id_value:
-                if id_value not in provider_tables[table_name]:
-                    provider_tables[table_name][id_value] = []
-                item_info = {
-                    "id": item["Id"],
-                    "library_name": library_name
-                }
-
-                # Add TV series metadata if available
-                if item.get("SeriesName"):
-                    item_info["is_episode"] = True
-                    item_info["series_name"] = item.get("SeriesName")
-                    # Emby API uses ParentIndexNumber for season, IndexNumber for episode
-                    item_info["season_number"] = item.get("ParentIndexNumber")
-                    item_info["episode_number"] = item.get("IndexNumber")
-                    # Store the provider specific ID that was used to identify this as a duplicate
-                    item_info["provider_id"] = id_value
-                else:
-                    item_info["is_episode"] = False
-                    item_info["provider_id"] = id_value
-
-                provider_tables[table_name][id_value].append(item_info)
+            _process_provider_id(provider, table_name, id_value, provider_tables, item, library_name, IGNORED_IMDB_ID)

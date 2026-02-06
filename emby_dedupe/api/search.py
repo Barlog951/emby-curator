@@ -14,6 +14,9 @@ import httpx
 
 from emby_dedupe.utils.logging import logger
 
+# Standard fields to fetch when searching for media items
+SEARCH_FIELDS = "ProviderIds,Path,MediaStreams,DateCreated,DateModified,PremiereDate,ProductionYear,Tags,Overview,ParentId,SeriesName,ParentIndexNumber,IndexNumber"
+
 
 def normalize_title(title: str) -> str:
     """Normalize a title for comparison.
@@ -90,7 +93,7 @@ def search_by_name(
         "api_key": api_key,
         "SearchTerm": name,
         "Recursive": "true",
-        "Fields": "ProviderIds,Path,MediaStreams,DateCreated,DateModified,PremiereDate,ProductionYear,Tags,Overview,ParentId,SeriesName,ParentIndexNumber,IndexNumber",
+        "Fields": SEARCH_FIELDS,
     }
 
     if media_type:
@@ -160,7 +163,7 @@ def search_by_provider_id(
         "api_key": api_key,
         f"Any{provider_type}Id": provider_id,
         "Recursive": "true",
-        "Fields": "ProviderIds,Path,MediaStreams,DateCreated,DateModified,PremiereDate,ProductionYear,Tags,Overview,ParentId,SeriesName,ParentIndexNumber,IndexNumber",
+        "Fields": SEARCH_FIELDS,
     }
 
     # Note: Emby API doesn't support comma-separated ParentId in search
@@ -246,7 +249,7 @@ def search_tv_episode(
             "ParentId": series_id,
             "IncludeItemTypes": "Episode",
             "Recursive": "true",
-            "Fields": "ProviderIds,Path,MediaStreams,DateCreated,DateModified,PremiereDate,ProductionYear,Tags,Overview,ParentId,SeriesName,ParentIndexNumber,IndexNumber",
+            "Fields": SEARCH_FIELDS,
         }
 
         response = client.get(url, params=episode_params)
@@ -384,6 +387,89 @@ def _search_provider_id_across_libraries(
     return all_results
 
 
+def _try_provider_id_searches(
+    client: httpx.Client,
+    host: str,
+    api_key: str,
+    imdb: Optional[str],
+    tmdb: Optional[str],
+    tvdb: Optional[str],
+    library_ids: Optional[list[str]],
+) -> Optional[list[dict[str, Any]]]:
+    """Try searching by provider IDs (IMDB, TMDB, TVDB).
+
+    Args:
+        client: HTTP client.
+        host: Emby server URL.
+        api_key: Emby API key.
+        imdb: IMDB ID.
+        tmdb: TMDB ID.
+        tvdb: TVDB ID.
+        library_ids: Library IDs to search in.
+
+    Returns:
+        Results if found, None otherwise.
+    """
+    if imdb:
+        results = _search_provider_id_across_libraries(
+            client, host, api_key, imdb, "Imdb", library_ids
+        )
+        if results:
+            return results
+
+    if tmdb:
+        results = _search_provider_id_across_libraries(
+            client, host, api_key, tmdb, "Tmdb", library_ids
+        )
+        if results:
+            return results
+
+    if tvdb:
+        results = _search_provider_id_across_libraries(
+            client, host, api_key, tvdb, "Tvdb", library_ids
+        )
+        if results:
+            return results
+
+    return None
+
+
+def _search_by_name_with_type(
+    client: httpx.Client,
+    host: str,
+    api_key: str,
+    name: str,
+    year: Optional[int],
+    season: Optional[int],
+    episode: Optional[int],
+    library_ids: Optional[list[str]],
+) -> list[dict[str, Any]]:
+    """Search by name with appropriate media type.
+
+    Args:
+        client: HTTP client.
+        host: Emby server URL.
+        api_key: Emby API key.
+        name: Media name.
+        year: Release year.
+        season: Season number (for TV).
+        episode: Episode number (for TV).
+        library_ids: Library IDs to search in.
+
+    Returns:
+        List of matching media items.
+    """
+    if season is not None and episode is not None:
+        # TV episode search
+        return search_tv_episode(client, host, api_key, name, season, episode, library_ids)
+    elif season is not None:
+        # Search for series, then filter by season
+        return search_by_name(client, host, api_key, name, year, "Series", library_ids)
+    else:
+        # Movie or general search
+        return search_by_name(client, host, api_key, name, year, None, library_ids)
+
+
 def search_media(
     client: httpx.Client,
     host: str,
@@ -425,41 +511,17 @@ def search_media(
             return []
 
     # Search by provider ID first (most accurate)
-    # For multiple libraries, search each individually to avoid timeouts
     if not skip_provider_search:
-        if imdb:
-            results = _search_provider_id_across_libraries(
-                client, host, api_key, imdb, "Imdb", library_ids
-            )
-            if results:
-                return results
-
-        if tmdb:
-            results = _search_provider_id_across_libraries(
-                client, host, api_key, tmdb, "Tmdb", library_ids
-            )
-            if results:
-                return results
-
-        if tvdb:
-            results = _search_provider_id_across_libraries(
-                client, host, api_key, tvdb, "Tvdb", library_ids
-            )
-            if results:
-                return results
-
-    # Search by name
-    if name:
-        # Determine media type
-        if season is not None and episode is not None:
-            # TV episode search
-            return search_tv_episode(client, host, api_key, name, season, episode, library_ids)
-        elif season is not None:
-            # Search for series, then filter by season
-            results = search_by_name(client, host, api_key, name, year, "Series", library_ids)
+        results = _try_provider_id_searches(
+            client, host, api_key, imdb, tmdb, tvdb, library_ids
+        )
+        if results:
             return results
-        else:
-            # Movie or general search
-            return search_by_name(client, host, api_key, name, year, None, library_ids)
+
+    # Search by name if no provider ID results
+    if name:
+        return _search_by_name_with_type(
+            client, host, api_key, name, year, season, episode, library_ids
+        )
 
     return []

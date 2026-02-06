@@ -7,7 +7,16 @@ from unittest.mock import patch, Mock, MagicMock
 from emby_dedupe.api.metadata import (
     get_quality_description,
     rate_media_items,
-    get_image_url
+    get_image_url,
+    _format_file_size,
+    _parse_iso_date,
+    _resolve_date_added,
+    _extract_premiere_date,
+    _build_tv_metadata,
+    _try_parse_date_field,
+    _try_fallback_date_fields,
+    _try_filesystem_date,
+    _try_any_date_field,
 )
 
 
@@ -418,3 +427,285 @@ class TestMetadata:
         assert ai_result["quality_description"]["is_ai_upscale"] is True
         assert normal_result["quality_description"]["is_ai_upscale"] is False
 
+
+# ========== SAFETY NET TESTS FOR get_quality_description (Grade-F Function) ==========
+
+class TestGetQualityDescriptionSafetyNet:
+    """Safety net tests for get_quality_description (CC 100) to protect Phase 3 refactoring."""
+
+    def test_get_quality_multiple_video_streams(self):
+        """Test handling of multiple video streams (picks first)."""
+        item = {
+            "Id": "123",
+            "MediaStreams": [
+                {"Type": "Video", "Codec": "h265", "Height": 2160, "Width": 3840, "BitRate": 20000000},
+                {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920, "BitRate": 8000000},
+                {"Type": "Audio", "Codec": "aac", "Channels": 6, "BitRate": 384000},
+            ],
+            "Size": 10000000000,
+        }
+
+        result = get_quality_description(item)
+
+        # Should use first video stream
+        assert result["video"]["codec"] == "h265"
+        assert "video" in result
+
+    def test_get_quality_unusual_codecs(self):
+        """Test handling of unusual/modern codecs."""
+        item = {
+            "Id": "123",
+            "MediaStreams": [
+                {"Type": "Video", "Codec": "av1", "Height": 2160, "Width": 3840, "BitRate": 15000000},
+                {"Type": "Audio", "Codec": "opus", "Channels": 6, "BitRate": 256000, "Language": "en"},
+            ],
+            "Size": 8000000000,
+        }
+
+        result = get_quality_description(item)
+
+        assert result["video"]["codec"] == "av1"
+        assert result["audio"]["codec"] == "opus"
+
+    def test_get_quality_zero_bitrate(self):
+        """Test handling of zero/missing bitrate."""
+        item = {
+            "Id": "123",
+            "MediaStreams": [
+                {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920, "BitRate": 0},
+                {"Type": "Audio", "Codec": "aac", "Channels": 2},
+            ],
+            "Size": 5000000000,
+        }
+
+        result = get_quality_description(item)
+
+        # Should handle zero bitrate gracefully
+        assert "video" in result
+        assert result["video"]["bitrate"] == 0
+
+    def test_get_quality_complex_date_parsing(self):
+        """Test complex date field fallback logic."""
+        item = {
+            "Id": "123",
+            "MediaStreams": [
+                {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920},
+            ],
+            "Size": 5000000000,
+            "ProductionYear": 2024,  # Fallback date field
+        }
+
+        result = get_quality_description(item)
+
+        # Should include date_added from ProductionYear fallback
+        assert "date_added" in result
+        assert "2024" in result["date_added"]
+
+
+class TestMetadataHelpers:
+    """Tests for metadata helper functions extracted in Phase 3."""
+
+    def test_format_file_size_zero(self):
+        """Test formatting zero bytes."""
+        assert _format_file_size(0) == "unknown"
+
+    def test_format_file_size_bytes(self):
+        """Test formatting bytes."""
+        assert _format_file_size(500) == "500 bytes"
+
+    def test_format_file_size_kb(self):
+        """Test formatting kilobytes."""
+        result = _format_file_size(2048)  # 2 KB
+        assert "KB" in result
+        assert "2.00" in result
+
+    def test_format_file_size_mb(self):
+        """Test formatting megabytes."""
+        result = _format_file_size(5242880)  # 5 MB
+        assert "MB" in result
+        assert "5.00" in result
+
+    def test_format_file_size_gb(self):
+        """Test formatting gigabytes."""
+        result = _format_file_size(5368709120)  # 5 GB
+        assert "GB" in result
+        assert "5.00" in result
+
+    def test_parse_iso_date_with_time(self):
+        """Test parsing ISO date with time."""
+        result = _parse_iso_date("2024-01-15T14:30:45.123Z", include_time=True)
+        assert result == "2024-01-15 14:30"
+
+    def test_parse_iso_date_without_time(self):
+        """Test parsing ISO date without time."""
+        result = _parse_iso_date("2024-01-15T14:30:45.123Z", include_time=False)
+        assert result == "2024-01-15"
+
+    def test_parse_iso_date_invalid(self):
+        """Test parsing invalid ISO date."""
+        assert _parse_iso_date("not-a-date", include_time=True) is None
+        assert _parse_iso_date("2024-01-15", include_time=True) is None  # No T separator
+
+    def test_parse_iso_date_malformed(self):
+        """Test parsing malformed ISO date."""
+        assert _parse_iso_date("2024T14:30:45", include_time=True) is None  # Invalid date part
+
+    def test_resolve_date_added_from_datecreated(self):
+        """Test resolving date from DateCreated field."""
+        item = {"DateCreated": "2024-01-15T14:30:45.123Z"}
+        result = _resolve_date_added(item)
+        assert "2024-01-15 14:30" in result
+
+    def test_resolve_date_added_from_datemodified(self):
+        """Test resolving date from DateModified when DateCreated missing."""
+        item = {"DateModified": "2024-02-20T10:15:30.000Z"}
+        result = _resolve_date_added(item)
+        assert "2024-02-20 10:15" in result
+
+    def test_resolve_date_added_from_production_year(self):
+        """Test resolving date from ProductionYear."""
+        item = {"ProductionYear": 2023}
+        result = _resolve_date_added(item)
+        assert "2023-01-01 (year only)" in result
+
+    def test_resolve_date_added_unknown(self):
+        """Test resolving date when no date fields available."""
+        item = {"Id": "123", "Name": "Test"}
+        result = _resolve_date_added(item)
+        assert result == "unknown"
+
+    @patch('os.path.exists')
+    @patch('os.path.getmtime')
+    def test_resolve_date_added_from_filesystem(self, mock_getmtime, mock_exists):
+        """Test resolving date from filesystem modification time."""
+        mock_exists.return_value = True
+        mock_getmtime.return_value = 1704211200  # 2024-01-02 12:00:00 UTC
+
+        item = {"Path": "/fake/path/movie.mkv"}
+        result = _resolve_date_added(item)
+        assert "file modified time" in result
+
+    def test_extract_premiere_date_valid(self):
+        """Test extracting premiere date with valid data."""
+        item = {"PremiereDate": "2024-03-15T00:00:00.000Z"}
+        result = _extract_premiere_date(item)
+        assert result == "2024-03-15"
+
+    def test_extract_premiere_date_missing(self):
+        """Test extracting premiere date when field missing."""
+        item = {"Id": "123"}
+        result = _extract_premiere_date(item)
+        assert result == "unknown"
+
+    def test_extract_premiere_date_non_iso(self):
+        """Test extracting premiere date with non-ISO format."""
+        item = {"PremiereDate": "2024"}
+        result = _extract_premiere_date(item)
+        assert result == "2024"
+
+    def test_build_tv_metadata_series(self):
+        """Test building TV metadata for episode."""
+        item = {
+            "SeriesName": "Test Series",
+            "ParentIndexNumber": 2,
+            "IndexNumber": 5
+        }
+        quality_desc = {}
+
+        _build_tv_metadata(item, quality_desc)
+
+        assert quality_desc["is_episode"] is True
+        assert quality_desc["series_name"] == "Test Series"
+        assert quality_desc["season_number"] == 2
+        assert quality_desc["episode_number"] == 5
+        assert quality_desc["episode_info"] == "S2E5"
+
+    def test_build_tv_metadata_movie(self):
+        """Test building TV metadata for non-episode."""
+        item = {"Name": "Movie"}
+        quality_desc = {}
+
+        _build_tv_metadata(item, quality_desc)
+
+        assert quality_desc["is_episode"] is False
+
+    def test_build_tv_metadata_incomplete(self):
+        """Test building TV metadata with incomplete episode info."""
+        item = {
+            "SeriesName": "Test Series",
+            "ParentIndexNumber": "unknown",
+            "IndexNumber": 5
+        }
+        quality_desc = {}
+
+        _build_tv_metadata(item, quality_desc)
+
+        assert quality_desc["is_episode"] is True
+        assert quality_desc["episode_info"] == "Unknown episode"
+
+    def test_try_parse_date_field_success(self):
+        """Test parsing date from a specific field."""
+        item = {"DateCreated": "2024-01-15T14:30:45.123Z"}
+        result = _try_parse_date_field(item, "DateCreated", include_time=True)
+        assert result == "2024-01-15 14:30"
+
+    def test_try_parse_date_field_missing(self):
+        """Test parsing date from missing field."""
+        item = {"OtherField": "value"}
+        result = _try_parse_date_field(item, "DateCreated")
+        assert result is None
+
+    def test_try_parse_date_field_non_iso(self):
+        """Test parsing non-ISO date."""
+        item = {"DateCreated": "2024-01-15"}
+        result = _try_parse_date_field(item, "DateCreated")
+        assert result == "2024-01-15"
+
+    def test_try_fallback_date_fields_production_year(self):
+        """Test fallback to ProductionYear."""
+        item = {"ProductionYear": 2023}
+        result = _try_fallback_date_fields(item)
+        assert "2023-01-01 (year only)" in result
+
+    def test_try_fallback_date_fields_premiere_date(self):
+        """Test fallback to PremiereDate."""
+        item = {"PremiereDate": "2024-03-15T00:00:00.000Z"}
+        result = _try_fallback_date_fields(item)
+        assert result == "2024-03-15"
+
+    def test_try_fallback_date_fields_none_found(self):
+        """Test when no fallback fields available."""
+        item = {"Name": "Test"}
+        result = _try_fallback_date_fields(item)
+        assert result is None
+
+    @patch('os.path.exists')
+    @patch('os.path.getmtime')
+    def test_try_filesystem_date_success(self, mock_getmtime, mock_exists):
+        """Test getting date from filesystem."""
+        mock_exists.return_value = True
+        mock_getmtime.return_value = 1704211200  # 2024-01-02 12:00:00 UTC
+
+        item = {"Path": "/fake/path/movie.mkv"}
+        result = _try_filesystem_date(item)
+        assert result is not None
+        assert "file modified time" in result
+
+    def test_try_filesystem_date_no_path(self):
+        """Test filesystem date when no path."""
+        item = {"Name": "Test"}
+        result = _try_filesystem_date(item)
+        assert result is None
+
+    def test_try_any_date_field_found(self):
+        """Test finding alternative date field."""
+        item = {"CustomDateField": "2024-01-15"}
+        result = _try_any_date_field(item)
+        assert "2024-01-15" in result
+        assert "from CustomDateField" in result
+
+    def test_try_any_date_field_none_found(self):
+        """Test when no alternative date fields."""
+        item = {"Name": "Test", "Size": 1000}
+        result = _try_any_date_field(item)
+        assert result is None

@@ -52,6 +52,50 @@ def format_individual_item(item: Dict[str, Any], base_url: str, decision: Dict[s
     return f"{name_match_emoji} {item_link} {truncate_string(item['name'],10)}{status_emoji} {error_message_string}"
 
 
+def _format_provider_exclusions(buffer: io.StringIO, excluded_ids: List[str], stats: Dict[str, Any]) -> None:
+    """Format provider ID exclusion information.
+
+    Args:
+        buffer: StringIO buffer to write to.
+        excluded_ids: List of excluded provider IDs.
+        stats: Statistics dictionary.
+    """
+    buffer.write(f"- **Provider IDs excluded from deduplication**: {', '.join(excluded_ids)}\n")
+
+    # Show the excluded titles if we have them
+    excluded_titles = stats.get("excluded_titles", {})
+    excluded_groups_count = stats.get("excluded_groups_count", 0)
+
+    if excluded_groups_count > 0:
+        buffer.write(f"- **Duplicate groups excluded**: {excluded_groups_count}\n")
+
+    if excluded_titles:
+        buffer.write("- **Excluded titles**:\n")
+        for provider_id, item in sorted(excluded_titles.items()):
+            if isinstance(item, dict):
+                title = item.get("title", provider_id)
+                buffer.write(f"  - {title} ({provider_id})\n")
+            else:
+                buffer.write(f"  - {item} ({provider_id})\n")
+
+
+def _format_term_exclusions(buffer: io.StringIO, stats: Dict[str, Any]) -> None:
+    """Format exclusion term information.
+
+    Args:
+        buffer: StringIO buffer to write to.
+        stats: Statistics dictionary.
+    """
+    excluded_count = stats.get('excluded_groups', 0)
+    excluded_items = stats.get('excluded_items', 0)
+
+    buffer.write(f"- **Groups excluded from deduplication**: {excluded_count} ({excluded_items} items)\n")
+
+    # Get exclusion terms from stats
+    if stats.get('excluded_terms'):
+        buffer.write(f"- **Exclusion terms used**: {', '.join(sorted(stats.get('excluded_terms', [])))}\n")
+
+
 def format_statistics_section(stats: Dict[str, Any], excluded_ids: Optional[List[str]] = None) -> str:
     """
     Format statistics into a markdown string.
@@ -74,34 +118,11 @@ def format_statistics_section(stats: Dict[str, Any], excluded_ids: Optional[List
 
         # Exclusion info - Provider IDs
         if excluded_ids and len(excluded_ids) > 0:
-            buffer.write(f"- **Provider IDs excluded from deduplication**: {', '.join(excluded_ids)}\n")
-
-            # Show the excluded titles if we have them
-            excluded_titles = stats.get("excluded_titles", {})
-            excluded_groups_count = stats.get("excluded_groups_count", 0)
-
-            if excluded_groups_count > 0:
-                buffer.write(f"- **Duplicate groups excluded**: {excluded_groups_count}\n")
-
-            if excluded_titles:
-                buffer.write("- **Excluded titles**:\n")
-                for provider_id, item in sorted(excluded_titles.items()):
-                    if isinstance(item, dict):
-                        title = item.get("title", provider_id)
-                        buffer.write(f"  - {title} ({provider_id})\n")
-                    else:
-                        buffer.write(f"  - {item} ({provider_id})\n")
+            _format_provider_exclusions(buffer, excluded_ids, stats)
 
         # Exclusion info - Exclusion Terms
         if stats.get('excluded_groups', 0) > 0:
-            excluded_count = stats.get('excluded_groups', 0)
-            excluded_items = stats.get('excluded_items', 0)
-
-            buffer.write(f"- **Groups excluded from deduplication**: {excluded_count} ({excluded_items} items)\n")
-
-            # Get exclusion terms from stats
-            if stats.get('excluded_terms'):
-                buffer.write(f"- **Exclusion terms used**: {', '.join(sorted(stats.get('excluded_terms', [])))}\n")
+            _format_term_exclusions(buffer, stats)
         buffer.write("\n")
 
         # Deletion status
@@ -121,6 +142,71 @@ def format_statistics_section(stats: Dict[str, Any], excluded_ids: Optional[List
         return buffer.getvalue()
 
 
+def _extract_metadata_info(metadata: Optional[Dict[str, Any]], stats: Dict[str, Any]) -> tuple:
+    """Extract metadata information and update stats."""
+    excluded_ids = None
+    excluded_titles = {}
+    excluded_groups_count = 0
+
+    if metadata:
+        excluded_ids = metadata.get("excluded_ids", [])
+        excluded_titles = metadata.get("excluded_titles", {})
+        excluded_groups_count = metadata.get("excluded_groups_count", 0)
+
+        # Add the excluded information to the stats dictionary for reporting
+        stats["excluded_titles"] = excluded_titles
+        stats["excluded_groups_count"] = excluded_groups_count
+
+    return excluded_ids, excluded_titles, excluded_groups_count
+
+
+def _validate_decision(decision: Dict[str, Any]) -> bool:
+    """Validate that a decision has required fields."""
+    if not decision.get("keep"):
+        logger.debug("Skipping decision with no 'keep' item")
+        return False
+    if "id" not in decision.get("keep", {}):
+        logger.debug(f"Skipping decision with no ID in keep item: {decision.get('keep')}")
+        return False
+    if not decision.get("delete"):
+        logger.debug("Skipping decision with no items to delete")
+        return False
+    return True
+
+
+def _format_title_for_episode(keep: Dict[str, Any]) -> str:
+    """Format title for TV episode with series info."""
+    title = truncate_string(keep["name"], 15)
+    if keep.get("is_episode") and keep.get("series_name"):
+        series_info = keep.get("series_name", "")
+        season = keep.get("season_number", "")
+        episode = keep.get("episode_number", "")
+
+        if season and episode:
+            title = f"{series_info} S{season}E{episode}"
+        else:
+            title = f"{series_info} - {title}"
+
+    return title
+
+
+def _build_table_row(decision: Dict[str, Any], base_url: str) -> Dict[str, str]:
+    """Build a single table row from a decision."""
+    keep = decision["keep"]
+    title = _format_title_for_episode(keep)
+
+    return {
+        "ID": f"[{keep['id']}]({base_url}/web/index.html#!/item?id={keep['id']}&serverId={keep['serverid']})",
+        "Title": title,
+        "Codec": keep["quality_description"].get("video", {}).get("codec", "unknown"),
+        "Size": str(keep["quality_description"]["size"]),
+        "ITEMS_TO_DELETE_HEADER": "<br>".join(
+            format_individual_item(item, base_url, decision)
+            for item in decision["delete"]
+        ),
+    }
+
+
 def format_markdown_table(base_url: str, decisions: List[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None) -> str:
     """
     Efficiently formats the decisions into a markdown table.
@@ -136,35 +222,11 @@ def format_markdown_table(base_url: str, decisions: List[Dict[str, Any]], metada
     # Calculate statistics
     stats = calculate_report_statistics(decisions)
 
-    # Extract metadata if provided
-    excluded_ids = None
-    excluded_titles = {}
-    excluded_groups_count = 0
-
-    if metadata:
-        excluded_ids = metadata.get("excluded_ids", [])
-        excluded_titles = metadata.get("excluded_titles", {})
-        excluded_groups_count = metadata.get("excluded_groups_count", 0)
-
-        # Add the excluded information to the stats dictionary for reporting
-        stats["excluded_titles"] = excluded_titles
-        stats["excluded_groups_count"] = excluded_groups_count
+    # Extract metadata if provided (only using excluded_ids)
+    excluded_ids, _excluded_groups_count, _excluded_titles = _extract_metadata_info(metadata, stats)
 
     # Filter decisions to only valid ones
-    valid_decisions = []
-
-    for decision in decisions:
-        # Regular validation for decisions
-        if not decision.get("keep"):
-            logger.debug("Skipping decision with no 'keep' item")
-            continue
-        if "id" not in decision.get("keep", {}):
-            logger.debug(f"Skipping decision with no ID in keep item: {decision.get('keep')}")
-            continue
-        if not decision.get("delete"):
-            logger.debug("Skipping decision with no items to delete")
-            continue
-        valid_decisions.append(decision)
+    valid_decisions = [d for d in decisions if _validate_decision(d)]
 
     logger.debug(f"Found {len(valid_decisions)} valid decisions out of {len(decisions)} total")
 
@@ -177,30 +239,7 @@ def format_markdown_table(base_url: str, decisions: List[Dict[str, Any]], metada
     # Collect row entries, this is not memory-intensive - using with context manager
     with tqdm(total=len(valid_decisions), desc="Preparing result table", unit="row") as progress_bar_data:
         for decision in valid_decisions:
-            keep = decision["keep"]
-
-            # Check if item is a TV episode
-            title = truncate_string(keep["name"], 15)
-            if keep.get("is_episode") and keep.get("series_name"):
-                series_info = keep.get("series_name", "")
-                season = keep.get("season_number", "")
-                episode = keep.get("episode_number", "")
-
-                if season and episode:
-                    title = f"{series_info} S{season}E{episode}"
-                else:
-                    title = f"{series_info} - {title}"
-
-            row = {
-                "ID": f"[{keep['id']}]({base_url}/web/index.html#!/item?id={keep['id']}&serverId={keep['serverid']})",
-                "Title": title,
-                "Codec": keep["quality_description"].get("video", {}).get("codec", "unknown"),
-                "Size": str(keep["quality_description"]["size"]),
-                "Items to Delete": "<br>".join(
-                    format_individual_item(item, base_url, decision)
-                    for item in decision["delete"]
-                ),
-            }
+            row = _build_table_row(decision, base_url)
             table_rows.append(row)
             progress_bar_data.update(1)
 
@@ -210,10 +249,10 @@ def format_markdown_table(base_url: str, decisions: List[Dict[str, Any]], metada
         "Title": max(len(row["Title"]) for row in table_rows) if table_rows else 0,
         "Codec": max(len(row["Codec"]) for row in table_rows) if table_rows else 0,
         "Size": max(len(row["Size"]) for row in table_rows) if table_rows else 0,
-        "Items to Delete": max(len(row["Items to Delete"]) for row in table_rows) if table_rows else 0,
+        "ITEMS_TO_DELETE_HEADER": max(len(row["ITEMS_TO_DELETE_HEADER"]) for row in table_rows) if table_rows else 0,
     }
 
-    headers = ["ID", "Title", "Codec", "Size", "Items to Delete"]
+    headers = ["ID", "Title", "Codec", "Size", "ITEMS_TO_DELETE_HEADER"]
 
     # Using StringIO to efficiently build the table
     with io.StringIO() as buffer:

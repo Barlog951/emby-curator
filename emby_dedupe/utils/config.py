@@ -196,6 +196,24 @@ class Config:
         )
 
     @classmethod
+    def _apply_cli_overrides(cls, config: 'Config', args) -> None:
+        """Apply CLI argument overrides to config (in-place)."""
+        if hasattr(args, 'host') and args.host:
+            config.host = args.host
+        if hasattr(args, 'api_key') and args.api_key:
+            config.api_key = args.api_key
+        if hasattr(args, 'library') and args.library:
+            config.libraries = args.library
+        if hasattr(args, 'lang_prio') and args.lang_prio:
+            config.lang_priorities = [lang.strip() for lang in args.lang_prio.split(',')]
+        if hasattr(args, 'exclude_ids') and args.exclude_ids:
+            config.exclude_ids = [i.strip() for i in args.exclude_ids.split(',')]
+        if hasattr(args, 'cache') and args.cache is not None:
+            config.cache_enabled = args.cache
+        if hasattr(args, 'all_libraries') and args.all_libraries:
+            config.libraries = None
+
+    @classmethod
     def from_cli_args(cls, args, **overrides) -> 'Config':
         """Create configuration from CLI arguments.
 
@@ -206,25 +224,8 @@ class Config:
         Returns:
             Config: Configuration object.
         """
-        # First load from config file
         config = cls.from_config_file()
-
-        # Override with CLI args
-        if hasattr(args, 'host') and args.host:
-            config.host = args.host
-        if hasattr(args, 'api_key') and args.api_key:
-            config.api_key = args.api_key
-        if hasattr(args, 'library') and args.library:
-            config.libraries = args.library
-        if hasattr(args, 'lang_prio') and args.lang_prio:
-            # Parse comma-separated language priorities
-            config.lang_priorities = [l.strip() for l in args.lang_prio.split(',')]
-        if hasattr(args, 'exclude_ids') and args.exclude_ids:
-            config.exclude_ids = [i.strip() for i in args.exclude_ids.split(',')]
-        if hasattr(args, 'cache') and args.cache is not None:
-            config.cache_enabled = args.cache
-        if hasattr(args, 'all_libraries') and args.all_libraries:
-            config.libraries = None  # None means all libraries
+        cls._apply_cli_overrides(config, args)
 
         # Apply any additional overrides
         for key, value in overrides.items():

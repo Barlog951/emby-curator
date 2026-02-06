@@ -60,5 +60,9 @@ RUN chmod +x /usr/local/sbin/entrypoint
 RUN useradd --create-home --shell /bin/bash embyuser
 USER embyuser
 
+# Healthcheck to verify the application is installed correctly
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import emby_dedupe; print('OK')" || exit 1
+
 # Set the entrypoint script as the Docker entrypoint
 ENTRYPOINT ["/usr/local/sbin/entrypoint"]

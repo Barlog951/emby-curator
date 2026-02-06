@@ -4,7 +4,7 @@ File operation utilities for the Emby Dedupe tool.
 
 import json
 import os
-from typing import Any, Optional
+from typing import Any
 
 from emby_dedupe.utils.logging import logger
 
@@ -77,28 +77,3 @@ def dump_object_to_file(obj: Any, base_filename: str) -> None:
 
     # If none of the above, raise an error
     raise ValueError("Unsupported object type for dumping to a file.")
-
-
-def read_json_file(file_path: str) -> Optional[Any]:
-    """
-    Attempts to read a JSON file and return its contents as a Python object.
-
-    Args:
-        file_path (str): Path to the JSON file to be read.
-
-    Returns:
-        Optional[Any]: Parsed JSON data if the file is successfully read and parsed, None otherwise.
-    """
-    try:
-        with open(file_path, "r", encoding="utf-8") as file:
-            return json.load(file)
-    except FileNotFoundError:
-        logger.error(f"File not found: {file_path}")
-    except json.JSONDecodeError as exc:
-        logger.error(f"Error parsing JSON file at {file_path}: {exc}")
-    except Exception as exc:
-        logger.error(
-            f"An unexpected error occurred while reading file {file_path}: {exc}"
-        )
-
-    return None

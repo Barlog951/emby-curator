@@ -13,82 +13,16 @@ from emby_dedupe.reports.common import calculate_report_statistics
 from emby_dedupe.utils.logging import logger
 
 
-def compare_dates(date1: str, date2: str) -> int:
+def _validate_decisions(decisions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Compare two date strings and return:
-    1 if date1 is newer than date2
-    0 if they are equal or can't be compared
-    -1 if date1 is older than date2
-    """
-    if date1 == "unknown" or date2 == "unknown":
-        return 0
-
-    # Extract just the date portion (in case there's additional text like "(year only)")
-    if "(" in date1:
-        date1 = date1.split("(")[0].strip()
-    if "(" in date2:
-        date2 = date2.split("(")[0].strip()
-
-    try:
-        # Try simple string comparison first (works for YYYY-MM-DD format)
-        if date1 > date2:
-            return 1
-        elif date1 < date2:
-            return -1
-        else:
-            return 0
-    except Exception:
-        # If direct comparison fails, try parsing dates
-        try:
-            formats = ["%Y-%m-%d", "%Y-%m", "%Y", "%Y-%m-%d %H:%M:%S"]
-            for fmt in formats:
-                try:
-                    date1_obj = time.strptime(date1, fmt)
-                    date2_obj = time.strptime(date2, fmt)
-
-                    date1_ts = time.mktime(date1_obj)
-                    date2_ts = time.mktime(date2_obj)
-
-                    if date1_ts > date2_ts:
-                        return 1
-                    elif date1_ts < date2_ts:
-                        return -1
-                    else:
-                        return 0
-                except ValueError:
-                    continue
-            return 0  # Can't compare
-        except Exception:
-            return 0  # Can't compare
-
-
-# This method is no longer needed as we're using the template system exclusively
-
-
-def format_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None) -> str:
-    """
-    Formats decisions into a beautiful HTML report using Jinja2 templates.
+    Filter decisions to only include valid ones with proper keep and delete items.
 
     Args:
-        base_url (str): The base URL of the Emby server.
-        decisions (list): List of decision objects containing items to keep and delete.
-        metadata (dict, optional): Additional metadata such as excluded IDs and language priorities.
+        decisions: List of decision objects.
 
     Returns:
-        str: A fully formed HTML document as a string.
+        List of valid decision objects.
     """
-    try:
-        # Try to import Jinja2, which we'll use for templating
-        from jinja2 import Environment, FileSystemLoader, select_autoescape
-    except ImportError:
-        logger.error("Jinja2 template engine is required but not installed. Please install it using: pip install jinja2")
-        raise ImportError("Jinja2 is required for HTML report generation. "
-                         "Please install it using: pip install jinja2")
-
-    # Calculate statistics
-    stats = calculate_report_statistics(decisions)
-
-    # Filter decisions to only valid ones
     valid_decisions = []
 
     for decision in decisions:
@@ -105,8 +39,19 @@ def format_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata:
         valid_decisions.append(decision)
 
     logger.debug(f"Found {len(valid_decisions)} valid decisions out of {len(decisions)} total")
+    return valid_decisions
 
-    # Check if language prioritization was used and if it changed any decisions
+
+def _detect_language_priority_usage(valid_decisions: List[Dict[str, Any]]) -> tuple[bool, bool, Optional[list]]:
+    """
+    Detect if language prioritization was used and if it changed any decisions.
+
+    Args:
+        valid_decisions: List of valid decision objects.
+
+    Returns:
+        Tuple of (language_priorities_used, language_priorities_changed_selection, language_priorities_list).
+    """
     language_priorities_used = False
     language_priorities_changed_selection = False
     language_priorities_list = None
@@ -123,15 +68,190 @@ def format_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata:
         elif "keep" in decision and "language_priority_list" in decision["keep"] and decision["keep"]["language_priority_list"]:
             language_priorities_list = decision["keep"]["language_priority_list"]
 
-    # Handle metadata if provided
-    if metadata is None:
-        metadata = {}
+    return language_priorities_used, language_priorities_changed_selection, language_priorities_list
 
-    # Get excluded IDs from metadata
+
+def _ensure_quality_fields(quality_desc: Dict[str, Any]) -> None:
+    """
+    Ensure quality description has proper audio and video fields with defaults.
+    Modifies quality_desc in place.
+
+    Args:
+        quality_desc: Quality description dictionary to validate and populate.
+    """
+    if not quality_desc:
+        return
+
+    # Ensure video section exists
+    if "video" not in quality_desc:
+        quality_desc["video"] = {"codec": "unknown", "resolution": "unknown"}
+
+    # Ensure audio section exists
+    if "audio" not in quality_desc:
+        quality_desc["audio"] = {"codec": "unknown", "channels": "unknown", "languages": ["unknown"]}
+    elif "languages" not in quality_desc["audio"]:
+        quality_desc["audio"]["languages"] = ["unknown"]
+    else:
+        languages = quality_desc["audio"].get("languages")
+        if languages is None or callable(languages) or not isinstance(languages, (list, tuple, set)):
+            quality_desc["audio"]["languages"] = ["unknown"]
+
+
+def _create_language_priority_message(keep_item: Dict[str, Any]) -> str:
+    """
+    Create a human-readable message about language priority selection.
+
+    Args:
+        keep_item: The item being kept.
+
+    Returns:
+        Language priority message string (empty if not applicable).
+    """
+    selected_by_language = keep_item.get('selected_by_language_priority', False)
+    changed_by_language = keep_item.get('changed_by_language_priority', False)
+    priority_language = keep_item.get('priority_language_used', None)
+    language_priority_list = keep_item.get('language_priority_list', [])
+
+    if selected_by_language and priority_language and changed_by_language:
+        return f"This file was selected because it has '{priority_language}' audio track, overriding quality-based selection (priority languages: {', '.join(language_priority_list)})"
+    elif selected_by_language and priority_language and not changed_by_language:
+        return f"This file has '{priority_language}' audio track and also has the best quality (priorities: {', '.join(language_priority_list)})"
+    elif language_priority_list:
+        return f"Language priorities ({', '.join(language_priority_list)}) were considered but didn't change selection"
+
+    return ""
+
+
+def _process_delete_item(item: Dict[str, Any], base_url: str, keep_serverid: str) -> Dict[str, Any]:
+    """
+    Process a single delete item into template-friendly format.
+
+    Args:
+        item: Delete item to process.
+        base_url: Emby server base URL.
+        keep_serverid: Server ID from the kept item.
+
+    Returns:
+        Processed delete item dictionary.
+    """
+    deletion_status = item.get('deletion_result', {})
+    status = deletion_status.get('status', 'not_attempted')
+
+    status_class = "status-pending"
+    status_text = "Pending"
+    if status == "success":
+        status_class = "status-success"
+        status_text = "Deleted"
+    elif status == "failed":
+        status_class = "status-error"
+        status_text = "Failed"
+
+    # Create URL for this item
+    item_url = f"{base_url}/web/index.html#!/item?id={item['id']}&serverId={keep_serverid}"
+
+    # Ensure audio and video fields are proper
+    item_quality_desc = item.get("quality_description", {})
+    _ensure_quality_fields(item_quality_desc)
+
+    return {
+        "id": item["id"],
+        "name": item["name"],
+        "image_url": item.get('image_url', f'{base_url}/web/assets/img/media.png'),
+        "quality_description": item_quality_desc,
+        "url": item_url,
+        "status_class": status_class,
+        "status_text": status_text,
+        "error": deletion_status.get('error'),
+        "is_episode": item.get("is_episode", False),
+        "series_name": item.get("series_name", ""),
+        "season_number": item.get("season_number", ""),
+        "episode_number": item.get("episode_number", ""),
+        "deletion_result": deletion_status,
+        "provider_id": item.get("provider_id", "")
+    }
+
+
+def _process_decision_group(decision: Dict[str, Any], base_url: str) -> Dict[str, Any]:
+    """
+    Process a single decision group into template-friendly format.
+
+    Args:
+        decision: Decision object containing keep and delete items.
+        base_url: Emby server base URL.
+
+    Returns:
+        Processed group dictionary ready for template rendering.
+    """
+    keep_item = decision["keep"]
+    delete_items = decision["delete"]
+
+    # Create item URLs
+    keep_url = f"{base_url}/web/index.html#!/item?id={keep_item['id']}&serverId={keep_item['serverid']}"
+
+    # Find the newest and oldest items based on the date_added field
+    all_items = [keep_item] + delete_items
+
+    # Sort by date_added to find newest and oldest
+    def date_sort_key(item: Dict[str, Any]) -> str:
+        return item['quality_description'].get('date_added', '0000-00-00')
+
+    try:
+        # Try to sort items by date
+        sorted_items = sorted(all_items, key=date_sort_key, reverse=True)
+        newest_item = sorted_items[0] if sorted_items else keep_item
+        oldest_item = sorted_items[-1] if len(sorted_items) > 1 else keep_item
+    except Exception as e:
+        logger.warning(f"Error sorting items by date: {e}")
+        newest_item = keep_item
+        oldest_item = keep_item
+
+    # Process delete items
+    processed_delete_items = []
+    has_deleted_items = False
+
+    for item in delete_items:
+        processed_item = _process_delete_item(item, base_url, keep_item['serverid'])
+        if processed_item["status_text"] == "Deleted":
+            has_deleted_items = True
+        processed_delete_items.append(processed_item)
+
+    # Create language priority message
+    language_priority_message = _create_language_priority_message(keep_item)
+
+    # Ensure keep_item's quality_description has proper audio and video fields
+    keep_quality_desc = keep_item.get("quality_description", {})
+    _ensure_quality_fields(keep_quality_desc)
+
+    # Extract language priority info
+    selected_by_language = keep_item.get('selected_by_language_priority', False)
+    changed_by_language = keep_item.get('changed_by_language_priority', False)
+    priority_language = keep_item.get('priority_language_used', None)
+
+    return {
+        "keep": keep_item,
+        "keep_url": keep_url,
+        "delete": processed_delete_items,
+        "has_deleted_items": has_deleted_items,
+        "newest_date_added": newest_item['quality_description'].get('date_added', 'unknown'),
+        "newest_path": newest_item['quality_description'].get('path', 'unknown'),
+        "newest_status": "✓ This file is being kept" if newest_item['id'] == keep_item['id'] else "⚠️ This newer file is being deleted!",
+        "oldest_date_added": oldest_item['quality_description'].get('date_added', 'unknown'),
+        "oldest_path": oldest_item['quality_description'].get('path', 'unknown'),
+        "oldest_status": "✓ This file is being kept despite being older" if oldest_item['id'] == keep_item['id'] else "",
+        "selected_by_language": selected_by_language,
+        "changed_by_language_priority": changed_by_language,
+        "priority_language": priority_language,
+        "language_priority_message": language_priority_message
+    }
+
+
+def _prepare_template_data(base_url: str, stats: Dict[str, Any], language_priorities_used: bool,
+                           language_priorities_changed_selection: bool, language_priorities_list: Any,
+                           metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Prepare template data structure with stats and metadata."""
     excluded_ids = metadata.get("excluded_ids", [])
 
-    # Prepare template data structure
-    template_data = {
+    return {
         # Server info
         "base_url": base_url,
 
@@ -162,144 +282,87 @@ def format_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata:
         "duplicate_groups": []
     }
 
-    # Process each decision group into a template-friendly format
-    # Use a context manager for tqdm to ensure proper cleanup
+
+def _process_decisions_to_groups(valid_decisions: List[Dict[str, Any]], base_url: str,
+                                  template_data: Dict[str, Any]) -> None:
+    """Process decisions into template-friendly group format."""
     with tqdm(total=len(valid_decisions), desc="Preparing report data", unit="item") as progress_bar:
         for decision in valid_decisions:
             try:
-                keep_item = decision["keep"]
-                delete_items = decision["delete"]
-
-                # Create item URLs
-                keep_url = f"{base_url}/web/index.html#!/item?id={keep_item['id']}&serverId={keep_item['serverid']}"
-
-                # Find the newest and oldest items based on the date_added field
-                all_items = [keep_item] + delete_items
-
-                # Sort by date_added to find newest and oldest
-                def date_sort_key(item: Dict[str, Any]) -> str:
-                    return item['quality_description'].get('date_added', '0000-00-00')
-
-                try:
-                    # Try to sort items by date
-                    sorted_items = sorted(all_items, key=date_sort_key, reverse=True)
-                    newest_item = sorted_items[0] if sorted_items else keep_item
-                    oldest_item = sorted_items[-1] if len(sorted_items) > 1 else keep_item
-                except Exception as e:
-                    logger.warning(f"Error sorting items by date: {e}")
-                    newest_item = keep_item
-                    oldest_item = keep_item
-
-                # Process delete items
-                processed_delete_items = []
-                has_deleted_items = False
-
-                for item in delete_items:
-                    deletion_status = item.get('deletion_result', {})
-                    status = deletion_status.get('status', 'not_attempted')
-
-                    status_class = "status-pending"
-                    status_text = "Pending"
-                    if status == "success":
-                        status_class = "status-success"
-                        status_text = "Deleted"
-                        has_deleted_items = True
-                    elif status == "failed":
-                        status_class = "status-error"
-                        status_text = "Failed"
-
-                    # Create URL for this item
-                    item_url = f"{base_url}/web/index.html#!/item?id={item['id']}&serverId={keep_item['serverid']}"
-
-                    # Ensure audio and video fields are proper
-                    item_quality_desc = item.get("quality_description", {})
-                    if item_quality_desc:
-                        # Ensure video section exists
-                        if "video" not in item_quality_desc:
-                            item_quality_desc["video"] = {"codec": "unknown", "resolution": "unknown"}
-                        
-                        # Ensure audio section exists
-                        if "audio" not in item_quality_desc:
-                            item_quality_desc["audio"] = {"codec": "unknown", "channels": "unknown", "languages": ["unknown"]}
-                        elif "languages" not in item_quality_desc["audio"]:
-                            item_quality_desc["audio"]["languages"] = ["unknown"]
-                        else:
-                            languages = item_quality_desc["audio"].get("languages")
-                            if languages is None or callable(languages) or not isinstance(languages, (list, tuple, set)):
-                                item_quality_desc["audio"]["languages"] = ["unknown"]
-
-                    processed_delete_items.append({
-                        "id": item["id"],
-                        "name": item["name"],
-                        "image_url": item.get('image_url', f'{base_url}/web/assets/img/media.png'),
-                        "quality_description": item_quality_desc,
-                        "url": item_url,
-                        "status_class": status_class,
-                        "status_text": status_text,
-                        "error": deletion_status.get('error'),
-                        "is_episode": item.get("is_episode", False),
-                        "series_name": item.get("series_name", ""),
-                        "season_number": item.get("season_number", ""),
-                        "episode_number": item.get("episode_number", ""),
-                        "deletion_result": deletion_status,
-                        "provider_id": item.get("provider_id", "")
-                    })
-
-                # Check if item was selected by language priority
-                selected_by_language = keep_item.get('selected_by_language_priority', False)
-                changed_by_language = keep_item.get('changed_by_language_priority', False)
-                priority_language = keep_item.get('priority_language_used', None)
-                language_priority_list = keep_item.get('language_priority_list', [])
-
-                # Create language priority message
-                language_priority_message = ""
-                if selected_by_language and priority_language and changed_by_language:
-                    language_priority_message = f"This file was selected because it has '{priority_language}' audio track, overriding quality-based selection (priority languages: {', '.join(language_priority_list)})"
-                elif selected_by_language and priority_language and not changed_by_language:
-                    language_priority_message = f"This file has '{priority_language}' audio track and also has the best quality (priorities: {', '.join(language_priority_list)})"
-                elif language_priority_list:
-                    language_priority_message = f"Language priorities ({', '.join(language_priority_list)}) were considered but didn't change selection"
-
-                # Ensure keep_item's quality_description has proper audio and video fields
-                keep_quality_desc = keep_item.get("quality_description", {})
-                if keep_quality_desc:
-                    # Ensure video section exists
-                    if "video" not in keep_quality_desc:
-                        keep_quality_desc["video"] = {"codec": "unknown", "resolution": "unknown"}
-                    
-                    # Ensure audio section exists
-                    if "audio" not in keep_quality_desc:
-                        keep_quality_desc["audio"] = {"codec": "unknown", "channels": "unknown", "languages": ["unknown"]}
-                    elif "languages" not in keep_quality_desc["audio"]:
-                        keep_quality_desc["audio"]["languages"] = ["unknown"]
-                    else:
-                        languages = keep_quality_desc["audio"].get("languages")
-                        if languages is None or callable(languages) or not isinstance(languages, (list, tuple, set)):
-                            keep_quality_desc["audio"]["languages"] = ["unknown"]
-
-                # Add group to template data
-                template_data["duplicate_groups"].append({
-                    "keep": keep_item,
-                    "keep_url": keep_url,
-                    "delete": processed_delete_items,
-                    "has_deleted_items": has_deleted_items,
-                    "newest_date_added": newest_item['quality_description'].get('date_added', 'unknown'),
-                    "newest_path": newest_item['quality_description'].get('path', 'unknown'),
-                    "newest_status": "✓ This file is being kept" if newest_item['id'] == keep_item['id'] else "⚠️ This newer file is being deleted!",
-                    "oldest_date_added": oldest_item['quality_description'].get('date_added', 'unknown'),
-                    "oldest_path": oldest_item['quality_description'].get('path', 'unknown'),
-                    "oldest_status": "✓ This file is being kept despite being older" if oldest_item['id'] == keep_item['id'] else "",
-                    "selected_by_language": selected_by_language,
-                    "changed_by_language_priority": changed_by_language,
-                    "priority_language": priority_language,
-                    "language_priority_message": language_priority_message
-                })
-
+                group_data = _process_decision_group(decision, base_url)
+                template_data["duplicate_groups"].append(group_data)
                 progress_bar.update(1)
             except Exception as e:
                 logger.error(f"Error formatting decision group: {e}")
                 continue
 
+
+def _log_rendering_error_details(template_data: Dict[str, Any]) -> None:
+    """Log detailed error information when template rendering fails."""
+    logger.error("Template data structure:")
+    logger.error(f"Number of duplicate groups: {len(template_data.get('duplicate_groups', []))}")
+
+    # Debug the first group structure if available
+    if not template_data.get('duplicate_groups'):
+        return
+
+    first_group = template_data['duplicate_groups'][0]
+    logger.error(f"First group keep item structure: {type(first_group.get('keep'))}")
+
+    if 'keep' not in first_group:
+        return
+
+    keep_item = first_group['keep']
+    quality_desc = keep_item.get('quality_description', {})
+    logger.error(f"Quality description type: {type(quality_desc)}")
+    logger.error(f"Quality description keys: {list(quality_desc.keys()) if isinstance(quality_desc, dict) else 'Not a dict'}")
+
+    if isinstance(quality_desc, dict) and 'video' in quality_desc:
+        logger.error(f"Video section type: {type(quality_desc['video'])}")
+        logger.error(f"Video section content: {quality_desc['video']}")
+
+
+def format_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None) -> str:
+    """
+    Formats decisions into a beautiful HTML report using Jinja2 templates.
+
+    Args:
+        base_url (str): The base URL of the Emby server.
+        decisions (list): List of decision objects containing items to keep and delete.
+        metadata (dict, optional): Additional metadata such as excluded IDs and language priorities.
+
+    Returns:
+        str: A fully formed HTML document as a string.
+    """
+    try:
+        # Try to import Jinja2, which we'll use for templating
+        from jinja2 import Environment, FileSystemLoader, select_autoescape
+    except ImportError:
+        logger.error("Jinja2 template engine is required but not installed. Please install it using: pip install jinja2")
+        raise ImportError("Jinja2 is required for HTML report generation. "
+                         "Please install it using: pip install jinja2")
+
+    # Calculate statistics
+    stats = calculate_report_statistics(decisions)
+
+    # Filter decisions to only valid ones
+    valid_decisions = _validate_decisions(decisions)
+
+    # Check if language prioritization was used and if it changed any decisions
+    language_priorities_used, language_priorities_changed_selection, language_priorities_list = _detect_language_priority_usage(valid_decisions)
+
+    # Handle metadata if provided
+    if metadata is None:
+        metadata = {}
+
+    # Prepare template data structure
+    template_data = _prepare_template_data(
+        base_url, stats, language_priorities_used,
+        language_priorities_changed_selection, language_priorities_list, metadata
+    )
+
+    # Process each decision group into a template-friendly format
+    _process_decisions_to_groups(valid_decisions, base_url, template_data)
 
     # Set up Jinja2 environment
     import os
@@ -317,21 +380,7 @@ def format_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata:
         return template.render(**template_data)
     except Exception as e:
         logger.error(f"Template rendering error: {e}")
-        logger.error("Template data structure:")
-        logger.error(f"Number of duplicate groups: {len(template_data.get('duplicate_groups', []))}")
-        
-        # Debug the first group structure if available
-        if template_data.get('duplicate_groups'):
-            first_group = template_data['duplicate_groups'][0]
-            logger.error(f"First group keep item structure: {type(first_group.get('keep'))}")
-            if 'keep' in first_group:
-                keep_item = first_group['keep']
-                quality_desc = keep_item.get('quality_description', {})
-                logger.error(f"Quality description type: {type(quality_desc)}")
-                logger.error(f"Quality description keys: {list(quality_desc.keys()) if isinstance(quality_desc, dict) else 'Not a dict'}")
-                if isinstance(quality_desc, dict) and 'video' in quality_desc:
-                    logger.error(f"Video section type: {type(quality_desc['video'])}")
-                    logger.error(f"Video section content: {quality_desc['video']}")
+        _log_rendering_error_details(template_data)
         raise
 
 
