@@ -1,5 +1,5 @@
 # -- Build stage -- #
-FROM python:3.12-slim AS build-stage
+FROM python:3.14-slim AS build-stage
 
 # Set build-time metadata as defined at http://label-schema.org
 ARG BUILD_DATE
@@ -36,7 +36,7 @@ RUN pip install --upgrade pip && \
     pip install --no-cache-dir .
 
 # -- Final stage -- #
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 

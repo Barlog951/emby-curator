@@ -9,23 +9,23 @@ setup(
     },
     include_package_data=True,
     install_requires=[
-        "httpx>=0.27.0",
-        "tqdm>=4.66.2",
+        "httpx>=0.28.1",
+        "tqdm>=4.67.3",
         "backoff>=2.2.1",
-        "jinja2>=3.1.3",
-        "pyyaml>=6.0",  # For config file support
-        "rank-torrent-name>=1.0.0",  # For quality source detection
+        "jinja2>=3.1.6",
+        "pyyaml>=6.0.3",  # For config file support
+        "rank-torrent-name>=1.10.0",  # For quality source detection
     ],
     extras_require={
         "dev": [
-            "pytest>=7.0.0",
-            "pytest-cov>=4.0.0",
-            "pytest-mock>=3.10.0",
-            "pytest-xdist>=3.5.0",
-            "mypy>=1.3.0",
-            "ruff>=0.0.270",
-            "vulture>=2.7",
-            "requests>=2.31.0",
+            "pytest>=9.0.2",
+            "pytest-cov>=7.0.0",
+            "pytest-mock>=3.15.1",
+            "pytest-xdist>=3.8.0",
+            "mypy>=1.19.1",
+            "ruff>=0.15.0",
+            "vulture>=2.14",
+            "requests>=2.32.5",
         ],
     },
     entry_points={
@@ -43,10 +43,10 @@ setup(
         "Intended Audience :: End Users/Desktop",
         "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.14",
         "Topic :: Multimedia :: Video",
         "Topic :: Utilities",
         "Environment :: Console",
     ],
-    python_requires=">=3.12",
+    python_requires=">=3.14",
 )
