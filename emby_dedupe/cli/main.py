@@ -1,0 +1,255 @@
+"""
+Main command-line interface for the Emby Dedupe tool.
+"""
+
+import json
+import logging
+import sys
+
+import httpx
+
+from emby_dedupe.api.client import (
+    authenticated_token_for_delete,
+    check_emby_connection,
+    fetch_and_process_media_items,
+    get_library_id,
+    handle_host_and_port,
+    logout,
+)
+from emby_dedupe.api.deduplication import (
+    identify_duplicates,
+    process_deletion_and_generate_report,
+    process_duplicate_groups,
+    rationalize_duplicates,
+)
+from emby_dedupe.cli.arguments import (
+    get_env_variable,
+    override_warning,
+    parse_args,
+    validate_required_arguments,
+)
+from emby_dedupe.reports.html import generate_html_report
+from emby_dedupe.reports.markdown import output_report_to_stdout
+from emby_dedupe.utils.constants import (
+    ENV_DEDUPE_DOIT,
+    ENV_DEDUPE_EMBY_API_KEY,
+    ENV_DEDUPE_EMBY_HOST,
+    ENV_DEDUPE_EMBY_LIBRARY,
+    ENV_DEDUPE_EMBY_PASSWORD,
+    ENV_DEDUPE_EMBY_PORT,
+    ENV_DEDUPE_EMBY_USERNAME,
+    ENV_DEDUPE_EXCLUDE_IDS,
+    ENV_DEDUPE_HTML_ONLY,
+    ENV_DEDUPE_HTML_REPORT,
+    ENV_DEDUPE_LANG_PRIO,
+    ENV_DEDUPE_LOGGING,
+)
+from emby_dedupe.utils.exceptions import EmbyServerConnectionError
+from emby_dedupe.utils.file_ops import dump_object_to_file
+from emby_dedupe.utils.logging import logger, set_logging_level
+
+
+def main() -> None:
+    """
+    Main entry point for the Emby Dedupe tool.
+    """
+    args = parse_args()
+
+    env_verbosity = get_env_variable(ENV_DEDUPE_LOGGING)
+    env_host = get_env_variable(ENV_DEDUPE_EMBY_HOST)
+    env_port = get_env_variable(ENV_DEDUPE_EMBY_PORT)
+    env_api_key = get_env_variable(ENV_DEDUPE_EMBY_API_KEY)
+    env_library_str = get_env_variable(ENV_DEDUPE_EMBY_LIBRARY)
+    env_library = [lib.strip() for lib in env_library_str.split(',')] if env_library_str else None
+    env_doit = get_env_variable(ENV_DEDUPE_DOIT) in ("true", "True", "TRUE", "1")
+    env_html_report = get_env_variable(ENV_DEDUPE_HTML_REPORT) in ("true", "True", "TRUE", "1")
+    env_html_only = get_env_variable(ENV_DEDUPE_HTML_ONLY) in ("true", "True", "TRUE", "1")
+    env_lang_prio = get_env_variable(ENV_DEDUPE_LANG_PRIO)
+    env_exclude_ids = get_env_variable(ENV_DEDUPE_EXCLUDE_IDS)
+
+    set_logging_level(args.verbosity, env_verbosity)
+    override_warning(
+        "--verbosity", args.verbosity and logger.level, env_verbosity
+    )
+    override_warning("--host", args.host, env_host)
+    override_warning("--port", args.port and str(args.port), env_port)
+    override_warning("--api-key", args.api_key, env_api_key)
+    override_warning("--library", args.library, env_library)
+    override_warning("--lang-prio", args.lang_prio, env_lang_prio)
+    override_warning("--exclude-ids", args.exclude_ids, env_exclude_ids)
+
+    logger.debug("Collecting final values for required settings")
+    host = args.host or env_host
+    port = args.port or env_port or None
+    api_key = args.api_key or env_api_key
+    # Handle library list from args (already a list) or environment (converted to list)
+    library = args.library or env_library or []
+    doit = args.doit or env_doit
+
+    # Handle language priorities as comma-separated list
+    lang_prio_str = args.lang_prio or env_lang_prio
+    lang_priorities = []
+    if lang_prio_str:
+        lang_priorities = [lang.strip().lower() for lang in lang_prio_str.split(',') if lang.strip()]
+        logger.info(f"Language priorities set: {', '.join(lang_priorities)} (in order of preference)")
+    else:
+        logger.debug("No language priorities specified, using default quality-based evaluation")
+
+    # Handle excluded IDs as comma-separated list
+    exclude_ids_str = args.exclude_ids or env_exclude_ids
+    excluded_ids = []
+    if exclude_ids_str:
+        excluded_ids = [id.strip() for id in exclude_ids_str.split(',') if id.strip()]
+        logger.info(f"Excluding provider IDs from deduplication: {', '.join(excluded_ids)}")
+    else:
+        logger.debug("No provider IDs excluded from deduplication")
+
+    username = None
+    password = None
+    if doit:
+        username = args.username or get_env_variable(ENV_DEDUPE_EMBY_USERNAME)
+        password = args.password or get_env_variable(ENV_DEDUPE_EMBY_PASSWORD)
+
+    # Validate required arguments
+    validate_required_arguments(host, api_key, library, doit, username, password)
+
+    # Validate and handle host and port information
+    validated_host, validated_port = handle_host_and_port(host, port)
+
+    logger.debug(
+        f"Using the following configurations: "
+        f"Host: {validated_host}, Port: {validated_port}, API Key: {api_key}, "
+        f"Libraries: {', '.join(library)}, DoIt: {doit}"
+    )
+
+    try:
+        base_url = f"{validated_host}:{validated_port}"
+
+        client = httpx.Client(headers={"X-Emby-Token": api_key})
+
+        connection_url = f"{base_url}/System/Info"
+        if not check_emby_connection(client, connection_url):
+            logger.error(f"Unable to connect to the Emby server at {base_url}.")
+            sys.exit(1)
+
+        all_provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}}
+
+        # Process each library
+        for library_name in library:
+            logger.info(f"Processing library: {library_name}")
+
+            library_id = get_library_id(client, base_url, library_name)
+            if library_id is None:
+                logger.error(f"Unable to find library '{library_name}'. Skipping.")
+                continue
+
+            provider_tables = fetch_and_process_media_items(client, base_url, library_id, library_name)
+
+            for provider in ["imdb", "tvdb", "tmdb"]:
+                for provider_id, items in provider_tables[provider].items():
+                    if provider_id not in all_provider_tables[provider]:
+                        all_provider_tables[provider][provider_id] = []
+                    all_provider_tables[provider][provider_id].extend(items)
+
+        if all(not table for table in all_provider_tables.values()):
+            logger.error("No media items found in any of the specified libraries.")
+            sys.exit(1)
+
+        dump_object_to_file(
+            all_provider_tables, "testing/provider_tables"
+        ) if logger.isEnabledFor(logging.DEBUG) else None
+
+        duplicates = identify_duplicates(all_provider_tables, excluded_ids)
+
+        dump_object_to_file(duplicates, "testing/duplicates") if logger.isEnabledFor(
+            logging.DEBUG
+        ) else None
+
+        duplicates = rationalize_duplicates(duplicates)
+
+        dump_object_to_file(duplicates, "testing/aggregate") if logger.isEnabledFor(
+            logging.DEBUG
+        ) else None
+
+        decisions, exclusion_metadata = process_duplicate_groups(client, base_url, duplicates, api_key, lang_priorities, excluded_ids)
+
+        dump_object_to_file(decisions, "testing/decisions") if logger.isEnabledFor(
+            logging.DEBUG
+        ) else None
+
+        logger.info(f"Processing {len(decisions)} decisions for markdown report generation")
+
+        # Create metadata dictionary for report generation
+        report_metadata = {
+            "excluded_ids": excluded_ids if excluded_ids else [],
+            "language_priorities": lang_priorities if lang_priorities else [],
+            "excluded_groups_count": exclusion_metadata.get("excluded_groups_count", 0),
+            "excluded_titles": exclusion_metadata.get("excluded_titles", {})
+        }
+
+        markdown_report = process_deletion_and_generate_report(
+            client, base_url, decisions, doit, username, password, api_key, report_metadata
+        )
+
+        dump_object_to_file(decisions, "testing/deletions") if logger.isEnabledFor(
+            logging.DEBUG
+        ) else None
+        dump_object_to_file(markdown_report, "testing/report") if logger.isEnabledFor(
+            logging.DEBUG
+        ) else None
+
+        html_report = args.html_report or env_html_report or args.html_only or env_html_only
+        html_only = args.html_only or env_html_only
+        no_open = args.no_open
+
+        # Create metadata dictionary for report generation
+        report_metadata = {
+            "excluded_ids": excluded_ids if excluded_ids else [],
+            "language_priorities": lang_priorities if lang_priorities else [],
+            "excluded_groups_count": exclusion_metadata.get("excluded_groups_count", 0),
+            "excluded_titles": exclusion_metadata.get("excluded_titles", {})
+        }
+
+        if html_report:
+            try:
+                logger.info(f"Generating HTML report with {len(decisions)} decisions total")
+
+                html_report_path = generate_html_report(base_url, decisions, report_metadata)
+
+                if not no_open:
+                    try:
+                        import webbrowser
+                        print(f"Opening HTML report in browser: {html_report_path}")
+                        webbrowser.open(f"file://{html_report_path}")
+                    except Exception as e:
+                        logger.warning(f"Could not open browser: {e}")
+                        print(f"HTML report generated at: {html_report_path}")
+                else:
+                    print(f"HTML report generated at: {html_report_path}")
+            except Exception as e:
+                logger.error(f"Error generating HTML report: {e}")
+                if html_only:
+                    logger.error("HTML-only mode requested but HTML report generation failed")
+                    sys.exit(1)
+                logger.info("Continuing with console report output")
+
+        if not html_only:
+            output_report_to_stdout(markdown_report)
+
+    except EmbyServerConnectionError as e:
+        logger.error(str(e))
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode JSON: {str(e)}")
+        sys.exit(1)
+    except httpx.TimeoutException as e:
+        logger.error(f"HTTP request timed out: {str(e)}")
+        sys.exit(1)
+    except Exception as e:
+        # Catch-all for any other unexpected exceptions
+        logger.error(f"An unexpected error occurred: {str(e)}")
+        logger.error(e)
+        sys.exit(1)
+    finally:
+        if authenticated_token_for_delete and doit:
+            logout(client, base_url, authenticated_token_for_delete)

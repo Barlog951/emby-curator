@@ -1,5 +1,5 @@
 # -- Build stage -- #
-FROM python:3.9-slim as build-stage
+FROM python:3.12-slim AS build-stage
 
 # Set build-time metadata as defined at http://label-schema.org
 ARG BUILD_DATE
@@ -25,17 +25,18 @@ WORKDIR /build
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Install dependencies:
-# We use a requirements file to specify all the required Python modules.
+# Copy source code and setup file
+COPY emby_dedupe/ ./emby_dedupe/
+COPY setup.py .
 COPY requirements.txt .
-RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 
-# Copy only the necessary files into the build stage
-COPY scripts/dedupe.py ./dedupe.py
-
+# Install the package and its dependencies
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir .
 
 # -- Final stage -- #
-FROM python:3.9-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
@@ -46,7 +47,8 @@ COPY --from=build-stage /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy the built application from the build stage to the final stage
-COPY --from=build-stage /build/dedupe.py ./dedupe.py
+COPY --from=build-stage /build/emby_dedupe /app/emby_dedupe
+COPY --from=build-stage /build/setup.py /app/
 
 # Copy everything from rootfs to the root of the container
 COPY rootfs/ /
