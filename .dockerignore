@@ -1,0 +1,62 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+.githooks
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Testing
+tests/
+htmlcov/
+.coverage
+.pytest_cache/
+.tox/
+
+# Documentation
+docs/
+*.md
+README.md
+CLAUDE.md
+HEALTH_REPORT.md
+REMEDIATION_PLAN.md
+TEAM_PROMPT_*.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Debug and testing files
+testing/
+debug/
+*.log
+*.tmp
+
+# CI/CD
+.github/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# SonarQube
+sonar-project.properties
+.scannerwork/
+
+# Other
+.DS_Store
+.env
+*.bak

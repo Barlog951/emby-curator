@@ -51,11 +51,16 @@ htmlcov/
 .cache
 nosetests.xml
 coverage.xml
+test-results.xml
 *.cover
 *.py,cover
 .hypothesis/
 .pytest_cache/
 cover/
+
+# SonarQube
+.scannerwork/
+.sonar/
 
 # Translations
 *.mo

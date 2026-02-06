@@ -11,57 +11,19 @@ from unittest.mock import patch, Mock, MagicMock
 from emby_dedupe.reports.html import (
     generate_html_report,
     format_html_report,
-    compare_dates
+    _validate_decisions,
+    _detect_language_priority_usage,
+    _ensure_quality_fields,
+    _process_delete_item,
+    _create_language_priority_message,
+    _process_decision_group,
 )
 from emby_dedupe.reports.common import calculate_report_statistics
 
 
 class TestHtmlReports:
     """Tests for HTML report generation."""
-    
-    def test_compare_dates_newer(self):
-        """Test comparison with a newer date."""
-        # First date is newer
-        result = compare_dates("2023-01-15", "2022-12-31")
-        assert result == 1
-    
-    def test_compare_dates_older(self):
-        """Test comparison with an older date."""
-        # First date is older
-        result = compare_dates("2022-01-01", "2022-02-15")
-        assert result == -1
-    
-    def test_compare_dates_equal(self):
-        """Test comparison with equal dates."""
-        # Dates are equal
-        result = compare_dates("2023-01-01", "2023-01-01")
-        assert result == 0
-    
-    def test_compare_dates_unknown(self):
-        """Test comparison with unknown dates."""
-        # One date is unknown
-        result = compare_dates("unknown", "2023-01-01")
-        assert result == 0
-        
-        result = compare_dates("2023-01-01", "unknown")
-        assert result == 0
-        
-        # Both dates are unknown
-        result = compare_dates("unknown", "unknown")
-        assert result == 0
-    
-    def test_compare_dates_with_year_only(self):
-        """Test comparison with dates that include year-only notation."""
-        # Date with year-only notation
-        result = compare_dates("2023-01-01 (year only)", "2022-12-31")
-        assert result == 1
 
-    def test_compare_dates_with_exception(self):
-        """Test comparison handling with dates that cause exceptions."""
-        # Just check that compare_dates handles invalid date formats without crashing
-        result = compare_dates("totally invalid", "also invalid")
-        assert isinstance(result, int)  # Should return some integer value
-    
     @patch('jinja2.Environment')
     @patch('jinja2.FileSystemLoader')
     @patch('emby_dedupe.reports.common.calculate_report_statistics')
@@ -431,55 +393,321 @@ class TestHtmlReports:
         with patch('emby_dedupe.reports.html.tqdm') as mock_tqdm:
             mock_progress_bar = MagicMock()
             mock_tqdm.return_value = mock_progress_bar
-            
-            # Patch compare_dates function to avoid issues with date comparisons
-            with patch('emby_dedupe.reports.html.compare_dates', return_value=0):
-                # Call the function
-                try:
-                    # Create a mock function that captures the render arguments
-                    def mock_render_with_capture(**kwargs):
-                        mock_render_with_capture.last_kwargs = kwargs
-                        return "<html>Test Content with Deleted Items</html>"
-                
-                    mock_template.render.side_effect = mock_render_with_capture
-                    
-                    result = format_html_report(base_url, decisions)
-                    
-                    # Verify output
-                    assert result == "<html>Test Content with Deleted Items</html>"
-                    assert mock_template.render.called
-                    
-                    # First, verify the function actually ran and captured kwargs
-                    assert hasattr(mock_render_with_capture, 'last_kwargs')
-                    
-                    # Extract template data from our captured kwargs
-                    template_data = mock_render_with_capture.last_kwargs
-                    
-                    # Check the duplicate_groups are passed correctly
-                    assert "duplicate_groups" in template_data
-                    assert len(template_data["duplicate_groups"]) == 1
-                    
-                    # Verify that delete items have proper metadata for template
-                    delete_items = template_data["duplicate_groups"][0]["delete"]
-                    assert len(delete_items) == 3
-                    
-                    # Test the conditional rendering for external links
-                    for item in decisions[0]["delete"]:
-                        # If the item is deleted and has a provider ID,
-                        # it should show external links
-                        if item.get("deletion_result", {}).get("status") == "success":
-                            if "provider_id" in item:
-                                if item["provider_id"].startswith("tt"):
-                                    imdb_url = f"https://www.imdb.com/title/{item['provider_id']}"
-                                    assert "IMDB" in item["name"]  # Verify it's our IMDB test item
-                                elif item["provider_id"].isdigit():
-                                    tmdb_url = f"https://www.themoviedb.org/movie/{item['provider_id']}"
-                                    assert "TMDB" in item["name"]  # Verify it's our TMDB test item
-                        else:
-                            # Non-deleted items should still have their Emby URL
-                            assert "url" in item
-                            assert "Not Deleted" in item["name"]
-                    
-                except ImportError:
-                    # Handle the case where jinja2 is not installed
-                    pass
+
+            # Call the function
+            try:
+                # Create a mock function that captures the render arguments
+                def mock_render_with_capture(**kwargs):
+                    mock_render_with_capture.last_kwargs = kwargs
+                    return "<html>Test Content with Deleted Items</html>"
+
+                mock_template.render.side_effect = mock_render_with_capture
+
+                result = format_html_report(base_url, decisions)
+
+                # Verify output
+                assert result == "<html>Test Content with Deleted Items</html>"
+                assert mock_template.render.called
+
+                # First, verify the function actually ran and captured kwargs
+                assert hasattr(mock_render_with_capture, 'last_kwargs')
+
+                # Extract template data from our captured kwargs
+                template_data = mock_render_with_capture.last_kwargs
+
+                # Check the duplicate_groups are passed correctly
+                assert "duplicate_groups" in template_data
+                assert len(template_data["duplicate_groups"]) == 1
+
+                # Verify that delete items have proper metadata for template
+                delete_items = template_data["duplicate_groups"][0]["delete"]
+                assert len(delete_items) == 3
+
+                # Test the conditional rendering for external links
+                for item in decisions[0]["delete"]:
+                    # If the item is deleted and has a provider ID,
+                    # it should show external links
+                    if item.get("deletion_result", {}).get("status") == "success":
+                        if "provider_id" in item:
+                            if item["provider_id"].startswith("tt"):
+                                imdb_url = f"https://www.imdb.com/title/{item['provider_id']}"
+                                assert "IMDB" in item["name"]  # Verify it's our IMDB test item
+                            elif item["provider_id"].isdigit():
+                                tmdb_url = f"https://www.themoviedb.org/movie/{item['provider_id']}"
+                                assert "TMDB" in item["name"]  # Verify it's our TMDB test item
+                    else:
+                        # Non-deleted items should still have their Emby URL
+                        assert "url" in item
+                        assert "Not Deleted" in item["name"]
+
+            except ImportError:
+                # Handle the case where jinja2 is not installed
+                pass
+
+# ========== SAFETY NET TESTS FOR format_html_report (Grade-F Function) ==========
+
+class TestFormatHtmlReportSafetyNet:
+    """Safety net tests for format_html_report (CC 93) to protect Phase 3 refactoring."""
+
+    def test_format_html_report_missing_quality_description(self):
+        """Test format_html_report handles missing quality_description gracefully."""
+        decisions = [
+            {
+                "keep": {"id": "keep1", "name": "Item 1"},
+                "delete": [{"id": "del1", "name": "Delete 1"}]
+            }
+        ]
+
+        result = format_html_report("http://emby.local", decisions, None)
+
+        assert result is not None
+        assert isinstance(result, str)
+
+    def test_format_html_report_empty_decisions(self):
+        """Test format_html_report with empty decisions list."""
+        result = format_html_report("http://emby.local", [], None)
+
+        assert result is not None
+        assert isinstance(result, str)
+
+    def test_format_html_report_unicode_handling(self):
+        """Test format_html_report handles unicode characters correctly."""
+        decisions = [
+            {
+                "keep": {
+                    "id": "k1",
+                    "name": "Película Española",
+                    "quality_description": {"video": {"codec": "h264"}}
+                },
+                "delete": [
+                    {
+                        "id": "d1",
+                        "name": "Český film",
+                        "quality_description": {"video": {"codec": "h264"}}
+                    }
+                ]
+            }
+        ]
+
+        result = format_html_report("http://emby.local", decisions, {"api_key": "test-key"})
+
+        assert result is not None
+        assert isinstance(result, str)
+
+
+class TestHtmlReportHelpers:
+    """Tests for helper functions extracted from format_html_report."""
+
+    def test_validate_decisions_all_valid(self):
+        """Test validation with all valid decisions."""
+        decisions = [
+            {"keep": {"id": "1"}, "delete": [{"id": "2"}]},
+            {"keep": {"id": "3"}, "delete": [{"id": "4"}]},
+        ]
+
+        result = _validate_decisions(decisions)
+
+        assert len(result) == 2
+        assert result == decisions
+
+    def test_validate_decisions_filters_invalid(self):
+        """Test that invalid decisions are filtered out."""
+        decisions = [
+            {"keep": {"id": "1"}, "delete": [{"id": "2"}]},  # Valid
+            {"keep": None, "delete": [{"id": "3"}]},  # Invalid: no keep
+            {"keep": {"id": "4"}, "delete": []},  # Invalid: no delete items
+            {"keep": {}, "delete": [{"id": "5"}]},  # Invalid: keep has no id
+            {"keep": {"id": "6"}, "delete": [{"id": "7"}]},  # Valid
+        ]
+
+        result = _validate_decisions(decisions)
+
+        assert len(result) == 2
+        assert result[0]["keep"]["id"] == "1"
+        assert result[1]["keep"]["id"] == "6"
+
+    def test_detect_language_priority_not_used(self):
+        """Test detection when language priority was not used."""
+        decisions = [
+            {"keep": {"id": "1"}, "delete": [{"id": "2"}]},
+        ]
+
+        used, changed, priority_list = _detect_language_priority_usage(decisions)
+
+        assert used is False
+        assert changed is False
+        assert priority_list is None
+
+    def test_detect_language_priority_used_not_changed(self):
+        """Test detection when language priority was used but didn't change selection."""
+        decisions = [
+            {
+                "keep": {
+                    "id": "1",
+                    "selected_by_language_priority": True,
+                    "changed_by_language_priority": False,
+                    "language_priority_list": ["sk", "cs"],
+                },
+                "delete": [{"id": "2"}],
+            },
+        ]
+
+        used, changed, priority_list = _detect_language_priority_usage(decisions)
+
+        assert used is True
+        assert changed is False
+        assert priority_list == ["sk", "cs"]
+
+    def test_detect_language_priority_changed_selection(self):
+        """Test detection when language priority changed the selection."""
+        decisions = [
+            {
+                "keep": {
+                    "id": "1",
+                    "selected_by_language_priority": True,
+                    "changed_by_language_priority": True,
+                    "language_priority_list": ["cs"],
+                },
+                "delete": [{"id": "2"}],
+            },
+        ]
+
+        used, changed, priority_list = _detect_language_priority_usage(decisions)
+
+        assert used is True
+        assert changed is True
+        assert priority_list == ["cs"]
+
+    def test_ensure_quality_fields_empty_dict_returns_early(self):
+        """Test that empty dict returns early without modification."""
+        quality_desc = {}
+
+        _ensure_quality_fields(quality_desc)
+
+        # Empty dict evaluates to falsy, so function returns early
+        assert quality_desc == {}
+
+    def test_ensure_quality_fields_adds_missing_video(self):
+        """Test that missing video section is added to non-empty dict."""
+        quality_desc = {"some_field": "value"}
+
+        _ensure_quality_fields(quality_desc)
+
+        assert "video" in quality_desc
+        assert quality_desc["video"]["codec"] == "unknown"
+        assert quality_desc["video"]["resolution"] == "unknown"
+
+    def test_ensure_quality_fields_adds_missing_audio(self):
+        """Test that missing audio section is added."""
+        quality_desc = {"video": {"codec": "h264"}}
+
+        _ensure_quality_fields(quality_desc)
+
+        assert "audio" in quality_desc
+        assert quality_desc["audio"]["codec"] == "unknown"
+        assert quality_desc["audio"]["languages"] == ["unknown"]
+
+    def test_ensure_quality_fields_fixes_callable_languages(self):
+        """Test that callable languages field is fixed."""
+        quality_desc = {
+            "video": {"codec": "h264"},
+            "audio": {"codec": "aac", "languages": lambda: ["eng"]},  # Callable - should be fixed
+        }
+
+        _ensure_quality_fields(quality_desc)
+
+        assert quality_desc["audio"]["languages"] == ["unknown"]
+
+    def test_ensure_quality_fields_preserves_valid_data(self):
+        """Test that valid quality fields are preserved."""
+        quality_desc = {
+            "video": {"codec": "hevc", "resolution": "2160p"},
+            "audio": {"codec": "eac3", "channels": 6, "languages": ["eng", "cze"]},
+        }
+        original = quality_desc.copy()
+
+        _ensure_quality_fields(quality_desc)
+
+        assert quality_desc == original
+
+    def test_create_language_priority_message_changed(self):
+        """Test message when language priority changed selection."""
+        keep_item = {
+            "selected_by_language_priority": True,
+            "changed_by_language_priority": True,
+            "priority_language_used": "sk",
+            "language_priority_list": ["sk", "cs"],
+        }
+
+        message = _create_language_priority_message(keep_item)
+
+        assert "overriding quality-based selection" in message
+        assert "sk" in message
+        assert "sk, cs" in message
+
+    def test_create_language_priority_message_not_changed(self):
+        """Test message when language priority used but didn't change selection."""
+        keep_item = {
+            "selected_by_language_priority": True,
+            "changed_by_language_priority": False,
+            "priority_language_used": "cs",
+            "language_priority_list": ["cs", "sk"],
+        }
+
+        message = _create_language_priority_message(keep_item)
+
+        assert "has the best quality" in message
+        assert "cs" in message
+
+    def test_create_language_priority_message_empty(self):
+        """Test message when language priority not applicable."""
+        keep_item = {}
+
+        message = _create_language_priority_message(keep_item)
+
+        assert message == ""
+
+    def test_process_delete_item_success_status(self):
+        """Test processing delete item with success status."""
+        item = {
+            "id": "123",
+            "name": "Test Item",
+            "deletion_result": {"status": "success"},
+            "quality_description": {"video": {"codec": "h264"}},
+        }
+
+        result = _process_delete_item(item, "http://emby.local", "server1")
+
+        assert result["id"] == "123"
+        assert result["status_class"] == "status-success"
+        assert result["status_text"] == "Deleted"
+        assert "http://emby.local" in result["url"]
+
+    def test_process_delete_item_failed_status(self):
+        """Test processing delete item with failed status."""
+        item = {
+            "id": "456",
+            "name": "Failed Item",
+            "deletion_result": {"status": "failed", "error": "Network error"},
+            "quality_description": {},
+        }
+
+        result = _process_delete_item(item, "http://emby.local", "server1")
+
+        assert result["status_class"] == "status-error"
+        assert result["status_text"] == "Failed"
+        assert result["error"] == "Network error"
+
+    def test_process_delete_item_pending_status(self):
+        """Test processing delete item with pending status."""
+        item = {
+            "id": "789",
+            "name": "Pending Item",
+            "deletion_result": {},
+            "quality_description": {},
+        }
+
+        result = _process_delete_item(item, "http://emby.local", "server1")
+
+        assert result["status_class"] == "status-pending"
+        assert result["status_text"] == "Pending"

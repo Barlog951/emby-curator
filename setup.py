@@ -21,8 +21,11 @@ setup(
             "pytest>=7.0.0",
             "pytest-cov>=4.0.0",
             "pytest-mock>=3.10.0",
+            "pytest-xdist>=3.5.0",
             "mypy>=1.3.0",
             "ruff>=0.0.270",
+            "vulture>=2.7",
+            "requests>=2.31.0",
         ],
     },
     entry_points={

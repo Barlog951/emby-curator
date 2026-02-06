@@ -12,7 +12,8 @@ from emby_dedupe.utils.constants import (
     ENV_DEDUPE_DOIT,
     DEFAULT_PORT_HTTP,
     DEFAULT_PORT_HTTPS,
-    DEFAULT_PORT_EMBY
+    DEFAULT_PORT_EMBY,
+    should_quality_override_language
 )
 
 
@@ -33,3 +34,67 @@ class TestConstants:
         assert DEFAULT_PORT_HTTP == 80
         assert DEFAULT_PORT_HTTPS == 443
         assert DEFAULT_PORT_EMBY == 8096
+
+    # ========== Phase 1 Helper Tests (for Quality Gate Coverage) ==========
+
+    def test_should_quality_override_single_lang_scenario_above_threshold(self):
+        """Test quality override in single-lang scenario with 1.5x threshold."""
+        # Quality item is 1.6x better, single-lang scenario
+        result = should_quality_override_language(
+            quality_ratio=1.6,
+            lang_item_has_priority_lang=True,
+            quality_item_has_priority_lang=False,
+            is_single_lang_scenario=True
+        )
+
+        # Should override since ratio > 1.5x in single-lang scenario
+        assert result is True
+
+    def test_should_quality_override_single_lang_scenario_below_threshold(self):
+        """Test quality override in single-lang scenario below 1.5x threshold."""
+        result = should_quality_override_language(
+            quality_ratio=1.3,
+            lang_item_has_priority_lang=True,
+            quality_item_has_priority_lang=False,
+            is_single_lang_scenario=True
+        )
+
+        # Should NOT override since ratio < 1.5x
+        assert result is False
+
+    def test_should_quality_override_no_priority_lang_above_threshold(self):
+        """Test quality override when quality item lacks priority lang, 3x threshold."""
+        # Quality item is 3.5x better, no priority language
+        result = should_quality_override_language(
+            quality_ratio=3.5,
+            lang_item_has_priority_lang=True,
+            quality_item_has_priority_lang=False,
+            is_single_lang_scenario=False
+        )
+
+        # Should override since ratio > 3x
+        assert result is True
+
+    def test_should_quality_override_no_priority_lang_below_threshold(self):
+        """Test quality override when quality item lacks priority lang, below 3x."""
+        result = should_quality_override_language(
+            quality_ratio=2.5,
+            lang_item_has_priority_lang=True,
+            quality_item_has_priority_lang=False,
+            is_single_lang_scenario=False
+        )
+
+        # Should NOT override since ratio < 3x
+        assert result is False
+
+    def test_should_quality_override_both_have_priority_lang(self):
+        """Test no override when both items have priority language."""
+        result = should_quality_override_language(
+            quality_ratio=5.0,  # Even with high ratio
+            lang_item_has_priority_lang=True,
+            quality_item_has_priority_lang=True,
+            is_single_lang_scenario=False
+        )
+
+        # Should NOT override - both have priority language
+        assert result is False

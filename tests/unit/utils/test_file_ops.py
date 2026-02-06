@@ -7,7 +7,7 @@ import pytest
 import tempfile
 from unittest.mock import patch, mock_open
 
-from emby_dedupe.utils.file_ops import dump_object_to_file, read_json_file
+from emby_dedupe.utils.file_ops import dump_object_to_file
 
 
 class TestFileOps:
@@ -69,32 +69,3 @@ class TestFileOps:
         # Verify the directory and file were created
         assert os.path.exists(dir_path)
         assert os.path.exists(f"{file_path}.json")
-
-    def test_read_json_file(self, tmpdir):
-        """Test reading a JSON file."""
-        test_dict = {"key1": "value1", "key2": ["item1", "item2"]}
-        file_path = os.path.join(tmpdir, "test_file.json")
-        
-        # Write the test file
-        with open(file_path, "w") as f:
-            json.dump(test_dict, f)
-        
-        # Read and verify
-        result = read_json_file(file_path)
-        assert result == test_dict
-
-    def test_read_nonexistent_json_file(self):
-        """Test reading a non-existent JSON file."""
-        result = read_json_file("/nonexistent/file.json")
-        assert result is None
-
-    def test_read_invalid_json_file(self, tmpdir):
-        """Test reading an invalid JSON file."""
-        file_path = os.path.join(tmpdir, "invalid.json")
-        
-        # Write an invalid JSON file
-        with open(file_path, "w") as f:
-            f.write("{invalid json}")
-        
-        result = read_json_file(file_path)
-        assert result is None

@@ -18,7 +18,7 @@ Usage:
     # Check a movie
     result = checker.check(name="Inception", year=2010, resolution="2160p")
     if result.should_download:
-        print("Download it!")
+        logger.info("Download it!")
 
     # Simple boolean check
     should_dl = checker.should_download("Inception", year=2010, resolution="2160p")
@@ -27,6 +27,7 @@ Usage:
 import hashlib
 import json
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -39,13 +40,37 @@ from emby_dedupe.api.client import (
 )
 from emby_dedupe.api.quality_compare import (
     ComparisonResult,
-    ExistingQuality,
     ProposedQuality,
     compare_quality,
 )
 from emby_dedupe.api.search import search_media
 from emby_dedupe.utils.config import Config, ensure_cache_dir
 from emby_dedupe.utils.logging import logger
+
+
+@dataclass
+class CheckConfig:
+    """Configuration for media quality check.
+
+    Bundles all parameters needed for check() and should_download() methods.
+    """
+
+    name: Optional[str] = None
+    year: Optional[int] = None
+    imdb: Optional[str] = None
+    tmdb: Optional[str] = None
+    tvdb: Optional[str] = None
+    season: Optional[int] = None
+    episode: Optional[int] = None
+    resolution: Optional[str] = None
+    codec: Optional[str] = None
+    hdr: Optional[str] = None
+    audio: Optional[str] = None
+    audio_languages: Optional[list[str]] = None
+    size_mb: Optional[int] = None
+    bitrate_kbps: Optional[int] = None
+    path: Optional[str] = None
+    source_quality_tier: Optional[str] = None
 
 
 class EmbyChecker:
@@ -107,6 +132,13 @@ class EmbyChecker:
         """
         config = Config.from_config_file(**overrides)
         return cls(config=config)
+
+    def _ensure_config(self) -> tuple[str, str]:
+        """Ensure host and api_key are configured and return them."""
+        if not self.host or not self.api_key:
+            msg = "EmbyChecker requires host and api_key to be configured"
+            raise ValueError(msg)
+        return self.host, self.api_key
 
     def _get_client(self) -> httpx.Client:
         """Get or create HTTP client."""
@@ -179,6 +211,24 @@ class EmbyChecker:
         except Exception as e:
             logger.warning(f"Error saving provider tables cache: {e}")
 
+    def _get_library_names(self, client) -> list:
+        """Get list of library names to process."""
+        if self.libraries:
+            return self.libraries
+
+        from emby_dedupe.api.search import get_all_library_ids
+        host, api_key = self._ensure_config()
+        all_libs = get_all_library_ids(client, host, api_key)
+        return [lib["name"] for lib in all_libs]
+
+    def _merge_provider_tables(self, all_tables: dict, tables: dict) -> None:
+        """Merge library tables into all_tables (in-place)."""
+        for provider in ["imdb", "tvdb", "tmdb"]:
+            for pid, items in tables[provider].items():
+                if pid not in all_tables[provider]:
+                    all_tables[provider][pid] = []
+                all_tables[provider][pid].extend(items)
+
     def _build_provider_tables(self) -> dict:
         """Build provider ID tables from configured libraries.
 
@@ -188,36 +238,22 @@ class EmbyChecker:
         logger.info("Building provider ID index from libraries (this may take 30-60s)...")
 
         client = self._get_client()
-        all_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}}
+        host, _ = self._ensure_config()
+        all_tables: dict[str, dict] = {"imdb": {}, "tvdb": {}, "tmdb": {}}
 
-        # Determine which libraries to fetch
-        if self.libraries:
-            library_names = self.libraries
-        else:
-            # Get all libraries
-            from emby_dedupe.api.search import get_all_library_ids
-            all_libs = get_all_library_ids(client, self.host, self.api_key)
-            library_names = [lib["name"] for lib in all_libs]
+        library_names = self._get_library_names(client)
 
         # Fetch from each library and build tables
         for lib_name in library_names:
             logger.info(f"  Fetching items from library: {lib_name}")
             try:
-                # Get library ID
-                lib_id = get_library_id(client, self.host, lib_name)
+                lib_id = get_library_id(client, host, lib_name)
                 if not lib_id:
                     logger.warning(f"  Library '{lib_name}' not found, skipping")
                     continue
 
-                # Fetch items and build provider tables
-                tables = fetch_and_process_media_items(client, self.host, lib_id, lib_name)
-
-                # Merge tables
-                for provider in ["imdb", "tvdb", "tmdb"]:
-                    for pid, items in tables[provider].items():
-                        if pid not in all_tables[provider]:
-                            all_tables[provider][pid] = []
-                        all_tables[provider][pid].extend(items)
+                tables = fetch_and_process_media_items(client, host, lib_id, lib_name)
+                self._merge_provider_tables(all_tables, tables)
 
             except Exception as e:
                 logger.warning(f"  Error fetching library '{lib_name}': {e}")
@@ -272,7 +308,8 @@ class EmbyChecker:
 
         # Fetch full item details
         client = self._get_client()
-        items = fetch_items_details(client, self.host, item_ids)
+        host, _ = self._ensure_config()
+        items = fetch_items_details(client, host, item_ids)
         return items
 
     def _get_from_cache(self, cache_key: str) -> Optional[list[dict]]:
@@ -362,49 +399,112 @@ class EmbyChecker:
 
         logger.info("Provider ID index rebuilt successfully")
 
+    def _lookup_by_any_provider_id(self, imdb: Optional[str], tmdb: Optional[str], tvdb: Optional[str]) -> Optional[list]:
+        """Try to lookup items by provider ID (IMDB > TMDB > TVDB priority)."""
+        if imdb:
+            logger.debug(f"Looking up IMDB ID: {imdb}")
+            items = self._lookup_by_provider_id(imdb, "imdb")
+            if items:
+                logger.debug(f"Found {len(items)} items via IMDB lookup")
+                return items
+
+        if tmdb:
+            logger.debug(f"Looking up TMDB ID: {tmdb}")
+            items = self._lookup_by_provider_id(tmdb, "tmdb")
+            if items:
+                logger.debug(f"Found {len(items)} items via TMDB lookup")
+                return items
+
+        if tvdb:
+            logger.debug(f"Looking up TVDB ID: {tvdb}")
+            items = self._lookup_by_provider_id(tvdb, "tvdb")
+            if items:
+                logger.debug(f"Found {len(items)} items via TVDB lookup")
+                return items
+
+        return None
+
+    def _search_by_name(self, name: str, year: Optional[int], season: Optional[int], episode: Optional[int]) -> list:
+        """Search for existing media by name with caching."""
+        logger.debug(f"Provider ID not found or not provided, searching by name: {name}")
+
+        cache_key = self._make_cache_key(name=name, year=year, season=season, episode=episode, libraries=self.libraries)
+        existing_items = self._get_from_cache(cache_key)
+
+        if existing_items is None:
+            client = self._get_client()
+            host, api_key = self._ensure_config()
+            existing_items = search_media(
+                client=client,
+                host=host,
+                api_key=api_key,
+                name=name,
+                year=year,
+                imdb=None,
+                tmdb=None,
+                tvdb=None,
+                season=season,
+                episode=episode,
+                library_names=self.libraries,
+                skip_provider_search=True,
+            )
+            self._save_to_cache(cache_key, existing_items)
+
+        return existing_items
+
     def check(
         self,
-        name: Optional[str] = None,
-        year: Optional[int] = None,
-        imdb: Optional[str] = None,
-        tmdb: Optional[str] = None,
-        tvdb: Optional[str] = None,
-        season: Optional[int] = None,
-        episode: Optional[int] = None,
-        resolution: Optional[str] = None,
-        codec: Optional[str] = None,
-        hdr: Optional[str] = None,
-        audio: Optional[str] = None,
-        audio_languages: Optional[list[str]] = None,
-        size_mb: Optional[int] = None,
-        bitrate_kbps: Optional[int] = None,
-        path: Optional[str] = None,
-        source_quality_tier: Optional[str] = None,
+        config: Optional[CheckConfig] = None,
+        **kwargs
     ) -> ComparisonResult:
         """Check if media should be downloaded.
 
         Args:
-            name: Media name (or full torrent filename for auto-detection).
-            year: Release year.
-            imdb: IMDB ID.
-            tmdb: TMDB ID.
-            tvdb: TVDB ID.
-            season: Season number (for TV).
-            episode: Episode number (for TV).
-            resolution: Resolution (2160p, 1080p, etc.).
-            codec: Video codec (x265, x264, etc.).
-            hdr: HDR type (HDR, DV, etc.).
-            audio: Audio type (Atmos, DTS-HD, etc.).
-            audio_languages: Audio languages in torrent.
-            size_mb: File size in MB.
-            bitrate_kbps: Bitrate in kbps.
-            path: File path (for source quality auto-detection).
-            source_quality_tier: Pre-detected source quality tier
-                (bluray_remux, bluray, webdl, hdtv, unknown).
+            config: CheckConfig object with all parameters (preferred).
+            **kwargs: Individual parameters (name, year, imdb, tmdb, tvdb, season,
+                episode, resolution, codec, hdr, audio, audio_languages, size_mb,
+                bitrate_kbps, path, source_quality_tier).
 
         Returns:
             ComparisonResult with recommendation.
         """
+        # Use config object if provided, otherwise use individual parameters from kwargs
+        if config:
+            name = config.name
+            year = config.year
+            imdb = config.imdb
+            tmdb = config.tmdb
+            tvdb = config.tvdb
+            season = config.season
+            episode = config.episode
+            resolution = config.resolution
+            codec = config.codec
+            hdr = config.hdr
+            audio = config.audio
+            audio_languages = config.audio_languages
+            size_mb = config.size_mb
+            bitrate_kbps = config.bitrate_kbps
+            path = config.path
+            source_quality_tier = config.source_quality_tier
+        else:
+            # Extract from kwargs
+            name = kwargs.get('name')
+            year = kwargs.get('year')
+            imdb = kwargs.get('imdb')
+            tmdb = kwargs.get('tmdb')
+            tvdb = kwargs.get('tvdb')
+            season = kwargs.get('season')
+            episode = kwargs.get('episode')
+            resolution = kwargs.get('resolution')
+            codec = kwargs.get('codec')
+            hdr = kwargs.get('hdr')
+            audio = kwargs.get('audio')
+            audio_languages = kwargs.get('audio_languages')
+            size_mb = kwargs.get('size_mb')
+            bitrate_kbps = kwargs.get('bitrate_kbps')
+            path = kwargs.get('path')
+            source_quality_tier = kwargs.get('source_quality_tier')
+
         # Validate configuration
         errors = self.validate()
         if errors:
@@ -435,80 +535,21 @@ class EmbyChecker:
         )
 
         # Try provider ID lookup first (instant with cached tables)
-        existing_items = None
-        if imdb:
-            logger.debug(f"Looking up IMDB ID: {imdb}")
-            existing_items = self._lookup_by_provider_id(imdb, "imdb")
-            if existing_items:
-                logger.debug(f"Found {len(existing_items)} items via IMDB lookup")
-        elif tmdb:
-            logger.debug(f"Looking up TMDB ID: {tmdb}")
-            existing_items = self._lookup_by_provider_id(tmdb, "tmdb")
-            if existing_items:
-                logger.debug(f"Found {len(existing_items)} items via TMDB lookup")
-        elif tvdb:
-            logger.debug(f"Looking up TVDB ID: {tvdb}")
-            existing_items = self._lookup_by_provider_id(tvdb, "tvdb")
-            if existing_items:
-                logger.debug(f"Found {len(existing_items)} items via TVDB lookup")
+        existing_items = self._lookup_by_any_provider_id(imdb, tmdb, tvdb)
 
         # If provider ID lookup didn't find anything, try name search
-        if existing_items is None or len(existing_items) == 0:
-            if name:
-                logger.debug(f"Provider ID not found or not provided, searching by name: {name}")
-                # Generate cache key for name search
-                cache_key = self._make_cache_key(
-                    name=name,
-                    year=year,
-                    season=season,
-                    episode=episode,
-                    libraries=self.libraries,
-                )
-
-                # Try to get from cache
-                existing_items = self._get_from_cache(cache_key)
-
-                if existing_items is None:
-                    # Search by name
-                    client = self._get_client()
-                    existing_items = search_media(
-                        client=client,
-                        host=self.host,
-                        api_key=self.api_key,
-                        name=name,
-                        year=year,
-                        imdb=None,  # Already tried provider ID
-                        tmdb=None,
-                        tvdb=None,
-                        season=season,
-                        episode=episode,
-                        library_names=self.libraries,
-                        skip_provider_search=True,  # Already did provider lookup above
-                    )
-                    # Save to cache
-                    self._save_to_cache(cache_key, existing_items)
-            else:
-                existing_items = []
+        if not existing_items and name:
+            existing_items = self._search_by_name(name, year, season, episode)
+        elif not existing_items:
+            existing_items = []
 
         # Compare quality
         return compare_quality(proposed, existing_items, self.lang_priorities)
 
     def should_download(
         self,
-        name: Optional[str] = None,
-        year: Optional[int] = None,
-        imdb: Optional[str] = None,
-        tmdb: Optional[str] = None,
-        tvdb: Optional[str] = None,
-        season: Optional[int] = None,
-        episode: Optional[int] = None,
-        resolution: Optional[str] = None,
-        codec: Optional[str] = None,
-        hdr: Optional[str] = None,
-        audio: Optional[str] = None,
-        audio_languages: Optional[list[str]] = None,
-        size_mb: Optional[int] = None,
-        bitrate_kbps: Optional[int] = None,
+        config: Optional[CheckConfig] = None,
+        **kwargs
     ) -> bool:
         """Check if media should be downloaded (simple boolean interface).
 
@@ -521,27 +562,17 @@ class EmbyChecker:
         - Provider ID is excluded
 
         Args:
-            Same as check().
+            config: CheckConfig object with all parameters (preferred).
+            **kwargs: Individual parameters (same as check()).
 
         Returns:
             True if should download, False otherwise.
         """
-        result = self.check(
-            name=name,
-            year=year,
-            imdb=imdb,
-            tmdb=tmdb,
-            tvdb=tvdb,
-            season=season,
-            episode=episode,
-            resolution=resolution,
-            codec=codec,
-            hdr=hdr,
-            audio=audio,
-            audio_languages=audio_languages,
-            size_mb=size_mb,
-            bitrate_kbps=bitrate_kbps,
-        )
+        # Use config if provided, otherwise pass kwargs to check
+        if config:
+            result = self.check(config=config)
+        else:
+            result = self.check(**kwargs)
         return result.should_download
 
     def check_batch(

@@ -7,8 +7,9 @@ consistent recommendations.
 
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, TypedDict
 
+from emby_dedupe.utils.constants import LANGUAGE_NORMALIZATION_MAP, should_quality_override_language
 from emby_dedupe.utils.logging import logger
 
 try:
@@ -17,6 +18,12 @@ try:
 except ImportError:
     RTN_AVAILABLE = False
     logger.warning("RTN library not available, falling back to regex-based detection")
+
+
+class SourceQualityTier(TypedDict, total=False):
+    """Type definition for source quality tier data."""
+    bonus: float
+    patterns: list[str]
 
 
 # Resolution mapping from string to pixels (width x height)
@@ -57,7 +64,7 @@ QUALITY_WEIGHTS = {
 }
 
 # Source quality tiers and multipliers (35% weight in final score)
-SOURCE_QUALITY_TIERS = {
+SOURCE_QUALITY_TIERS: dict[str, SourceQualityTier] = {
     "bluray_remux": {
         "bonus": 1.3,  # Lossless, 50-90 Mbps for 4K
         "patterns": ["REMUX", "BDREMUX", "BluRay.Remux", "Blu-ray.Remux", "BD.REMUX"]
@@ -319,6 +326,44 @@ def has_quality_red_flags(
     return (False, "")
 
 
+def _check_quality_type_from_rtn(quality_lower: str, filename: str) -> Optional[float]:
+    """Check quality type and return appropriate multiplier.
+
+    Args:
+        quality_lower: Lowercased quality string from RTN
+        filename: Filename for logging (truncated)
+
+    Returns:
+        Quality multiplier if matched, None otherwise
+    """
+    # Check for REMUX (highest quality)
+    if "remux" in quality_lower:
+        logger.debug(f"RTN detected REMUX quality in: {filename[:100]}")
+        return SOURCE_QUALITY_TIERS["bluray_remux"]["bonus"]
+
+    # Check for BluRay
+    if "bluray" in quality_lower or "blu-ray" in quality_lower:
+        logger.debug(f"RTN detected BluRay quality in: {filename[:100]}")
+        return SOURCE_QUALITY_TIERS["bluray"]["bonus"]
+
+    # Check for WEB-DL
+    if "web-dl" in quality_lower or "webdl" in quality_lower:
+        logger.debug(f"RTN detected WEB-DL quality in: {filename[:100]}")
+        return SOURCE_QUALITY_TIERS["webdl"]["bonus"]
+
+    # Check for WEBRip
+    if "webrip" in quality_lower:
+        logger.debug(f"RTN detected WEBRip quality in: {filename[:100]}")
+        return SOURCE_QUALITY_TIERS["webdl"]["bonus"]
+
+    # Check for HDTV
+    if "hdtv" in quality_lower:
+        logger.debug(f"RTN detected HDTV quality in: {filename[:100]}")
+        return SOURCE_QUALITY_TIERS["hdtv"]["bonus"]
+
+    return None
+
+
 def detect_source_quality_with_rtn(path: Optional[str], name: Optional[str]) -> float:
     """Detect source quality using RTN library for better accuracy.
 
@@ -330,45 +375,53 @@ def detect_source_quality_with_rtn(path: Optional[str], name: Optional[str]) -> 
         Quality multiplier (0.9-1.3)
     """
     # Try to parse with RTN first
-    if RTN_AVAILABLE:
-        try:
-            filename = path if path else name
-            if filename:
-                parsed = rtn_parse(filename)
+    if not RTN_AVAILABLE:
+        return detect_source_quality(path, name)
 
-                # Check quality attribute for source quality
-                if parsed.quality:
-                    quality_lower = str(parsed.quality).lower()
+    try:
+        filename = path if path else name
+        if not filename:
+            return detect_source_quality(path, name)
 
-                    # Check for REMUX (highest quality)
-                    if "remux" in quality_lower:
-                        logger.debug(f"RTN detected REMUX quality in: {filename[:100]}")
-                        return SOURCE_QUALITY_TIERS["bluray_remux"]["bonus"]
+        parsed = rtn_parse(filename)
 
-                    # Check for BluRay
-                    if "bluray" in quality_lower or "blu-ray" in quality_lower:
-                        logger.debug(f"RTN detected BluRay quality in: {filename[:100]}")
-                        return SOURCE_QUALITY_TIERS["bluray"]["bonus"]
-
-                    # Check for WEB-DL
-                    if "web-dl" in quality_lower or "webdl" in quality_lower:
-                        logger.debug(f"RTN detected WEB-DL quality in: {filename[:100]}")
-                        return SOURCE_QUALITY_TIERS["webdl"]["bonus"]
-
-                    # Check for WEBRip
-                    if "webrip" in quality_lower:
-                        logger.debug(f"RTN detected WEBRip quality in: {filename[:100]}")
-                        return SOURCE_QUALITY_TIERS["webdl"]["bonus"]
-
-                    # Check for HDTV
-                    if "hdtv" in quality_lower:
-                        logger.debug(f"RTN detected HDTV quality in: {filename[:100]}")
-                        return SOURCE_QUALITY_TIERS["hdtv"]["bonus"]
-        except Exception as e:
-            logger.debug(f"RTN parsing failed, falling back to regex: {e}")
+        # Check quality attribute for source quality
+        if parsed.quality:
+            quality_lower = str(parsed.quality).lower()
+            multiplier = _check_quality_type_from_rtn(quality_lower, filename)
+            if multiplier is not None:
+                return multiplier
+    except Exception as e:
+        logger.debug(f"RTN parsing failed, falling back to regex: {e}")
 
     # Fallback to existing regex-based detection
     return detect_source_quality(path, name)
+
+
+def _try_rtn_codec_detection(path: str) -> Optional[float]:
+    """Try to detect codec using RTN parsing.
+
+    Args:
+        path: File path for RTN parsing.
+
+    Returns:
+        Multiplier if detected, None otherwise.
+    """
+    if not RTN_AVAILABLE:
+        return None
+
+    try:
+        parsed = rtn_parse(path)
+        if parsed.codec:
+            codec_str = str(parsed.codec).lower()
+            for codec_name, multiplier in CODEC_EFFICIENCY.items():
+                if codec_name in codec_str:
+                    logger.debug(f"RTN detected codec {codec_name} in: {path[:100]}")
+                    return multiplier
+    except Exception as e:
+        logger.debug(f"RTN codec parsing failed: {e}")
+
+    return None
 
 
 def get_codec_multiplier_with_rtn(codec: Optional[str], path: Optional[str] = None) -> float:
@@ -382,17 +435,10 @@ def get_codec_multiplier_with_rtn(codec: Optional[str], path: Optional[str] = No
         Efficiency multiplier (1.0-1.15)
     """
     # Try RTN parsing first if we have a path
-    if RTN_AVAILABLE and path:
-        try:
-            parsed = rtn_parse(path)
-            if parsed.codec:
-                codec_str = str(parsed.codec).lower()
-                for codec_name, multiplier in CODEC_EFFICIENCY.items():
-                    if codec_name in codec_str:
-                        logger.debug(f"RTN detected codec {codec_name} in: {path[:100]}")
-                        return multiplier
-        except Exception as e:
-            logger.debug(f"RTN codec parsing failed: {e}")
+    if path:
+        rtn_multiplier = _try_rtn_codec_detection(path)
+        if rtn_multiplier is not None:
+            return rtn_multiplier
 
     # Fallback to direct codec check
     if codec:
@@ -461,6 +507,36 @@ class ProposedQuality:
             return self.bitrate_kbps * 1000
         return 0
 
+    def _cross_check_source_quality(self, provided_multiplier: float) -> None:
+        """Cross-check provided source quality tier against auto-detection.
+
+        Args:
+            provided_multiplier: Multiplier from provided tier.
+        """
+        if not (self.path or self.name):
+            return
+
+        auto_multiplier = detect_source_quality(self.path, self.name)
+
+        # Find tier name for auto-detected multiplier
+        auto_tier = "unknown"
+        for tier_name, tier_info in SOURCE_QUALITY_TIERS.items():
+            if tier_info["bonus"] == auto_multiplier:
+                auto_tier = tier_name
+                break
+
+        # Warn if mismatch
+        if abs(provided_multiplier - auto_multiplier) > 0.01:
+            logger.warning(
+                f"Source quality mismatch! Provided: {self.source_quality_tier} "
+                f"({provided_multiplier}x), Auto-detected: {auto_tier} ({auto_multiplier}x) "
+                f"from '{self.path or self.name}'. Using provided value."
+            )
+        else:
+            logger.debug(
+                f"Source quality cross-check OK: {self.source_quality_tier} matches auto-detection"
+            )
+
     def get_source_quality_multiplier(self) -> float:
         """Get source quality multiplier based on path/name or provided tier.
 
@@ -474,28 +550,8 @@ class ProposedQuality:
                 self.source_quality_tier, {}
             ).get("bonus", 0.95)
 
-            # Cross-check: if path/name also provided, auto-detect and compare
-            if self.path or self.name:
-                auto_multiplier = detect_source_quality(self.path, self.name)
-
-                # Find tier name for auto-detected multiplier
-                auto_tier = "unknown"
-                for tier_name, tier_info in SOURCE_QUALITY_TIERS.items():
-                    if tier_info["bonus"] == auto_multiplier:
-                        auto_tier = tier_name
-                        break
-
-                # Warn if mismatch
-                if abs(provided_multiplier - auto_multiplier) > 0.01:
-                    logger.warning(
-                        f"Source quality mismatch! Provided: {self.source_quality_tier} "
-                        f"({provided_multiplier}x), Auto-detected: {auto_tier} ({auto_multiplier}x) "
-                        f"from '{self.path or self.name}'. Using provided value."
-                    )
-                else:
-                    logger.debug(
-                        f"Source quality cross-check OK: {self.source_quality_tier} matches auto-detection"
-                    )
+            # Cross-check if path/name also provided
+            self._cross_check_source_quality(provided_multiplier)
 
             return provided_multiplier
 
@@ -563,6 +619,56 @@ class ProposedQuality:
         return final_score
 
 
+def _detect_resolution_from_dimensions(width: int, height: int) -> Optional[str]:
+    """Detect resolution string from width/height dimensions.
+
+    Uses OR logic for aspect ratio compatibility - movies with non-standard
+    aspect ratios (1.85:1, 2.39:1) have height < 1080 even when they're
+    "1080p" content (e.g., 1920x1040, 1920x800).
+
+    Args:
+        width: Video width in pixels.
+        height: Video height in pixels.
+
+    Returns:
+        Resolution string (2160p, 1080p, 720p, 480p) or None.
+    """
+    if width >= 3840 or height >= 2160:
+        return "2160p"
+    elif width >= 1920 or height >= 1080:
+        return "1080p"
+    elif width >= 1280 or height >= 720:
+        return "720p"
+    elif width >= 854 or height >= 480:
+        return "480p"
+    return None
+
+
+def _calculate_date_rating_from_item(item: dict[str, Any]) -> int:
+    """Calculate date rating from item DateCreated field.
+
+    Args:
+        item: Media item dict.
+
+    Returns:
+        Unix timestamp of creation date, capped at current time.
+    """
+    date_rating = 0
+    try:
+        if "DateCreated" in item:
+            date_str = item["DateCreated"]
+            if isinstance(date_str, str) and 'T' in date_str:
+                date_obj = time.strptime(date_str.split('T')[0], "%Y-%m-%d")
+                date_timestamp = int(time.mktime(date_obj))
+                # Cap at current time to prevent future dates from giving unfair bonuses
+                current_timestamp = int(time.time())
+                date_rating = min(date_timestamp, current_timestamp)
+    except Exception:
+        pass
+
+    return date_rating
+
+
 @dataclass
 class ExistingQuality:
     """Quality information for an existing Emby item."""
@@ -587,10 +693,16 @@ class ExistingQuality:
     source_quality_tier: Optional[str] = None
     is_ai_upscale: bool = False
 
-    @classmethod
-    def from_emby_item(cls, item: dict[str, Any]) -> 'ExistingQuality':
-        """Create ExistingQuality from an Emby item dict."""
-        # Extract video stream info
+    @staticmethod
+    def _extract_streams(item: dict[str, Any]) -> tuple[Optional[dict], Optional[dict], list[str]]:
+        """Extract video, audio streams and languages from item.
+
+        Args:
+            item: Emby item dict.
+
+        Returns:
+            Tuple of (video_stream, audio_stream, audio_languages).
+        """
         video_stream = None
         audio_stream = None
         audio_languages = []
@@ -605,49 +717,44 @@ class ExistingQuality:
                 if lang and lang not in audio_languages:
                     audio_languages.append(lang)
 
+        return video_stream, audio_stream, audio_languages
+
+    @staticmethod
+    def _detect_source_quality_tier(item_path: Optional[str], item_name: str) -> Optional[str]:
+        """Detect source quality tier from path/name.
+
+        Args:
+            item_path: Item path.
+            item_name: Item name.
+
+        Returns:
+            Source quality tier name or None.
+        """
+        source_multiplier = detect_source_quality(item_path, item_name)
+        for tier_name, tier_info in SOURCE_QUALITY_TIERS.items():
+            if tier_info["bonus"] == source_multiplier:
+                return tier_name
+        return None
+
+    @classmethod
+    def from_emby_item(cls, item: dict[str, Any]) -> 'ExistingQuality':
+        """Create ExistingQuality from an Emby item dict."""
+        # Extract streams
+        video_stream, audio_stream, audio_languages = cls._extract_streams(item)
+
         width = video_stream.get("Width", 0) if video_stream else 0
         height = video_stream.get("Height", 0) if video_stream else 0
 
-        # Determine resolution string (use width OR height for aspect ratio compatibility)
-        # Movies with non-standard aspect ratios (1.85:1, 2.39:1) have height < 1080
-        # even when they're "1080p" content (e.g., 1920x1040, 1920x800)
-        resolution = None
-        if width >= 3840 or height >= 2160:
-            resolution = "2160p"
-        elif width >= 1920 or height >= 1080:
-            resolution = "1080p"
-        elif width >= 1280 or height >= 720:
-            resolution = "720p"
-        elif width >= 854 or height >= 480:
-            resolution = "480p"
+        # Determine resolution string using helper
+        resolution = _detect_resolution_from_dimensions(width, height)
 
-        # Calculate date rating
-        date_rating = 0
-        try:
-            if "DateCreated" in item:
-                date_str = item["DateCreated"]
-                if isinstance(date_str, str) and 'T' in date_str:
-                    date_obj = time.strptime(date_str.split('T')[0], "%Y-%m-%d")
-                    date_timestamp = int(time.mktime(date_obj))
-                    # Cap at current time to prevent future dates from giving unfair bonuses
-                    current_timestamp = int(time.time())
-                    date_rating = min(date_timestamp, current_timestamp)
-        except Exception:
-            pass
+        # Calculate date rating using helper
+        date_rating = _calculate_date_rating_from_item(item)
 
         # Detect source quality and AI upscale
         item_path = item.get("Path")
         item_name = item.get("Name", "")
-
-        # Detect source quality tier
-        source_multiplier = detect_source_quality(item_path, item_name)
-        source_quality_tier = None
-        for tier_name, tier_info in SOURCE_QUALITY_TIERS.items():
-            if tier_info["bonus"] == source_multiplier:
-                source_quality_tier = tier_name
-                break
-
-        # Detect AI upscale
+        source_quality_tier = cls._detect_source_quality_tier(item_path, item_name)
         is_ai_upscale = detect_ai_upscale(item_path, item_name)
 
         return cls(
@@ -769,7 +876,7 @@ class ComparisonResult:
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON output."""
-        result = {
+        result: dict[str, Any] = {
             "status": self.status,
             "recommendation": self.recommendation,
             "reason": self.reason,
@@ -797,6 +904,38 @@ class ComparisonResult:
         return result
 
 
+def _get_best_lang_priority(
+    item_languages: Optional[list[str]],
+    normalized_priorities: list[str],
+    lang_mapping: dict[str, str],
+) -> int:
+    """Find best (lowest index) language priority for an item.
+
+    Args:
+        item_languages: Item's audio languages.
+        normalized_priorities: Normalized priority list.
+        lang_mapping: Language normalization mapping.
+
+    Returns:
+        Best priority index (9999 if no match).
+    """
+    if not item_languages:
+        return 9999
+
+    # Normalize item languages
+    normalized_langs = [lang_mapping.get(lang.lower(), lang.lower()) for lang in item_languages]
+
+    # Find best priority
+    best_priority = 9999
+    for lang in normalized_langs:
+        if lang in normalized_priorities:
+            priority = normalized_priorities.index(lang)
+            if priority < best_priority:
+                best_priority = priority
+
+    return best_priority
+
+
 def apply_language_priority(
     items: list[ExistingQuality],
     lang_priorities: Optional[list[str]] = None,
@@ -813,40 +952,185 @@ def apply_language_priority(
     if not lang_priorities:
         return sorted(items, key=lambda x: x.calculate_score(), reverse=True)
 
-    # Language normalization mapping
-    lang_mapping = {
-        "slo": "sk",
-        "slovak": "sk",
-        "sk": "sk",
-        "cze": "cs",
-        "ces": "cs",
-        "czech": "cs",
-        "cs": "cs",
-    }
+    # Use shared language normalization mapping
+    lang_mapping = LANGUAGE_NORMALIZATION_MAP
 
     # Normalize the priority list
-    normalized_priorities = [lang_mapping.get(l.lower(), l.lower()) for l in lang_priorities]
+    normalized_priorities = [lang_mapping.get(lang.lower(), lang.lower()) for lang in lang_priorities]
 
     def get_lang_priority(item: ExistingQuality) -> tuple[bool, int, float]:
         """Get language priority score for sorting."""
-        if not item.audio_languages:
-            return (False, 9999, -item.calculate_score())
-
-        # Normalize item languages
-        normalized_langs = [lang_mapping.get(l.lower(), l.lower()) for l in item.audio_languages]
-
-        # Find best priority
-        best_priority = 9999
-        for lang in normalized_langs:
-            if lang in normalized_priorities:
-                priority = normalized_priorities.index(lang)
-                if priority < best_priority:
-                    best_priority = priority
-
+        best_priority = _get_best_lang_priority(
+            item.audio_languages, normalized_priorities, lang_mapping
+        )
         has_priority = best_priority < 9999
         return (not has_priority, best_priority, -item.calculate_score())
 
     return sorted(items, key=get_lang_priority)
+
+
+def _create_proposed_as_existing(proposed: ProposedQuality) -> ExistingQuality:
+    """Convert ProposedQuality to ExistingQuality format for comparison.
+
+    Args:
+        proposed: Proposed torrent quality information.
+
+    Returns:
+        ExistingQuality object representing the proposed item.
+    """
+    # Extract width/height from resolution
+    width, height = 0, 0
+    if proposed.resolution:
+        res_lower = proposed.resolution.lower()
+        if res_lower in RESOLUTION_MAP:
+            width, height = RESOLUTION_MAP[res_lower]
+
+    # Detect source quality and AI upscale for proposed item
+    proposed_source_multiplier = detect_source_quality(proposed.path, proposed.name)
+    proposed_source_tier = None
+    for tier_name, tier_info in SOURCE_QUALITY_TIERS.items():
+        if tier_info["bonus"] == proposed_source_multiplier:
+            proposed_source_tier = tier_name
+            break
+    proposed_is_ai_upscale = detect_ai_upscale(proposed.path, proposed.name)
+
+    return ExistingQuality(
+        id="proposed",
+        name="Proposed",
+        width=width,
+        height=height,
+        audio_channels=proposed.get_audio_channels(),
+        audio_languages=proposed.audio_languages,
+        size_bytes=proposed.get_size_bytes(),
+        bitrate=proposed.get_bitrate(),
+        date_rating=int(time.time()),  # Current time (newest)
+        path=proposed.path,
+        source_quality_tier=proposed_source_tier,
+        is_ai_upscale=proposed_is_ai_upscale,
+    )
+
+
+def _apply_smart_override_if_needed(
+    all_items: list[ExistingQuality],
+    sorted_items: list[ExistingQuality],
+    lang_priorities: Optional[list[str]],
+) -> list[ExistingQuality]:
+    """Apply smart override logic if quality significantly better than language priority.
+
+    Args:
+        all_items: All items including proposed.
+        sorted_items: Items sorted by language priority.
+        lang_priorities: Language priority list.
+
+    Returns:
+        Updated sorted items (either original or re-sorted by quality).
+    """
+    if not lang_priorities or len(sorted_items) < 2:
+        return sorted_items
+
+    best_by_lang = sorted_items[0]
+    best_by_quality = max(all_items, key=lambda x: x.calculate_score())
+
+    # If they're the same item, no override needed
+    if best_by_lang.id == best_by_quality.id:
+        return sorted_items
+
+    lang_item_langs = best_by_lang.audio_languages or []
+    quality_item_langs = best_by_quality.audio_languages or []
+
+    # Calculate quality ratio
+    lang_score = best_by_lang.calculate_score()
+    quality_score = best_by_quality.calculate_score()
+    quality_ratio = quality_score / lang_score if lang_score > 0 else float('inf')
+
+    # Determine if items have priority languages
+    lang_mapping = LANGUAGE_NORMALIZATION_MAP
+    normalized_priorities = [lang_mapping.get(lang.lower(), lang.lower()) for lang in lang_priorities]
+
+    def has_priority_lang(langs):
+        """Check if any language matches priority list."""
+        if not langs:
+            return False
+        normalized = [lang_mapping.get(lang.lower(), lang.lower()) for lang in langs]
+        return any(lang in normalized_priorities for lang in normalized)
+
+    lang_item_has_priority = has_priority_lang(lang_item_langs)
+    quality_item_has_priority = has_priority_lang(quality_item_langs)
+    is_single_lang_scenario = len(lang_item_langs) == 1 and len(quality_item_langs) >= 2
+
+    # Use shared smart override logic
+    if should_quality_override_language(
+        quality_ratio=quality_ratio,
+        lang_item_has_priority_lang=lang_item_has_priority,
+        quality_item_has_priority_lang=quality_item_has_priority,
+        is_single_lang_scenario=is_single_lang_scenario,
+    ):
+        # Log the override decision
+        if is_single_lang_scenario:
+            logger.info(f"Quality override (single-lang): {quality_item_langs} quality {quality_score:.1f} "
+                      f"wins over {lang_item_langs} quality {lang_score:.1f} (ratio: {quality_ratio:.2f}x)")
+        else:
+            logger.info(f"Quality override (worse-priority): {quality_item_langs} quality {quality_score:.1f} "
+                      f"wins over {lang_item_langs} quality {lang_score:.1f} (ratio: {quality_ratio:.2f}x)")
+
+        # Use quality-based sorting
+        return sorted(all_items, key=lambda x: x.calculate_score(), reverse=True)
+
+    return sorted_items
+
+
+def _apply_bluray_native_exception(
+    proposed_as_existing: ExistingQuality,
+    best_existing: ExistingQuality,
+    current_recommendation: str,
+) -> str:
+    """Apply BluRay native exception rule.
+
+    If comparing native BluRay 1080p vs AI upscaled 4K, and native is 1.5x+ larger,
+    prefer the native version.
+
+    Args:
+        proposed_as_existing: Proposed item as ExistingQuality.
+        best_existing: Best existing item.
+        current_recommendation: Current recommendation ("download" or "skip").
+
+    Returns:
+        Updated recommendation after applying exception rule.
+    """
+    # Only apply if one is AI upscale and one is not
+    if proposed_as_existing.is_ai_upscale == best_existing.is_ai_upscale:
+        return current_recommendation
+
+    # Determine which is native and which is AI upscaled
+    native = best_existing if not best_existing.is_ai_upscale else proposed_as_existing
+    ai_item = proposed_as_existing if proposed_as_existing.is_ai_upscale else best_existing
+
+    # Check if native is BluRay/REMUX source
+    native_source = detect_source_quality(native.path, native.name)
+    is_bluray = native_source >= SOURCE_QUALITY_TIERS["bluray"]["bonus"]
+
+    # Check if native is 1080p and AI upscale is 4K
+    native_is_1080p = (
+        1920 * 1080 <= (native.width * native.height) < 3840 * 2160
+    )
+    ai_is_4k = (ai_item.width * ai_item.height) >= 3840 * 2160
+
+    # Check size ratio
+    if is_bluray and native_is_1080p and ai_is_4k and ai_item.size_bytes > 0:
+        size_ratio = native.size_bytes / ai_item.size_bytes
+        if size_ratio >= 1.5:
+            logger.info(
+                f"BluRay native exception: Native BluRay 1080p "
+                f"({native.size_bytes // (1024*1024)}MB) preferred over AI upscaled 4K "
+                f"({ai_item.size_bytes // (1024*1024)}MB) due to {size_ratio:.2f}x size ratio"
+            )
+            # Override recommendation to prefer native
+            if native.id == "proposed":
+                return "download"
+            else:
+                return "skip"
+
+    return current_recommendation
 
 
 def compare_quality(
@@ -881,38 +1165,8 @@ def compare_quality(
     # Convert existing items to ExistingQuality objects
     existing = [ExistingQuality.from_emby_item(item) for item in existing_items]
 
-    # Create a pseudo-ExistingQuality for the proposed item
-    # This allows us to compare it using the same language priority logic
-    # Extract width/height from resolution
-    width, height = 0, 0
-    if proposed.resolution:
-        res_lower = proposed.resolution.lower()
-        if res_lower in RESOLUTION_MAP:
-            width, height = RESOLUTION_MAP[res_lower]
-
-    # Detect source quality and AI upscale for proposed item
-    proposed_source_multiplier = detect_source_quality(proposed.path, proposed.name)
-    proposed_source_tier = None
-    for tier_name, tier_info in SOURCE_QUALITY_TIERS.items():
-        if tier_info["bonus"] == proposed_source_multiplier:
-            proposed_source_tier = tier_name
-            break
-    proposed_is_ai_upscale = detect_ai_upscale(proposed.path, proposed.name)
-
-    proposed_as_existing = ExistingQuality(
-        id="proposed",
-        name="Proposed",
-        width=width,
-        height=height,
-        audio_channels=proposed.get_audio_channels(),
-        audio_languages=proposed.audio_languages,
-        size_bytes=proposed.get_size_bytes(),
-        bitrate=proposed.get_bitrate(),
-        date_rating=int(time.time()),  # Current time (newest)
-        path=proposed.path,
-        source_quality_tier=proposed_source_tier,
-        is_ai_upscale=proposed_is_ai_upscale,
-    )
+    # Create a pseudo-ExistingQuality for the proposed item using helper
+    proposed_as_existing = _create_proposed_as_existing(proposed)
 
     # Add proposed to the list for comparison
     all_items = existing + [proposed_as_existing]
@@ -920,64 +1174,8 @@ def compare_quality(
     # Apply language priority and sort (same as deduplication)
     sorted_items = apply_language_priority(all_items, lang_priorities)
 
-    # Apply "smart override" logic (same as deduplication.py:678)
-    # Quality can win over language priority when significantly better
-    if lang_priorities and len(sorted_items) >= 2:
-        best_by_lang = sorted_items[0]
-
-        # Find best by quality alone
-        best_by_quality = max(all_items, key=lambda x: x.calculate_score())
-
-        # Check if they're different items
-        if best_by_lang.id != best_by_quality.id:
-            # Count languages and check best priority in each
-            lang_item_langs = best_by_lang.audio_languages or []
-            quality_item_langs = best_by_quality.audio_languages or []
-
-            # Get best priority for each item
-            lang_mapping = {"slo": "sk", "slovak": "sk", "sk": "sk", "cze": "cs", "ces": "cs", "czech": "cs", "cs": "cs"}
-            normalized_priorities = [lang_mapping.get(l.lower(), l.lower()) for l in lang_priorities]
-
-            def get_best_priority(langs):
-                """Get the best (lowest index) priority for languages."""
-                if not langs:
-                    return 9999
-                normalized = [lang_mapping.get(l.lower(), l.lower()) for l in langs]
-                best = 9999
-                for lang in normalized:
-                    if lang in normalized_priorities:
-                        priority = normalized_priorities.index(lang)
-                        if priority < best:
-                            best = priority
-                return best
-
-            lang_item_priority = get_best_priority(lang_item_langs)
-            quality_item_priority = get_best_priority(quality_item_langs)
-
-            # Calculate quality ratio
-            lang_score = best_by_lang.calculate_score()
-            quality_score = best_by_quality.calculate_score()
-            quality_ratio = quality_score / lang_score if lang_score > 0 else float('inf')
-
-            # Smart override conditions:
-            # 1. Single-lang vs multi-lang with 1.5x better quality
-            # 2. Quality item has worse priority language but 3x+ better quality
-            should_override = False
-
-            if len(lang_item_langs) == 1 and len(quality_item_langs) >= 2 and quality_ratio > 1.5:
-                should_override = True
-                logger.info(f"Quality override (single-lang): {quality_item_langs} quality {quality_score:.1f} "
-                          f"wins over {lang_item_langs} quality {lang_score:.1f} (ratio: {quality_ratio:.2f}x)")
-            elif quality_item_priority > lang_item_priority and quality_ratio > 3.0:
-                # Quality item lacks the best priority lang but is 3x+ better
-                should_override = True
-                logger.info(f"Quality override (worse-priority): {quality_item_langs} (priority {quality_item_priority}) "
-                          f"quality {quality_score:.1f} wins over {lang_item_langs} (priority {lang_item_priority}) "
-                          f"quality {lang_score:.1f} (ratio: {quality_ratio:.2f}x)")
-
-            if should_override:
-                # Use quality-based sorting
-                sorted_items = sorted(all_items, key=lambda x: x.calculate_score(), reverse=True)
+    # Apply "smart override" logic if quality significantly better than language priority
+    sorted_items = _apply_smart_override_if_needed(all_items, sorted_items, lang_priorities)
 
     # The best item is at index 0
     best_item = sorted_items[0]
@@ -992,39 +1190,10 @@ def compare_quality(
         reason = "same_or_worse"
         best_existing = best_item
 
-    # Apply BluRay native exception rule
-    # If comparing native BluRay 1080p vs AI upscaled 4K, and native is 1.5x+ larger, prefer native
-    if proposed_as_existing.is_ai_upscale != best_existing.is_ai_upscale:
-        # One is AI upscale, one is not - check for exception
-        native = best_existing if not best_existing.is_ai_upscale else proposed_as_existing
-        ai_item = proposed_as_existing if proposed_as_existing.is_ai_upscale else best_existing
-
-        # Check if native is BluRay/REMUX source
-        native_source = detect_source_quality(native.path, native.name)
-        is_bluray = native_source >= SOURCE_QUALITY_TIERS["bluray"]["bonus"]
-
-        # Check if native is 1080p and AI upscale is 4K
-        native_is_1080p = (
-            1920 * 1080 <= (native.width * native.height) < 3840 * 2160
-        )
-        ai_is_4k = (ai_item.width * ai_item.height) >= 3840 * 2160
-
-        # Check size ratio
-        if is_bluray and native_is_1080p and ai_is_4k and ai_item.size_bytes > 0:
-            size_ratio = native.size_bytes / ai_item.size_bytes
-            if size_ratio >= 1.5:
-                logger.info(
-                    f"BluRay native exception: Native BluRay 1080p "
-                    f"({native.size_bytes // (1024*1024)}MB) preferred over AI upscaled 4K "
-                    f"({ai_item.size_bytes // (1024*1024)}MB) due to {size_ratio:.2f}x size ratio"
-                )
-                # Override recommendation to prefer native
-                if native.id == "proposed":
-                    recommendation = "download"
-                    reason = "better_quality"
-                else:
-                    recommendation = "skip"
-                    reason = "same_or_worse"
+    # Apply BluRay native exception rule using helper
+    recommendation = _apply_bluray_native_exception(
+        proposed_as_existing, best_existing, recommendation
+    )
 
     # NOTE: Resolution dominance override REMOVED
     # The new comprehensive quality scoring system handles this correctly through:

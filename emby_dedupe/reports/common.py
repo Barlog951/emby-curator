@@ -5,6 +5,36 @@ Common reporting functions used by both markdown and HTML reports.
 from typing import Any, Dict, List
 
 
+def _is_valid_decision(decision: Dict[str, Any]) -> bool:
+    """Check if decision is valid for statistics."""
+    if not decision.get("keep"):
+        return False
+    if "id" not in decision.get("keep", {}):
+        return False
+    if not decision.get("delete"):
+        return False
+    return True
+
+
+def _safe_int_conversion(value: Any) -> int:
+    """Safely convert value to int, return 0 if fails."""
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return 0
+
+
+def _process_deletion_status(item: Dict[str, Any], stats: Dict[str, Any]) -> None:
+    """Update stats based on deletion status (in-place)."""
+    deletion_status = item.get("deletion_result", {}).get("status", "skipped")
+    if deletion_status == "success":
+        stats["deleted_items"] += 1
+    elif deletion_status == "failed":
+        stats["failed_deletions"] += 1
+    else:
+        stats["skipped_deletions"] += 1
+
+
 def calculate_report_statistics(decisions: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Calculate streamlined statistics from the decisions data for reporting.
@@ -15,7 +45,6 @@ def calculate_report_statistics(decisions: List[Dict[str, Any]]) -> Dict[str, An
     Returns:
         Dict[str, Any]: Dictionary containing various statistics.
     """
-    # Initialize statistics dictionary with only essential metrics
     stats: Dict[str, Any] = {
         "total_groups": 0,
         "total_items_to_delete": 0,
@@ -27,19 +56,7 @@ def calculate_report_statistics(decisions: List[Dict[str, Any]]) -> Dict[str, An
         "total_size_to_keep": 0,
     }
 
-    # Filter valid decisions
-    valid_decisions = []
-
-    for decision in decisions:
-        # Regular validation for decisions
-        if not decision.get("keep"):
-            continue
-        if "id" not in decision.get("keep", {}):
-            continue
-        if not decision.get("delete"):
-            continue
-        valid_decisions.append(decision)
-
+    valid_decisions = [d for d in decisions if _is_valid_decision(d)]
     stats["total_groups"] = len(valid_decisions)
 
     # Process each decision
@@ -48,44 +65,23 @@ def calculate_report_statistics(decisions: List[Dict[str, Any]]) -> Dict[str, An
         delete_items = decision["delete"]
 
         stats["total_items_to_keep"] += 1
-
-        # Get item size from quality description
-        keep_size = keep_item.get("quality_description", {}).get("size", 0)
-        try:
-            keep_size = int(keep_size)
-        except (ValueError, TypeError):
-            keep_size = 0
-
+        keep_size = _safe_int_conversion(keep_item.get("quality_description", {}).get("size", 0))
         stats["total_size_to_keep"] += keep_size
 
         # Process delete items
         for item in delete_items:
             stats["total_items_to_delete"] += 1
+            _process_deletion_status(item, stats)
 
-            # Process deletion status
-            deletion_status = item.get("deletion_result", {}).get("status", "skipped")
-            if deletion_status == "success":
-                stats["deleted_items"] += 1
-            elif deletion_status == "failed":
-                stats["failed_deletions"] += 1
-            else:
-                stats["skipped_deletions"] += 1
-
-            # Get delete item size
-            delete_size = item.get("quality_description", {}).get("size", 0)
-            try:
-                delete_size = int(delete_size)
-            except (ValueError, TypeError):
-                delete_size = 0
-
+            delete_size = _safe_int_conversion(item.get("quality_description", {}).get("size", 0))
             stats["total_size_to_delete"] += delete_size
 
     # Calculate space savings
     stats["space_saved"] = stats["total_size_to_delete"]
     stats["percentage_saved"] = 0.0
-    if (stats["total_size_to_keep"] + stats["total_size_to_delete"]) > 0:
-        stats["percentage_saved"] = (stats["total_size_to_delete"] /
-                                    (stats["total_size_to_keep"] + stats["total_size_to_delete"])) * 100.0
+    total_size = stats["total_size_to_keep"] + stats["total_size_to_delete"]
+    if total_size > 0:
+        stats["percentage_saved"] = (stats["total_size_to_delete"] / total_size) * 100.0
 
     # Format byte sizes to human-readable format
     stats["formatted_size_to_delete"] = format_size(stats["total_size_to_delete"])
