@@ -4,18 +4,18 @@ Command-line argument parsing for the Emby Dedupe tool.
 
 import argparse
 import os
+import sys
 from typing import Optional
 
 from emby_dedupe.utils.logging import logger
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments and return the parsed arguments.
+def add_dedupe_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add deduplication-specific arguments to a parser.
 
-    Returns:
-        argparse.Namespace: An object holding attributes based on command-line arguments.
+    Args:
+        parser: ArgumentParser to add arguments to.
     """
-    parser = argparse.ArgumentParser(description="Emby Media Deduplication Script.")
     parser.add_argument(
         "-v",
         "--verbosity",
@@ -71,7 +71,46 @@ def parse_args() -> argparse.Namespace:
         type=str,
         help="Comma-separated list of provider IDs to exclude from deduplication (e.g., 'tt1234567,123456'). Works with IMDB (tt prefix), TMDB, and TVDB IDs.",
     )
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments and return the parsed arguments.
+
+    Supports subcommands:
+    - (no subcommand): Run deduplication (default, backward compatible)
+    - check: Check if media should be downloaded
+
+    Returns:
+        argparse.Namespace: An object holding attributes based on command-line arguments.
+    """
+    # Check if 'check' is the first argument to route to check subcommand
+    if len(sys.argv) > 1 and sys.argv[1] == 'check':
+        return parse_check_args()
+
+    # Default: parse dedupe arguments (backward compatible)
+    parser = argparse.ArgumentParser(description="Emby Media Deduplication Script.")
+    add_dedupe_arguments(parser)
     return parser.parse_args()
+
+
+def parse_check_args() -> argparse.Namespace:
+    """Parse arguments for the check subcommand.
+
+    Returns:
+        argparse.Namespace: Parsed arguments for check command.
+    """
+    from emby_dedupe.cli.check import add_check_arguments
+
+    parser = argparse.ArgumentParser(
+        description="Check if media should be downloaded based on existing Emby library.",
+        prog="emby-dedupe check",
+    )
+    add_check_arguments(parser)
+
+    # Parse arguments (skip 'check' command)
+    args = parser.parse_args(sys.argv[2:])
+    args.command = 'check'
+    return args
 
 
 def get_env_variable(name: str) -> Optional[str]:

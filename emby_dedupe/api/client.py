@@ -431,7 +431,7 @@ def fetch_and_process_media_items(
     try:
         response = make_http_request(client, "GET", url)
         total_items = response.json().get("TotalRecordCount", 0)
-        logger.info(f"Total media items to fetch: {total_items}")
+        logger.debug(f"Total media items to fetch: {total_items}")
     except (httpx.HTTPStatusError, httpx.RequestError) as e:
         logger.error("Failed to fetch the total number of media items.")
         raise e
@@ -442,7 +442,7 @@ def fetch_and_process_media_items(
     try:
         # Continue fetching until all pages are processed
         while start_index < total_items:
-            url = f"{base_url}/Items?StartIndex={start_index}&Limit={PAGE_SIZE}&Recursive=True&ParentId={library_id}&Fields=ProviderIds&Is3D=False&IsFolder=False"
+            url = f"{base_url}/Items?StartIndex={start_index}&Limit={PAGE_SIZE}&Recursive=True&ParentId={library_id}&Fields=ProviderIds,SeriesName,ParentIndexNumber,IndexNumber&Is3D=False&IsFolder=False"
             try:
                 response = make_http_request(client, "GET", url)
                 media_items = response.json().get("Items", [])
@@ -479,15 +479,20 @@ def build_provider_id_tables(media_items: list, provider_tables: dict):
         if item.get("IsFolder", False):
             continue
         provider_ids = item.get("ProviderIds", {})
+
+        # Create case-insensitive lookup for provider IDs
+        # Emby API returns inconsistent casing (e.g., "Imdb" vs "IMDB")
+        provider_ids_lower = {k.lower(): v for k, v in provider_ids.items()}
+
         for provider, table_name in [
-            ("Imdb", "imdb"),
-            ("Tvdb", "tvdb"),
-            ("Tmdb", "tmdb"),
+            ("imdb", "imdb"),
+            ("tvdb", "tvdb"),
+            ("tmdb", "tmdb"),
         ]:
-            id_value = provider_ids.get(provider)
+            id_value = provider_ids_lower.get(provider)
 
             # Skip the IMDb ID if it is the one we're ignoring
-            if provider == "Imdb" and id_value == IGNORED_IMDB_ID:
+            if provider == "imdb" and id_value == IGNORED_IMDB_ID:
                 continue
 
             if id_value:
@@ -502,7 +507,8 @@ def build_provider_id_tables(media_items: list, provider_tables: dict):
                 if item.get("SeriesName"):
                     item_info["is_episode"] = True
                     item_info["series_name"] = item.get("SeriesName")
-                    item_info["season_number"] = item.get("SeasonNumber")
+                    # Emby API uses ParentIndexNumber for season, IndexNumber for episode
+                    item_info["season_number"] = item.get("ParentIndexNumber")
                     item_info["episode_number"] = item.get("IndexNumber")
                     # Store the provider specific ID that was used to identify this as a duplicate
                     item_info["provider_id"] = id_value

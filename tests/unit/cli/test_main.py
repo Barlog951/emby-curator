@@ -109,10 +109,47 @@ class TestCliMain:
         # Just verify that the function exists and can be called
         assert callable(main)
     
-    def test_lang_prio_parsing(self):
-        """Test language priority parsing."""
-        # Just verify that the function exists and can be called
-        assert callable(main)
+    def test_lang_prio_parsing_with_normalization(self):
+        """Test language priority parsing with Slovak/Czech normalization."""
+        # Test the language normalization logic directly by simulating what main() does
+        
+        # This simulates what happens in main() for language priority processing
+        lang_prio_str = "slo,sk,cze,ces,cs,eng"  # Mixed Slovak/Czech variants
+        
+        # Create normalized language priority list treating Slovak/Czech variants as equivalent
+        # This is the exact logic from main()
+        lang_mapping = {
+            "slo": "sk",  # Slovak ISO 639-2 -> ISO 639-1
+            "sk": "sk",   # Slovak ISO 639-1
+            "cze": "cs",  # Czech ISO 639-2 -> ISO 639-1  
+            "ces": "cs",  # Czech ISO 639-2 alternate
+            "cs": "cs"    # Czech ISO 639-1
+        }
+        
+        raw_langs = [lang.strip().lower() for lang in lang_prio_str.split(',') if lang.strip()]
+        seen_langs = set()
+        lang_priorities = []
+        
+        for lang in raw_langs:
+            # Normalize Slovak/Czech variants, keep others as-is
+            normalized_lang = lang_mapping.get(lang, lang)
+            
+            # Only add if we haven't seen this normalized language before
+            if normalized_lang not in seen_langs:
+                lang_priorities.append(normalized_lang)
+                seen_langs.add(normalized_lang)
+        
+        # Should be normalized to: sk (Slovak), cs (Czech), eng (English)
+        # Slovak variants (slo, sk) -> sk
+        # Czech variants (cze, ces, cs) -> cs  
+        # English remains eng
+        expected_priorities = ["sk", "cs", "eng"]
+        assert lang_priorities == expected_priorities
+        
+        # Verify that duplicates are removed properly
+        assert len(lang_priorities) == 3
+        assert lang_priorities.count("sk") == 1  # Only one Slovak entry despite "slo" and "sk" input
+        assert lang_priorities.count("cs") == 1  # Only one Czech entry despite "cze", "ces", "cs" input
     
     def test_exclude_terms_parsing(self):
         """Test exclude terms parsing."""

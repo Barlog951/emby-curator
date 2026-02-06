@@ -1,0 +1,39 @@
+# Development Dockerfile for PyCharm
+# Based on .devcontainer configuration
+FROM mcr.microsoft.com/devcontainers/python:0-3.12
+
+# Install common utilities
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        dnsutils \
+        bind9utils \
+        moreutils \
+        whois && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install YQ for YAML processing
+RUN wget https://github.com/mikefarah/yq/releases/download/v4.33.3/yq_linux_amd64.tar.gz -O - | \
+    tar xz && \
+    mv yq_linux_amd64 /usr/bin/yq && \
+    rm -f yq.1
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements and install dependencies
+COPY requirements.txt .
+COPY setup.py .
+COPY pyproject.toml .
+COPY emby_dedupe ./emby_dedupe
+
+# Install the package in development mode
+RUN pip install --upgrade pip && \
+    pip install -e ".[dev]"
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV PATH="/app:${PATH}"
+
+# Default command
+CMD ["bash"]

@@ -3,7 +3,7 @@
 {
     "name": "Python 3",
     // Or use a Dockerfile or Docker Compose file. More info: https://containers.dev/guide/dockerfile
-    "image": "mcr.microsoft.com/devcontainers/python:0-3.11",
+    "image": "mcr.microsoft.com/devcontainers/python:0-3.12",
     "features": {
         "ghcr.io/devcontainers/features/common-utils:2": {
             "installZsh": true,
@@ -39,6 +39,7 @@
         "vscode": {
             "extensions": [
                 "ms-python.python",
+                "ms-python.vscode-pylance",
                 "redhat.vscode-yaml",
                 "ZainChen.json",
                 "GitHub.vscode-pull-request-github",
@@ -50,7 +51,11 @@
                 "GitHub.vscode-github-actions",
                 "DanielSanMedium.dscodegpt",
                 "KevinRose.vsc-python-indent",
-                "ms-python.black-formatter"
+                "ms-python.black-formatter",
+                "charliermarsh.ruff",
+                "matangover.mypy",
+                "ms-python.debugpy",
+                "njpwerner.autodocstring"
             ]
         }
     },
@@ -63,7 +68,7 @@
         ".env"
     ],
     // Use 'postCreateCommand' to run commands after the container is created.
-    "postCreateCommand": "git config --global --add safe.directory /workspaces/emby-dedupe && sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get -y full-upgrade && sudo DEBIAN_FRONTEND=noninteractive apt-get -y install dnsutils bind9utils moreutils whois && wget https://github.com/mikefarah/yq/releases/download/v4.33.3/yq_linux_amd64.tar.gz -O - | tar xz && sudo mv yq_linux_amd64 /usr/bin/yq && sudo rm yq.1 || true && pip install --upgrade pip && pip install -r requirements.txt"
+    "postCreateCommand": "git config --global --add safe.directory /workspaces/emby-dedupe && sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get -y full-upgrade && sudo DEBIAN_FRONTEND=noninteractive apt-get -y install dnsutils bind9utils moreutils whois && wget https://github.com/mikefarah/yq/releases/download/v4.33.3/yq_linux_amd64.tar.gz -O - | tar xz && sudo mv yq_linux_amd64 /usr/bin/yq && sudo rm yq.1 || true && pip install --upgrade pip && pip install -e ."
     // Configure tool-specific properties.
     // "customizations": {},
     // Uncomment to connect as root instead. More info: https://aka.ms/dev-containers-non-root.

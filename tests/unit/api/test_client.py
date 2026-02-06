@@ -122,12 +122,80 @@ class TestClient:
                 }
             }
         ]
-        
+
         build_provider_id_tables(media_items, provider_tables)
-        
+
         # The folder should be skipped
         assert "tt1234567" not in provider_tables["imdb"]
         assert "1234" not in provider_tables["tmdb"]
+
+    def test_build_provider_id_tables_case_insensitive_provider_ids(self):
+        """Test that provider IDs are matched case-insensitively.
+
+        The Emby API returns inconsistent casing for provider ID keys:
+        - Some items have "Imdb" (mixed case)
+        - Some items have "IMDB" (uppercase)
+
+        This test ensures both variants are handled correctly.
+        """
+        provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "library_name": "Test Library"}
+
+        # Create test media items with different casing for provider ID keys
+        media_items = [
+            {
+                "Id": "12345",
+                "Name": "Movie with mixed case Imdb",
+                "IsFolder": False,
+                "ProviderIds": {
+                    "Imdb": "tt1234567",  # Mixed case (season 1 episodes)
+                    "Tvdb": "111111",
+                    "Tmdb": "1234"
+                }
+            },
+            {
+                "Id": "67890",
+                "Name": "Movie with uppercase IMDB",
+                "IsFolder": False,
+                "ProviderIds": {
+                    "IMDB": "tt1234567",  # Uppercase (season 2 episodes)
+                    "Tvdb": "111111",
+                    "TMDB": "1234"  # Also uppercase TMDB
+                }
+            },
+            {
+                "Id": "11111",
+                "Name": "Movie with lowercase imdb",
+                "IsFolder": False,
+                "ProviderIds": {
+                    "imdb": "tt1234567",  # Lowercase
+                    "tvdb": "111111",
+                    "tmdb": "1234"
+                }
+            }
+        ]
+
+        build_provider_id_tables(media_items, provider_tables)
+
+        # All three items should be grouped under the same provider IDs
+        assert "tt1234567" in provider_tables["imdb"]
+        assert "111111" in provider_tables["tvdb"]
+        assert "1234" in provider_tables["tmdb"]
+
+        # Verify all 3 items are in the same IMDB group
+        imdb_items = provider_tables["imdb"]["tt1234567"]
+        assert len(imdb_items) == 3, f"Expected 3 items, got {len(imdb_items)}"
+
+        item_ids = [item["id"] for item in imdb_items]
+        assert "12345" in item_ids
+        assert "67890" in item_ids
+        assert "11111" in item_ids
+
+        # Verify TVDB and TMDB groups also have all 3 items
+        tvdb_items = provider_tables["tvdb"]["111111"]
+        assert len(tvdb_items) == 3
+
+        tmdb_items = provider_tables["tmdb"]["1234"]
+        assert len(tmdb_items) == 3
     
     @patch('emby_dedupe.api.client.make_http_request')
     def test_fetch_and_process_media_items(self, mock_make_http_request):

@@ -321,6 +321,54 @@ cd emby-dedupe
 pip install -e ".[dev]"
 ```
 
+### Development Containers
+
+#### VS Code Dev Container
+
+This project includes a development container configuration for Visual Studio Code, which provides a consistent development environment with all necessary tools pre-installed:
+
+1. Install [Visual Studio Code](https://code.visualstudio.com/) and the [Remote - Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension
+2. Clone the repository and open it in VS Code
+3. When prompted to "Reopen in Container", click "Reopen in Container"
+   - Alternatively, use the Command Palette (F1) and select "Remote-Containers: Reopen in Container"
+4. The container will build and start with Python 3.12, required dependencies, and useful extensions installed
+
+The development container includes:
+- Python 3.12 environment
+- All project dependencies
+- Development tools (ruff, mypy, pytest)
+- Docker-in-Docker support for testing container builds
+- GitHub CLI for managing issues and PRs
+- VSCode extensions for Python development and GitHub integration
+
+#### PyCharm Docker Integration
+
+You can also use PyCharm with the included development Dockerfile:
+
+1. Install [PyCharm Professional](https://www.jetbrains.com/pycharm/) (required for Docker integration)
+2. Install Docker on your system
+3. In PyCharm, go to File → Settings → Build, Execution, Deployment → Docker and set up Docker integration
+4. Open the project in PyCharm
+5. Set up a Docker-based Python interpreter:
+   - Go to File → Settings → Project → Python Interpreter
+   - Click the gear icon → Add
+   - Select "Docker" and use the included `Dockerfile.dev`
+   - Set the Python interpreter path to `/usr/local/bin/python`
+
+For services and run configurations:
+1. Go to Run → Edit Configurations
+2. Add a new Python configuration
+3. Set "Run with Docker" in the "Python interpreter" dropdown
+4. Set the script path to your entry point (e.g., `/app/emby_dedupe/cli/main.py`)
+
+The `Dockerfile.dev` includes:
+- Python 3.12 environment
+- Development dependencies 
+- Common utilities needed for development
+- The package installed in development mode
+
+This provides a consistent environment for development and testing, regardless of your local setup.
+
 ### Running Tests
 
 The project has a comprehensive test suite with 129 tests covering 70% of the codebase. The tests are organized in the same structure as the main package:

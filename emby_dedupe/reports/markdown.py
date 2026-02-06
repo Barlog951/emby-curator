@@ -166,7 +166,7 @@ def format_markdown_table(base_url: str, decisions: List[Dict[str, Any]], metada
             continue
         valid_decisions.append(decision)
 
-    logger.info(f"Found {len(valid_decisions)} valid decisions out of {len(decisions)} total")
+    logger.debug(f"Found {len(valid_decisions)} valid decisions out of {len(decisions)} total")
 
     # Format statistics section
     statistics_markdown = format_statistics_section(stats, excluded_ids)
@@ -194,7 +194,7 @@ def format_markdown_table(base_url: str, decisions: List[Dict[str, Any]], metada
             row = {
                 "ID": f"[{keep['id']}]({base_url}/web/index.html#!/item?id={keep['id']}&serverId={keep['serverid']})",
                 "Title": title,
-                "Codec": keep["quality_description"]["video"]["codec"],
+                "Codec": keep["quality_description"].get("video", {}).get("codec", "unknown"),
                 "Size": str(keep["quality_description"]["size"]),
                 "Items to Delete": "<br>".join(
                     format_individual_item(item, base_url, decision)

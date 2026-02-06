@@ -1,6 +1,8 @@
 # Application Specific
 testing/**
 pr-docs/**
+.emby-mcp/
+.mcp.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
