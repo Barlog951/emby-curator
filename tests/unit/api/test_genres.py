@@ -483,9 +483,10 @@ class TestSuggestGenreMappings:
         assert suggest_genre_mappings({"Drama": 10}) == []
 
     def test_unknown_genre_flagged(self):
-        results = suggest_genre_mappings({"Dobrodružný": 45})
+        # "Vesmírny" (Slovak: "Cosmic/Space") is not in normalization map or canonical list
+        results = suggest_genre_mappings({"Vesmírny": 45})
         assert len(results) == 1
-        assert results[0]["genre"] == "Dobrodružný"
+        assert results[0]["genre"] == "Vesmírny"
         assert results[0]["count"] == 45
 
     def test_suggests_close_match(self):
