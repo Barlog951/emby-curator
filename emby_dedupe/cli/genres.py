@@ -138,6 +138,15 @@ def add_genres_arguments(parser: argparse.ArgumentParser) -> None:
         type=str,
         help="TMDB API key (or set DEDUPE_TMDB_API_KEY env var)",
     )
+    parser.add_argument(
+        "--item-ids",
+        type=str,
+        help=(
+            "Comma-separated list of Emby item IDs to process. "
+            "Skips full library scan — only these items are checked. "
+            "Used by the webhook listener to process specific newly added items."
+        ),
+    )
 
 
 def _validate_genres_args(
@@ -145,6 +154,7 @@ def _validate_genres_args(
     api_key: Optional[str],
     library: list,
     all_libraries: bool,
+    item_ids: Optional[list[str]] = None,
 ) -> None:
     """Validate required arguments for genre commands.
 
@@ -155,17 +165,48 @@ def _validate_genres_args(
         api_key: Emby API key.
         library: List of library names.
         all_libraries: Whether to scan all libraries.
+        item_ids: Explicit list of item IDs to process (skips library requirement).
     """
     missing = []
     if not host:
         missing.append("host (--host or DEDUPE_EMBY_HOST)")
     if not api_key:
         missing.append("api-key (-a or DEDUPE_EMBY_API_KEY)")
-    if not library and not all_libraries:
-        missing.append("library (-l or --all-libraries)")
+    if not library and not all_libraries and not item_ids:
+        missing.append("library (-l or --all-libraries or --item-ids)")
     if missing:
         logger.error(f"Missing required arguments: {', '.join(missing)}")
         sys.exit(1)
+
+
+def _fetch_items_by_ids(
+    client: httpx.Client,
+    base_url: str,
+    user_id: str,
+    item_ids: list[str],
+) -> list[dict]:
+    """Fetch specific items by ID via the single-item endpoint.
+
+    Used by --item-ids mode to process only specific items without a full
+    library scan. Returns the raw stored item dicts (not batch-normalized).
+
+    Args:
+        client: Configured httpx client.
+        base_url: Emby server base URL with port.
+        user_id: Emby user ID.
+        item_ids: List of item IDs to fetch.
+
+    Returns:
+        List of full item dicts. Items that fail to fetch are skipped.
+    """
+    items = []
+    for iid in item_ids:
+        try:
+            item = fetch_full_item(client, base_url, user_id, iid)
+            items.append(item)
+        except Exception as e:
+            logger.warning(f"Could not fetch item {iid}: {e}")
+    return items
 
 
 def _print_audit_report(audit: dict, all_genres: list) -> None:
@@ -318,6 +359,7 @@ def _run_normalize(
     user_id: str,
     library_ids: list[str],
     args: argparse.Namespace,
+    item_ids: Optional[list[str]] = None,
 ) -> None:
     """Run the genre normalization action.
 
@@ -327,18 +369,23 @@ def _run_normalize(
         user_id: Emby user ID for full-item fetches.
         library_ids: List of library IDs to scan.
         args: Parsed CLI arguments.
+        item_ids: If provided, only process these specific item IDs.
     """
-    # Use the non-user-scoped endpoint for detection: it returns raw stored genre names
-    # (e.g. "Suspense"). The user-scoped endpoint silently normalises some names in its
-    # response, causing normalize to miss items that still need updating.
-    items = list(
-        tqdm(
-            fetch_items_with_genres(client, base_url, library_ids),
-            desc="Fetching items",
-            unit="item",
-            leave=False,
+    if item_ids:
+        # Targeted mode: fetch only specific items (from webhook)
+        items = _fetch_items_by_ids(client, base_url, user_id, item_ids)
+    else:
+        # Use the non-user-scoped endpoint for detection: it returns raw stored genre names
+        # (e.g. "Suspense"). The user-scoped endpoint silently normalises some names in its
+        # response, causing normalize to miss items that still need updating.
+        items = list(
+            tqdm(
+                fetch_items_with_genres(client, base_url, library_ids),
+                desc="Fetching items",
+                unit="item",
+                leave=False,
+            )
         )
-    )
 
     items_to_update = []
     for item in items:
@@ -387,10 +434,10 @@ def _run_normalize(
     errors = 0
     for item, new_genres in tqdm(items_to_update, desc="Normalizing genres", unit="item"):
         try:
-            # Fetch full item via single-item endpoint for safe POST-back.
-            # The batch endpoint returns partial fields; the single-item endpoint
-            # returns all 52 fields needed to avoid corrupting other metadata.
-            full_item = fetch_full_item(client, base_url, user_id, item["Id"])
+            # In --item-ids mode, item is already the full item from fetch_full_item.
+            # In library scan mode, fetch the full item for safe POST-back (the batch
+            # endpoint returns partial fields; single-item returns all 52 fields).
+            full_item = item if item_ids else fetch_full_item(client, base_url, user_id, item["Id"])
             result = update_item_genres(
                 client, base_url, item["Id"], full_item, new_genres, lock=args.lock
             )
@@ -419,11 +466,13 @@ def _run_fix(
     user_id: str,
     library_ids: list[str],
     args: argparse.Namespace,
+    item_ids: Optional[list[str]] = None,
 ) -> None:
     """Fetch genres from TMDB/OMDb and fill gaps or validate existing genres.
 
     --gaps-only (default): only process items with no genres.
     --validate: process all items, adding genres missing from Emby.
+    --item-ids: process only these specific items (implies --validate).
     Always additive — never removes existing genres.
     """
     from emby_dedupe.api.genre_providers import (
@@ -458,19 +507,24 @@ def _run_fix(
     # Load persistent cache
     cache = load_genre_cache()
 
-    # Determine mode: validate processes all items, gaps-only (default) processes only untagged
-    validate = getattr(args, "validate", False)
-    gaps_only = getattr(args, "gaps_only", False) or not validate
-
-    logger.info("Fetching items from Emby...")
-    all_items = fetch_items_with_genres(client, base_url, library_ids)
-
-    if gaps_only:
-        items = [i for i in all_items if not (i.get("Genres") or [])]
-        print(f"Items with no genres: {len(items)} (of {len(all_items)} total)")
+    if item_ids:
+        # Targeted mode: fetch only specific items, always validate (check + fill)
+        items = _fetch_items_by_ids(client, base_url, user_id, item_ids)
+        print(f"Processing {len(items)} specific item(s) (normalize + validate)")
     else:
-        items = all_items
-        print(f"Validating genres for {len(items)} items")
+        # Determine mode: validate processes all items, gaps-only (default) processes only untagged
+        validate = getattr(args, "validate", False)
+        gaps_only = getattr(args, "gaps_only", False) or not validate
+
+        logger.info("Fetching items from Emby...")
+        all_items = fetch_items_with_genres(client, base_url, library_ids)
+
+        if gaps_only:
+            items = [i for i in all_items if not (i.get("Genres") or [])]
+            print(f"Items with no genres: {len(items)} (of {len(all_items)} total)")
+        else:
+            items = all_items
+            print(f"Validating genres for {len(items)} items")
 
     found = 0
     updated = 0
@@ -504,8 +558,9 @@ def _run_fix(
                     print(f"  {item_name}: would add {missing}")
                     continue
 
-                # Fetch full item for safe POST-back
-                full_item = fetch_full_item(client, base_url, user_id, item["Id"])
+                # In --item-ids mode, item is already the full item.
+                # In library scan mode, fetch the full item for safe POST-back.
+                full_item = item if item_ids else fetch_full_item(client, base_url, user_id, item["Id"])
                 result = update_item_genres(
                     client, base_url, item["Id"], full_item,
                     comparison["merged"], lock=args.lock
@@ -559,8 +614,13 @@ def run_genres_command(args: argparse.Namespace) -> None:
     api_key: Optional[str] = args.api_key or env_api_key
     library = args.library or env_library or []
     all_libraries = getattr(args, "all_libraries", False)
+    item_ids_raw = getattr(args, "item_ids", None)
+    item_ids: Optional[list[str]] = (
+        [i.strip() for i in item_ids_raw.split(",") if i.strip()]
+        if item_ids_raw else None
+    )
 
-    _validate_genres_args(host, api_key, library, all_libraries)
+    _validate_genres_args(host, api_key, library, all_libraries, item_ids)
 
     # After _validate_genres_args, host and api_key are guaranteed non-None (or sys.exit was called)
     resolved_host: str = host  # type: ignore[assignment]
@@ -597,9 +657,9 @@ def run_genres_command(args: argparse.Namespace) -> None:
         if args.action == "audit":
             _run_audit(client, base_url, library_ids, args)
         elif args.action == "fix":
-            _run_fix(client, base_url, user_id, library_ids, args)
+            _run_fix(client, base_url, user_id, library_ids, args, item_ids=item_ids)
         else:
-            _run_normalize(client, base_url, user_id, library_ids, args)
+            _run_normalize(client, base_url, user_id, library_ids, args, item_ids=item_ids)
 
     except EmbyServerConnectionError as e:
         logger.error(str(e))
