@@ -3,7 +3,11 @@
 Emby genre webhook listener.
 
 Receives ItemAdded webhooks from Emby, debounces for DEBOUNCE_SECONDS,
-then runs genre normalize + fix --gaps-only once for all queued items.
+then runs genre normalize + fix --validate for all queued items.
+
+Targeted mode: collects item IDs during the debounce window and passes
+them to the CLI via --item-ids. Only the new items are processed —
+no full library scan needed.
 
 Configure in Emby: Dashboard > Notifications > Webhooks
   URL: http://localhost:8765/webhook
@@ -39,21 +43,29 @@ logger = logging.getLogger("genre-watcher")
 
 _lock = threading.Lock()
 _timer: threading.Timer | None = None
-_queued: int = 0
+# Keyed by item ID — deduplicates if same item fires multiple events
+_queued_items: dict[str, str] = {}  # {item_id: item_name}
 
 
 def _run_genre_fix() -> None:
-    global _queued
+    global _queued_items
     with _lock:
-        count = _queued
-        _queued = 0
+        items = dict(_queued_items)
+        _queued_items = {}
 
-    logger.info(f"=== Genre fix triggered after {count} new item(s) ===")
+    item_ids = list(items.keys())
+    names = list(items.values())
+    logger.info(
+        f"=== Genre fix triggered for {len(item_ids)} new item(s): "
+        f"{', '.join(names[:5])}{'...' if len(names) > 5 else ''} ==="
+    )
+
     cli = f"{VENV_BIN}/emby-dedupe"
+    ids_arg = ",".join(item_ids)
 
     for label, cmd in [
-        ("normalize", [cli, "genres", "normalize", "--doit", "--all-libraries"]),
-        ("fix gaps",  [cli, "genres", "fix",       "--doit", "--all-libraries"]),
+        ("normalize", [cli, "genres", "normalize", "--doit", "--item-ids", ids_arg]),
+        ("fix+validate", [cli, "genres", "fix", "--doit", "--validate", "--item-ids", ids_arg]),
     ]:
         logger.info(f"--- {label} ---")
         try:
@@ -72,11 +84,11 @@ def _run_genre_fix() -> None:
     logger.info("=== Genre fix complete ===")
 
 
-def _schedule_fix(item_name: str) -> None:
-    global _timer, _queued
+def _schedule_fix(item_id: str, item_name: str) -> None:
+    global _timer, _queued_items
     with _lock:
-        _queued += 1
-        count = _queued
+        _queued_items[item_id] = item_name
+        count = len(_queued_items)
         if _timer is not None:
             _timer.cancel()
         _timer = threading.Timer(DEBOUNCE_SECONDS, _run_genre_fix)
@@ -84,29 +96,46 @@ def _schedule_fix(item_name: str) -> None:
         _timer.start()
 
     logger.info(
-        f"ItemAdded: '{item_name}' "
+        f"ItemAdded: '{item_name}' (id={item_id}) "
         f"({count} queued — running in {DEBOUNCE_SECONDS}s if no more arrive)"
     )
 
 
-def _parse_event(body: bytes, content_type: str) -> tuple[str, str]:
-    """Return (event_name, item_title) from webhook payload.
+def _parse_event(body: bytes, content_type: str) -> tuple[str, str, str]:
+    """Return (event_name, queue_id, display_name) from webhook payload.
+
+    For Episode items, queue_id is the SeriesId (not the episode ID) so that
+    50 episodes of the same series collapse to a single queue entry.
+    For Movies/Series, queue_id is the item Id.
 
     Handles both lowercase 'event' (Plex-style) and uppercase 'Event' (Emby native).
     """
     if "application/json" in content_type:
         try:
             data = json.loads(body)
-            # Emby sends "Event" (capital E), Plex-style plugins send "event"
             event = data.get("Event") or data.get("event", "")
-            # Item title lives in different places depending on event type
             item = data.get("Item") or data.get("Metadata") or data.get("item") or {}
-            title = item.get("Name") or item.get("title") or data.get("Title", "")
-            # Also log the item ID if present — useful for targeted processing later
+            item_type = item.get("Type", "")
             item_id = item.get("Id") or item.get("ratingKey", "")
+
+            if item_type == "Episode":
+                # Genres live on the Series — queue the series, not the episode
+                series_id = item.get("SeriesId", "")
+                series_name = item.get("SeriesName") or item.get("Name", "unknown")
+                ep_name = item.get("Name", "")
+                if series_id:
+                    logger.debug(
+                        f"Episode '{ep_name}' (id={item_id}) → queuing series '{series_name}' (id={series_id})"
+                    )
+                    return event, series_id, series_name
+                # No SeriesId in payload — fall back to episode ID
+                logger.debug(f"Episode '{ep_name}' has no SeriesId, using episode id={item_id}")
+                return event, item_id, ep_name
+
+            title = item.get("Name") or item.get("title") or data.get("Title", "unknown")
             if item_id:
-                logger.debug(f"Item ID in payload: {item_id}")
-            return event, title
+                logger.debug(f"Item id={item_id} type={item_type or 'unknown'}")
+            return event, item_id, title
         except json.JSONDecodeError:
             pass
 
@@ -114,18 +143,19 @@ def _parse_event(body: bytes, content_type: str) -> tuple[str, str]:
     text = body.decode("utf-8", errors="replace")
     event_match = re.search(r'"[Ee]vent"\s*:\s*"([^"]+)"', text)
     title_match = re.search(r'"(?:Name|title|Title)"\s*:\s*"([^"]+)"', text)
+    id_match = re.search(r'"Id"\s*:\s*"([^"]+)"', text)
     return (
         event_match.group(1) if event_match else "",
+        id_match.group(1) if id_match else "",
         title_match.group(1) if title_match else "unknown",
     )
 
 
 # Events Emby sends for new media added (varies by plugin version)
-# Emby native: "item.add" — community plugins may vary
 _ITEM_ADDED_EVENTS = {
     "item.add",          # Emby Webhooks plugin v1.x
     "item.added",
-    "library.new",       # Plex-style
+    "library.new",       # Emby native (confirmed from real payload)
     "itemadded",
     "media.added",
     "system.itemadded",
@@ -142,13 +172,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
         content_type = self.headers.get("Content-Type", "")
 
-        # Log raw payload at DEBUG level so we can inspect the real Emby format
-        logger.debug(f"RAW PAYLOAD [{content_type}]: {body.decode('utf-8', errors='replace')[:500]}")
+        raw_text = body.decode("utf-8", errors="replace")
+        logger.debug(f"RAW PAYLOAD [{content_type}]: {raw_text[:2000]}")
 
-        event, title = _parse_event(body, content_type)
+        event, item_id, title = _parse_event(body, content_type)
 
         if event.lower() in _ITEM_ADDED_EVENTS:
-            _schedule_fix(title)
+            if not item_id:
+                logger.warning(f"ItemAdded event but no item ID in payload — skipping: '{title}'")
+            else:
+                _schedule_fix(item_id, title)
         else:
             logger.debug(f"Ignored event: '{event}'")
 
