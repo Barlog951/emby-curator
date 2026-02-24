@@ -87,6 +87,7 @@ TMDB_CANONICAL_GENRES: frozenset[str] = frozenset({
 # Environment variable names for Phase 2 external APIs (define early)
 ENV_DEDUPE_TMDB_API_KEY = "DEDUPE_TMDB_API_KEY"
 ENV_DEDUPE_OMDB_API_KEY = "DEDUPE_OMDB_API_KEY"
+ENV_DEDUPE_OMDB_API_KEYS = "DEDUPE_OMDB_API_KEYS"  # comma-separated for rotation
 
 # Default port values
 DEFAULT_PORT_HTTP = 80
