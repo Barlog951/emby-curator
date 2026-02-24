@@ -28,8 +28,9 @@ DEBOUNCE_SECONDS = int(os.environ.get("DEBOUNCE_SECONDS", "300"))  # 5 min after
 VENV_BIN = os.environ.get("VENV_BIN", "/home/barlog/emby-dedupe/.venv/bin")
 WORKDIR = os.environ.get("WORKDIR", "/home/barlog/emby-dedupe")
 
+_log_level = logging.DEBUG if os.environ.get("DEBUG") else logging.INFO
 logging.basicConfig(
-    level=logging.INFO,
+    level=_log_level,
     format="%(asctime)s %(levelname)s %(message)s",
     stream=sys.stdout,
     force=True,
@@ -122,6 +123,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(length) if length else b""
         content_type = self.headers.get("Content-Type", "")
+
+        # Log raw payload at DEBUG level so we can inspect the real Emby format
+        logger.debug(f"RAW PAYLOAD [{content_type}]: {body.decode('utf-8', errors='replace')[:500]}")
 
         event, title = _parse_event(body, content_type)
 
