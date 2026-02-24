@@ -1,0 +1,480 @@
+"""
+Command-line interface for genre management functionality.
+Provides audit and normalization of Emby library genres.
+"""
+
+import argparse
+import json
+import sys
+from typing import Optional
+
+import httpx
+from tqdm import tqdm
+
+from emby_dedupe.api.client import (
+    check_emby_connection,
+    get_library_id,
+    handle_host_and_port,
+)
+from emby_dedupe.api.genres import (
+    build_genre_audit,
+    fetch_all_genres,
+    fetch_full_item,
+    fetch_items_with_genres,
+    get_user_id,
+    normalize_genre_name,
+    suggest_genre_mappings,
+    update_item_genres,
+)
+from emby_dedupe.cli.arguments import get_env_variable, override_warning
+from emby_dedupe.utils.constants import (
+    ENV_DEDUPE_EMBY_API_KEY,
+    ENV_DEDUPE_EMBY_HOST,
+    ENV_DEDUPE_EMBY_LIBRARY,
+    ENV_DEDUPE_EMBY_PORT,
+    ENV_DEDUPE_LOGGING,
+    GENRE_NORMALIZATION_MAP,
+)
+from emby_dedupe.utils.exceptions import EmbyServerConnectionError
+from emby_dedupe.utils.logging import logger, set_logging_level
+
+
+def add_genres_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add genre management arguments to the argument parser.
+
+    Args:
+        parser: The argument parser to add arguments to.
+    """
+    parser.add_argument(
+        "action",
+        choices=["audit", "normalize"],
+        help="Action to perform: audit (report genre health) or normalize (fix genre names)",
+    )
+    parser.add_argument(
+        "--doit",
+        action="store_true",
+        help="Apply normalization changes (default: dry-run preview only)",
+    )
+    parser.add_argument(
+        "--lock",
+        dest="lock",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Lock genres after normalization to prevent metadata refresh from reverting (default: True). Use --no-lock to disable.",
+    )
+    parser.add_argument(
+        "--repair-dupes",
+        action="store_true",
+        help=(
+            "Also scan for and fix duplicate genres caused by normalization collisions "
+            "(e.g. item had both 'Suspense' and 'Thriller' → both become 'Thriller'). "
+            "Requires one extra request per item — slower but thorough."
+        ),
+    )
+    parser.add_argument(
+        "--suggest",
+        action="store_true",
+        help=(
+            "Flag genres not in the TMDB canonical list and suggest likely mappings "
+            "(e.g. 'Dobrodružný' → Adventure). Use after adding new content to catch "
+            "new non-English or variant genres before they accumulate."
+        ),
+    )
+    parser.add_argument(
+        "--output-json",
+        type=str,
+        help="Save audit results as JSON to this file path",
+    )
+    parser.add_argument(
+        "--all-libraries",
+        action="store_true",
+        help="Scan all Emby libraries",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbosity",
+        action="count",
+        default=0,
+        help="Increase verbosity level (use multiple times for more detail)",
+    )
+    parser.add_argument(
+        "--host",
+        type=str,
+        help="Emby server host URL",
+    )
+    parser.add_argument(
+        "-p",
+        "--port",
+        type=int,
+        help="Emby server port",
+    )
+    parser.add_argument(
+        "-a",
+        "--api-key",
+        type=str,
+        help="Emby API key",
+    )
+    parser.add_argument(
+        "-l",
+        "--library",
+        type=str,
+        action="append",
+        help="Library name to scan (can be specified multiple times)",
+    )
+
+
+def _validate_genres_args(
+    host: Optional[str],
+    api_key: Optional[str],
+    library: list,
+    all_libraries: bool,
+) -> None:
+    """Validate required arguments for genre commands.
+
+    Genres only need host and API key (no username/password required).
+
+    Args:
+        host: Emby server host.
+        api_key: Emby API key.
+        library: List of library names.
+        all_libraries: Whether to scan all libraries.
+    """
+    missing = []
+    if not host:
+        missing.append("host (--host or DEDUPE_EMBY_HOST)")
+    if not api_key:
+        missing.append("api-key (-a or DEDUPE_EMBY_API_KEY)")
+    if not library and not all_libraries:
+        missing.append("library (-l or --all-libraries)")
+    if missing:
+        logger.error(f"Missing required arguments: {', '.join(missing)}")
+        sys.exit(1)
+
+
+def _print_audit_report(audit: dict, all_genres: list) -> None:
+    """Print a formatted genre audit report to the terminal.
+
+    Args:
+        audit: Audit dict from build_genre_audit.
+        all_genres: Full list of genre objects from fetch_all_genres.
+    """
+    total_items = audit["total_items"]
+    total_without = audit["total_without_genres"]
+    pct = (total_without / total_items * 100) if total_items > 0 else 0.0
+
+    print("=== Genre Audit Report ===")
+    print(f"Total unique genres: {len(all_genres)}")
+    print(f"Total items scanned: {total_items}")
+    print(f"Items without genres: {total_without} ({pct:.1f}%)")
+    print()
+
+    genre_counts = audit["genre_counts"]
+    if genre_counts:
+        print("Genre counts (by frequency):")
+        sorted_genres = sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)
+        for genre, count in sorted_genres:
+            canonical = normalize_genre_name(genre, GENRE_NORMALIZATION_MAP)
+            if canonical != genre:
+                print(f"  {genre}: {count} items  [← needs normalization → {canonical}]")
+            else:
+                print(f"  {genre}: {count} items")
+        print()
+
+    normalization_candidates = audit.get("normalization_candidates", [])
+    if normalization_candidates:
+        print("Normalization summary:")
+        print(f"  {len(normalization_candidates)} items need normalization:")
+        # Compute per-variant item counts
+        variant_item_counts: dict[str, dict[str, int]] = {}
+        for candidate in normalization_candidates:
+            for orig, suggested in zip(
+                candidate["current_genres"], candidate["suggested_genres"]
+            ):
+                if orig != suggested:
+                    if suggested not in variant_item_counts:
+                        variant_item_counts[suggested] = {}
+                    variant_item_counts[suggested][orig] = (
+                        variant_item_counts[suggested].get(orig, 0) + 1
+                    )
+        for canonical, variants in sorted(variant_item_counts.items()):
+            for variant, item_count in sorted(
+                variants.items(), key=lambda x: x[1], reverse=True
+            ):
+                print(f"  {variant} → {canonical}: {item_count} items")
+    else:
+        print("No normalization needed — all genres are already canonical.")
+
+
+def _run_audit(
+    client: httpx.Client,
+    base_url: str,
+    library_ids: list[str],
+    args: argparse.Namespace,
+) -> None:
+    """Run the genre audit action.
+
+    Args:
+        client: Configured httpx client.
+        base_url: Emby server base URL with port.
+        library_ids: List of library IDs to scan.
+        args: Parsed CLI arguments.
+    """
+    all_genres = fetch_all_genres(client, base_url)
+    logger.info("Fetching items with genres from Emby...")
+    items = fetch_items_with_genres(client, base_url, library_ids)
+    logger.info(f"Fetched {len(items)} items for audit")
+    audit = build_genre_audit(items)
+    _print_audit_report(audit, all_genres)
+
+    if getattr(args, "suggest", False):
+        suggestions = suggest_genre_mappings(audit["genre_counts"])
+        print("\n=== Unknown Genres (not in TMDB canonical list) ===")
+        if not suggestions:
+            print("All genres are canonical — nothing to add to GENRE_NORMALIZATION_MAP.")
+        else:
+            print(f"Found {len(suggestions)} unknown genre(s).")
+            print("Consider adding entries to GENRE_NORMALIZATION_MAP in constants.py:\n")
+            for entry in suggestions:
+                hint = (
+                    f"  → possible match: {', '.join(entry['suggestions'])}"
+                    if entry["suggestions"]
+                    else "  → no close match found"
+                )
+                print(f"  \"{entry['genre']}\": {entry['count']} items{hint}")
+
+    if args.output_json:
+        with open(args.output_json, "w", encoding="utf-8") as f:
+            f.write(json.dumps(audit, indent=2, default=str))
+        print(f"Audit results saved to: {args.output_json}")
+
+
+def _run_repair_dupes(
+    client: httpx.Client,
+    base_url: str,
+    user_id: str,
+    library_ids: list[str],
+    lock: bool,
+) -> None:
+    """Scan all items via single-item endpoint and fix duplicate genres.
+
+    The batch fetch endpoint deduplicates Genres/GenreItems in its response,
+    hiding real duplicates stored in Emby. This function uses the single-item
+    endpoint to see the true stored values and repairs any duplicates found.
+
+    Args:
+        client: Configured httpx client.
+        base_url: Emby server base URL with port.
+        user_id: Emby user ID for single-item fetches.
+        library_ids: List of library IDs to scan.
+        lock: Whether to lock genres after repair.
+    """
+    items = fetch_items_with_genres(client, base_url, library_ids, user_id=user_id)
+    repaired = 0
+    clean = 0
+    errors = 0
+
+    for item in tqdm(items, desc="Scanning for duplicate genres", unit="item"):
+        try:
+            full_item = fetch_full_item(client, base_url, user_id, item["Id"])
+            genres = full_item.get("Genres") or []
+            deduped = list(dict.fromkeys(genres))
+            if deduped == genres:
+                clean += 1
+                continue
+            result = update_item_genres(client, base_url, item["Id"], full_item, deduped, lock=lock)
+            if result:
+                repaired += 1
+                logger.info(
+                    f"Repaired duplicates: {full_item.get('Name', item['Id'])}: "
+                    f"{genres} → {deduped}"
+                )
+        except Exception as e:
+            errors += 1
+            logger.error(f"Failed to repair {item.get('Id', '?')}: {e}")
+
+    print(f"Duplicate repair: {repaired} repaired, {clean} already clean, {errors} errors")
+
+
+def _run_normalize(
+    client: httpx.Client,
+    base_url: str,
+    user_id: str,
+    library_ids: list[str],
+    args: argparse.Namespace,
+) -> None:
+    """Run the genre normalization action.
+
+    Args:
+        client: Configured httpx client.
+        base_url: Emby server base URL with port.
+        user_id: Emby user ID for full-item fetches.
+        library_ids: List of library IDs to scan.
+        args: Parsed CLI arguments.
+    """
+    # Use the non-user-scoped endpoint for detection: it returns raw stored genre names
+    # (e.g. "Suspense"). The user-scoped endpoint silently normalises some names in its
+    # response, causing normalize to miss items that still need updating.
+    items = list(
+        tqdm(
+            fetch_items_with_genres(client, base_url, library_ids),
+            desc="Fetching items",
+            unit="item",
+            leave=False,
+        )
+    )
+
+    items_to_update = []
+    for item in items:
+        # Normalize and deduplicate (e.g. item had both "Suspense" and "Thriller"
+        # — normalizing "Suspense"→"Thriller" would create a duplicate without dedup)
+        new_genres = list(dict.fromkeys(
+            normalize_genre_name(g, GENRE_NORMALIZATION_MAP)
+            for g in (item.get("Genres") or [])
+        ))
+        # Emby deduplicates Genres in API responses but may keep duplicates in GenreItems.
+        # Check GenreItems for duplicates too so we can repair items the previous run broke.
+        genre_item_names = [gi["Name"] for gi in (item.get("GenreItems") or [])]
+        genre_items_has_duplicates = len(genre_item_names) != len(set(genre_item_names))
+        if new_genres != (item.get("Genres") or []) or genre_items_has_duplicates:
+            items_to_update.append((item, new_genres))
+
+    repair_dupes = getattr(args, "repair_dupes", False)
+
+    if not items_to_update:
+        print("All genres are already normalized.")
+        if repair_dupes and args.doit:
+            print("\nScanning for duplicate genres (--repair-dupes)...")
+            _run_repair_dupes(client, base_url, user_id, library_ids, lock=args.lock)
+        return
+
+    if not args.doit:
+        # Dry-run: show preview
+        print(f"Would update {len(items_to_update)} items:")
+        # Group by variant → canonical mapping
+        mapping_counts: dict[tuple[str, str], int] = {}
+        for item, new_genres in items_to_update:
+            for orig, canonical in zip(item.get("Genres") or [], new_genres):
+                if orig != canonical:
+                    key = (orig, canonical)
+                    mapping_counts[key] = mapping_counts.get(key, 0) + 1
+        for (variant, canonical), count in sorted(
+            mapping_counts.items(), key=lambda x: x[1], reverse=True
+        ):
+            print(f"  {variant} → {canonical}: {count} items")
+        print(f"Run with --doit to apply ({len(items_to_update)} items)")
+        return
+
+    # Apply normalization changes
+    updated = 0
+    skipped = 0
+    errors = 0
+    for item, new_genres in tqdm(items_to_update, desc="Normalizing genres", unit="item"):
+        try:
+            # Fetch full item via single-item endpoint for safe POST-back.
+            # The batch endpoint returns partial fields; the single-item endpoint
+            # returns all 52 fields needed to avoid corrupting other metadata.
+            full_item = fetch_full_item(client, base_url, user_id, item["Id"])
+            result = update_item_genres(
+                client, base_url, item["Id"], full_item, new_genres, lock=args.lock
+            )
+            if result:
+                updated += 1
+                logger.info(f"Updated: {item.get('Name', item['Id'])} ({item['Id']})")
+            else:
+                skipped += 1
+        except Exception as e:
+            errors += 1
+            logger.error(f"Failed to update {item['Id']}: {e}")
+
+    print(
+        f"Normalization complete: {updated} updated, "
+        f"{skipped} skipped (already correct), {errors} errors"
+    )
+
+    if repair_dupes:
+        print("\nScanning for duplicate genres (--repair-dupes)...")
+        _run_repair_dupes(client, base_url, user_id, library_ids, lock=args.lock)
+
+
+def run_genres_command(args: argparse.Namespace) -> None:
+    """Main entry point for the genres command.
+
+    Args:
+        args: Parsed CLI arguments.
+    """
+    # Parse environment variables
+    env_host = get_env_variable(ENV_DEDUPE_EMBY_HOST)
+    env_port = get_env_variable(ENV_DEDUPE_EMBY_PORT)
+    env_api_key = get_env_variable(ENV_DEDUPE_EMBY_API_KEY)
+    env_library_str = get_env_variable(ENV_DEDUPE_EMBY_LIBRARY)
+    env_library = (
+        [lib.strip() for lib in env_library_str.split(",")]
+        if env_library_str
+        else None
+    )
+    env_verbosity = get_env_variable(ENV_DEDUPE_LOGGING)
+
+    set_logging_level(args.verbosity, env_verbosity)
+
+    override_warning("--host", args.host, env_host or "")
+    override_warning("--port", args.port and str(args.port) or "", env_port or "")
+    override_warning("--api-key", args.api_key, env_api_key or "")
+    override_warning("--library", ",".join(args.library) if args.library else "", env_library_str or "")
+
+    host: Optional[str] = args.host or env_host
+    port = args.port or env_port or None
+    api_key: Optional[str] = args.api_key or env_api_key
+    library = args.library or env_library or []
+    all_libraries = getattr(args, "all_libraries", False)
+
+    _validate_genres_args(host, api_key, library, all_libraries)
+
+    # After _validate_genres_args, host and api_key are guaranteed non-None (or sys.exit was called)
+    resolved_host: str = host  # type: ignore[assignment]
+    resolved_api_key: str = api_key  # type: ignore[assignment]
+    resolved_port: Optional[int] = int(port) if isinstance(port, str) else port
+
+    validated_host, validated_port = handle_host_and_port(resolved_host, resolved_port)
+    base_url = f"{validated_host}:{validated_port}"
+
+    try:
+        client = httpx.Client(headers={"X-Emby-Token": resolved_api_key})
+
+        if not check_emby_connection(client, f"{base_url}/System/Info"):
+            logger.error(f"Unable to connect to the Emby server at {base_url}.")
+            sys.exit(1)
+
+        user_id = get_user_id(client, base_url)
+
+        # Resolve library IDs
+        if all_libraries:
+            from emby_dedupe.api.search import get_all_library_ids
+
+            lib_infos = get_all_library_ids(client, base_url, resolved_api_key)
+            library_ids = [lib["id"] for lib in lib_infos]
+        else:
+            library_ids = []
+            for lib_name in library:
+                lib_id = get_library_id(client, base_url, lib_name)
+                if lib_id:
+                    library_ids.append(lib_id)
+                else:
+                    logger.warning(f"Library not found: {lib_name}")
+
+        if args.action == "audit":
+            _run_audit(client, base_url, library_ids, args)
+        else:
+            _run_normalize(client, base_url, user_id, library_ids, args)
+
+    except EmbyServerConnectionError as e:
+        logger.error(str(e))
+        sys.exit(1)
+    except httpx.TimeoutException as e:
+        logger.error(f"HTTP request timed out: {str(e)}")
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        logger.error(f"Failed to decode JSON: {str(e)}")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during genre management: {str(e)}")
+        sys.exit(1)
