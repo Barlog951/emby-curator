@@ -33,6 +33,8 @@ from emby_dedupe.utils.constants import (
     ENV_DEDUPE_EMBY_LIBRARY,
     ENV_DEDUPE_EMBY_PORT,
     ENV_DEDUPE_LOGGING,
+    ENV_DEDUPE_OMDB_API_KEY,
+    ENV_DEDUPE_TMDB_API_KEY,
     GENRE_NORMALIZATION_MAP,
 )
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError
@@ -47,8 +49,8 @@ def add_genres_arguments(parser: argparse.ArgumentParser) -> None:
     """
     parser.add_argument(
         "action",
-        choices=["audit", "normalize"],
-        help="Action to perform: audit (report genre health) or normalize (fix genre names)",
+        choices=["audit", "normalize", "fix"],
+        help="Action to perform: audit (report genre health), normalize (fix genre names), or fix (fetch from TMDB/OMDb)",
     )
     parser.add_argument(
         "--doit",
@@ -120,6 +122,21 @@ def add_genres_arguments(parser: argparse.ArgumentParser) -> None:
         type=str,
         action="append",
         help="Library name to scan (can be specified multiple times)",
+    )
+    parser.add_argument(
+        "--gaps-only",
+        action="store_true",
+        help="Only fetch genres for items with no genres (default behaviour for fix)",
+    )
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Compare existing genres against TMDB/OMDb and add any missing ones",
+    )
+    parser.add_argument(
+        "--tmdb-api-key",
+        type=str,
+        help="TMDB API key (or set DEDUPE_TMDB_API_KEY env var)",
     )
 
 
@@ -396,6 +413,122 @@ def _run_normalize(
         _run_repair_dupes(client, base_url, user_id, library_ids, lock=args.lock)
 
 
+def _run_fix(
+    client: httpx.Client,
+    base_url: str,
+    user_id: str,
+    library_ids: list[str],
+    args: argparse.Namespace,
+) -> None:
+    """Fetch genres from TMDB/OMDb and fill gaps or validate existing genres.
+
+    --gaps-only (default): only process items with no genres.
+    --validate: process all items, adding genres missing from Emby.
+    Always additive — never removes existing genres.
+    """
+    from emby_dedupe.api.genre_providers import (
+        RateLimiter,
+        compare_genres,
+        fetch_genres_for_item,
+        load_genre_cache,
+        save_genre_cache,
+    )
+
+    # Resolve API keys
+    tmdb_key = getattr(args, "tmdb_api_key", None) or get_env_variable(ENV_DEDUPE_TMDB_API_KEY)
+    omdb_keys_str = (
+        get_env_variable("DEDUPE_OMDB_API_KEYS") or get_env_variable(ENV_DEDUPE_OMDB_API_KEY)
+    )
+    omdb_keys = [k.strip() for k in omdb_keys_str.split(",")] if omdb_keys_str else []
+
+    if not tmdb_key and not omdb_keys:
+        logger.error(
+            "No API keys found. Set DEDUPE_TMDB_API_KEY and/or DEDUPE_OMDB_API_KEY env vars."
+        )
+        sys.exit(1)
+
+    # Create rate-limited clients
+    tmdb_client = (
+        httpx.Client(headers={"Authorization": f"Bearer {tmdb_key}"}) if tmdb_key else None
+    )
+    tmdb_limiter = RateLimiter(35.0) if tmdb_key else None
+    omdb_client = httpx.Client() if omdb_keys else None
+    omdb_limiter = RateLimiter(10.0) if omdb_keys else None
+
+    # Load persistent cache
+    cache = load_genre_cache()
+
+    # Determine mode: validate processes all items, gaps-only (default) processes only untagged
+    validate = getattr(args, "validate", False)
+    gaps_only = getattr(args, "gaps_only", False) or not validate
+
+    logger.info("Fetching items from Emby...")
+    all_items = fetch_items_with_genres(client, base_url, library_ids)
+
+    if gaps_only:
+        items = [i for i in all_items if not (i.get("Genres") or [])]
+        print(f"Items with no genres: {len(items)} (of {len(all_items)} total)")
+    else:
+        items = all_items
+        print(f"Validating genres for {len(items)} items")
+
+    found = 0
+    updated = 0
+    skipped_no_data = 0
+    skipped_no_diff = 0
+    errors = 0
+
+    try:
+        for item in tqdm(items, desc="Fetching external genres", unit="item"):
+            try:
+                external_genres = fetch_genres_for_item(
+                    item, tmdb_client, tmdb_limiter,
+                    omdb_client, omdb_limiter, omdb_keys, cache
+                )
+
+                if not external_genres:
+                    skipped_no_data += 1
+                    continue
+
+                found += 1
+                comparison = compare_genres(item.get("Genres") or [], external_genres)
+
+                if not comparison["has_diff"]:
+                    skipped_no_diff += 1
+                    continue
+
+                item_name = item.get("Name", item["Id"])
+                missing = comparison["missing_from_emby"]
+
+                if not args.doit:
+                    print(f"  {item_name}: would add {missing}")
+                    continue
+
+                # Fetch full item for safe POST-back
+                full_item = fetch_full_item(client, base_url, user_id, item["Id"])
+                result = update_item_genres(
+                    client, base_url, item["Id"], full_item,
+                    comparison["merged"], lock=args.lock
+                )
+                if result:
+                    updated += 1
+                    logger.info(f"Updated {item_name}: added {missing}")
+
+            except Exception as e:
+                errors += 1
+                logger.error(f"Failed to process {item.get('Id', '?')}: {e}")
+    finally:
+        save_genre_cache(cache)
+
+    print(
+        f"\nFix complete: {found} items had external data, "
+        f"{updated} updated, {skipped_no_diff} already complete, "
+        f"{skipped_no_data} no external data found, {errors} errors"
+    )
+    if not args.doit and found > 0:
+        print("Run with --doit to apply changes")
+
+
 def run_genres_command(args: argparse.Namespace) -> None:
     """Main entry point for the genres command.
 
@@ -463,6 +596,8 @@ def run_genres_command(args: argparse.Namespace) -> None:
 
         if args.action == "audit":
             _run_audit(client, base_url, library_ids, args)
+        elif args.action == "fix":
+            _run_fix(client, base_url, user_id, library_ids, args)
         else:
             _run_normalize(client, base_url, user_id, library_ids, args)
 

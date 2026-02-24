@@ -337,3 +337,145 @@ class TestRepairDupes:
         )
         run_genres_command(args)
         mock_full.assert_not_called()
+
+
+class TestFixAction:
+    def _setup_common_mocks(self, mocker):
+        mocker.patch("emby_dedupe.cli.genres.httpx.Client")
+        mocker.patch("emby_dedupe.cli.genres.check_emby_connection", return_value=True)
+        mocker.patch("emby_dedupe.cli.genres.get_user_id", return_value="user-123")
+        mocker.patch("emby_dedupe.cli.genres.handle_host_and_port", return_value=("http://emby", 8096))
+        mocker.patch("emby_dedupe.cli.genres.get_library_id", return_value="lib-abc")
+
+    def _make_fix_args(self, doit=False, gaps_only=True, validate=False):
+        return argparse.Namespace(
+            action="fix", host="http://emby", port=None, api_key="emby-key",
+            library=["Movies"], all_libraries=False, verbosity=0,
+            doit=doit, lock=True, gaps_only=gaps_only, validate=validate,
+            tmdb_api_key="tmdb-key-123",
+        )
+
+    def test_fix_exits_without_api_keys(self, mocker):
+        """fix action must exit(1) when no TMDB or OMDb API keys are available."""
+        self._setup_common_mocks(mocker)
+        mocker.patch("emby_dedupe.cli.genres.fetch_items_with_genres", return_value=[])
+        mocker.patch("emby_dedupe.cli.genres.get_env_variable", return_value=None)
+        with pytest.raises(SystemExit):
+            args = self._make_fix_args()
+            args.tmdb_api_key = None
+            run_genres_command(args)
+
+    def test_fix_gaps_only_skips_items_with_genres(self, mocker):
+        """gaps_only mode must skip items that already have genres."""
+        self._setup_common_mocks(mocker)
+        items = [
+            {"Id": "1", "Name": "Has Genres", "Genres": ["Drama"], "ProviderIds": {}},
+            {"Id": "2", "Name": "No Genres", "Genres": [], "ProviderIds": {"Tmdb": "123"}},
+        ]
+        mocker.patch("emby_dedupe.cli.genres.fetch_items_with_genres", return_value=items)
+        # _run_fix imports these from emby_dedupe.api.genre_providers at call time
+        mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
+        mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
+        mock_fetch_genres = mocker.patch(
+            "emby_dedupe.api.genre_providers.fetch_genres_for_item", return_value=[]
+        )
+
+        run_genres_command(self._make_fix_args(gaps_only=True))
+
+        # Only item "No Genres" should be processed (gaps-only filters out item with genres)
+        call_items = [c[0][0] for c in mock_fetch_genres.call_args_list]
+        assert all(i["Id"] == "2" for i in call_items)
+
+    def test_fix_dry_run_no_updates(self, mocker):
+        """Without --doit, update_item_genres must never be called."""
+        self._setup_common_mocks(mocker)
+        items = [{"Id": "1", "Name": "Movie", "Genres": [], "ProviderIds": {"Tmdb": "123"}}]
+        mocker.patch("emby_dedupe.cli.genres.fetch_items_with_genres", return_value=items)
+        mocker.patch("emby_dedupe.api.genre_providers.fetch_genres_for_item", return_value=["Drama"])
+        mocker.patch("emby_dedupe.api.genre_providers.compare_genres", return_value={
+            "missing_from_emby": ["Drama"], "extra_in_emby": [],
+            "merged": ["Drama"], "has_diff": True,
+        })
+        mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
+        mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
+        mock_update = mocker.patch("emby_dedupe.cli.genres.update_item_genres")
+
+        run_genres_command(self._make_fix_args(doit=False))
+        mock_update.assert_not_called()
+
+    def test_fix_doit_updates_item(self, mocker):
+        """With --doit and a diff found, update_item_genres must be called."""
+        self._setup_common_mocks(mocker)
+        items = [{"Id": "1", "Name": "Movie", "Genres": [], "ProviderIds": {"Tmdb": "123"}}]
+        mocker.patch("emby_dedupe.cli.genres.fetch_items_with_genres", return_value=items)
+        mocker.patch("emby_dedupe.api.genre_providers.fetch_genres_for_item", return_value=["Drama"])
+        mocker.patch("emby_dedupe.api.genre_providers.compare_genres", return_value={
+            "missing_from_emby": ["Drama"], "extra_in_emby": [],
+            "merged": ["Drama"], "has_diff": True,
+        })
+        mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
+        mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
+        full_item = {"Id": "1", "Name": "Movie", "Genres": [], "GenreItems": [], "LockedFields": []}
+        mocker.patch("emby_dedupe.cli.genres.fetch_full_item", return_value=full_item)
+        mock_update = mocker.patch("emby_dedupe.cli.genres.update_item_genres", return_value=True)
+
+        run_genres_command(self._make_fix_args(doit=True))
+        mock_update.assert_called_once()
+
+    def test_fix_saves_cache_on_completion(self, mocker):
+        """Cache must always be saved after fix completes (even with no items)."""
+        self._setup_common_mocks(mocker)
+        mocker.patch("emby_dedupe.cli.genres.fetch_items_with_genres", return_value=[])
+        mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
+        mock_save = mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
+
+        run_genres_command(self._make_fix_args())
+        mock_save.assert_called_once()
+
+    def test_fix_skips_item_when_no_external_data(self, mocker):
+        """Items where no external genre data is found must be counted as skipped."""
+        self._setup_common_mocks(mocker)
+        items = [{"Id": "1", "Name": "Unknown Movie", "Genres": [], "ProviderIds": {}}]
+        mocker.patch("emby_dedupe.cli.genres.fetch_items_with_genres", return_value=items)
+        mocker.patch("emby_dedupe.api.genre_providers.fetch_genres_for_item", return_value=[])
+        mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
+        mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
+        mock_update = mocker.patch("emby_dedupe.cli.genres.update_item_genres")
+
+        run_genres_command(self._make_fix_args())
+        mock_update.assert_not_called()
+
+    def test_fix_validate_processes_all_items(self, mocker):
+        """--validate mode must process all items, not just those without genres."""
+        self._setup_common_mocks(mocker)
+        items = [
+            {"Id": "1", "Name": "Has Genres", "Genres": ["Drama"], "ProviderIds": {"Tmdb": "1"}},
+            {"Id": "2", "Name": "No Genres", "Genres": [], "ProviderIds": {"Tmdb": "2"}},
+        ]
+        mocker.patch("emby_dedupe.cli.genres.fetch_items_with_genres", return_value=items)
+        mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
+        mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
+        mock_fetch_genres = mocker.patch(
+            "emby_dedupe.api.genre_providers.fetch_genres_for_item", return_value=[]
+        )
+
+        run_genres_command(self._make_fix_args(validate=True, gaps_only=False))
+
+        # Both items should be processed in validate mode
+        assert mock_fetch_genres.call_count == 2
+
+    def test_fix_saves_cache_even_on_error(self, mocker):
+        """Cache must be saved even if an item processing error occurs."""
+        self._setup_common_mocks(mocker)
+        items = [{"Id": "1", "Name": "Bad Item", "Genres": [], "ProviderIds": {"Tmdb": "123"}}]
+        mocker.patch("emby_dedupe.cli.genres.fetch_items_with_genres", return_value=items)
+        mocker.patch(
+            "emby_dedupe.api.genre_providers.fetch_genres_for_item",
+            side_effect=RuntimeError("network failure"),
+        )
+        mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
+        mock_save = mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
+
+        run_genres_command(self._make_fix_args())
+        # save_genre_cache must still be called (finally block)
+        mock_save.assert_called_once()
