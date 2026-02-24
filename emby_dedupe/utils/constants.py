@@ -60,12 +60,22 @@ GENRE_NORMALIZATION_MAP = {
     "scifi": "Science Fiction",
     "suspense": "Thriller",     # 126 items
     "reality-tv": "Reality",    # 9 items
-    # Non-English (Slovak/Czech)
-    "vojnový": "War",           # Slovak, 1 item
-    "dokument": "Documentary",  # Czech
-    "dokumenty": "Documentary", # Slovak
+    # Non-English (Slovak/Czech) — found in real audits
+    "vojnový": "War",               # Slovak
+    "dokument": "Documentary",      # Czech
+    "dokumenty": "Documentary",     # Slovak plural
+    "dokumentárny": "Documentary",  # Slovak adjective form
+    "romantický": "Romance",        # Slovak/Czech
+    "rodinný": "Family",            # Slovak/Czech
+    "historický": "History",        # Slovak/Czech
+    "animovaný": "Animation",       # Slovak/Czech
+    "akčný": "Action",              # Slovak
+    "dobrodružný": "Adventure",     # Slovak
+    "krimi": "Crime",               # Slovak/Czech colloquial
+    "vedeckofantastický": "Science Fiction",  # Slovak
+    "horor": "Horror",              # Typo + Slovak (horor = horror)
     # Custom/junk — user confirmed "dada" means Comedy
-    "dada": "Comedy",           # 1645 items!
+    "dada": "Comedy",               # 1645 items!
 }
 
 # TMDB canonical genre names — the authoritative list used for audit suggestions.
@@ -78,7 +88,7 @@ TMDB_CANONICAL_GENRES: frozenset[str] = frozenset({
     "Horror", "Music", "Mystery", "Romance", "Science Fiction",
     "Thriller", "War", "Western",
     # TMDB TV-specific genres (as used in Emby)
-    "Reality", "Kids", "Soap", "Talk",
+    "Reality", "Kids", "Soap", "Talk", "News",
     # Common extras that Emby / metadata agents use
     "Biography", "Children", "Mini-Series", "Musical",
     "Short", "Special Interest", "Sport", "Talk Show",

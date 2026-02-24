@@ -27,7 +27,7 @@ _TMDB_TV_GENRE_EXPANSIONS: dict[str, list[str]] = {
 }
 
 # Genre values that should never be stored — media type labels or missing-data sentinels.
-_GENRES_TO_SKIP: frozenset[str] = frozenset({"TV Movie", "N/A", ""})
+_GENRES_TO_SKIP: frozenset[str] = frozenset({"TV Movie", "TV Film", "N/A", ""})
 
 
 class RateLimiter:
