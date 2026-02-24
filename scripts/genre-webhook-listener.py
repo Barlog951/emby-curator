@@ -90,28 +90,46 @@ def _schedule_fix(item_name: str) -> None:
 
 
 def _parse_event(body: bytes, content_type: str) -> tuple[str, str]:
-    """Return (event_name, item_title) from webhook payload."""
+    """Return (event_name, item_title) from webhook payload.
+
+    Handles both lowercase 'event' (Plex-style) and uppercase 'Event' (Emby native).
+    """
     if "application/json" in content_type:
         try:
             data = json.loads(body)
-            event = data.get("event", "")
-            title = data.get("Metadata", {}).get("title", "") or data.get("item", {}).get("Name", "")
+            # Emby sends "Event" (capital E), Plex-style plugins send "event"
+            event = data.get("Event") or data.get("event", "")
+            # Item title lives in different places depending on event type
+            item = data.get("Item") or data.get("Metadata") or data.get("item") or {}
+            title = item.get("Name") or item.get("title") or data.get("Title", "")
+            # Also log the item ID if present — useful for targeted processing later
+            item_id = item.get("Id") or item.get("ratingKey", "")
+            if item_id:
+                logger.debug(f"Item ID in payload: {item_id}")
             return event, title
         except json.JSONDecodeError:
             pass
 
     # multipart/form-data or unknown — extract from raw body text
     text = body.decode("utf-8", errors="replace")
-    event_match = re.search(r'"event"\s*:\s*"([^"]+)"', text)
-    title_match = re.search(r'"(?:title|Name)"\s*:\s*"([^"]+)"', text)
+    event_match = re.search(r'"[Ee]vent"\s*:\s*"([^"]+)"', text)
+    title_match = re.search(r'"(?:Name|title|Title)"\s*:\s*"([^"]+)"', text)
     return (
         event_match.group(1) if event_match else "",
         title_match.group(1) if title_match else "unknown",
     )
 
 
-# Events Emby sends for new media added (varies by version)
-_ITEM_ADDED_EVENTS = {"library.new", "item.added", "itemadded", "media.added"}
+# Events Emby sends for new media added (varies by plugin version)
+# Emby native: "item.add" — community plugins may vary
+_ITEM_ADDED_EVENTS = {
+    "item.add",          # Emby Webhooks plugin v1.x
+    "item.added",
+    "library.new",       # Plex-style
+    "itemadded",
+    "media.added",
+    "system.itemadded",
+}
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
