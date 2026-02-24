@@ -15,6 +15,7 @@ setup(
         "jinja2>=3.1.6",
         "pyyaml>=6.0.3",  # For config file support
         "rank-torrent-name>=1.10.0",  # For quality source detection
+        "python-dotenv>=1.0.0",  # Load .env files automatically
     ],
     extras_require={
         "dev": [
