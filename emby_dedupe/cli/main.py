@@ -398,6 +398,12 @@ def main() -> None:
         exit_code = run_check(args)
         sys.exit(exit_code)
 
+    # Route to genres command if specified
+    if hasattr(args, 'command') and args.command == 'genres':
+        from emby_dedupe.cli.genres import run_genres_command
+        run_genres_command(args)
+        sys.exit(0)
+
     # Resolve configuration from args and environment
     (host, port, api_key, library, doit, lang_priorities, excluded_ids,
      username, password, html_report, html_only, no_open) = _resolve_configuration(args)

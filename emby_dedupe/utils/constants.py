@@ -43,6 +43,51 @@ ENV_DEDUPE_HTML_ONLY = "DEDUPE_HTML_ONLY"
 ENV_DEDUPE_LANG_PRIO = "DEDUPE_LANG_PRIO"
 ENV_DEDUPE_EXCLUDE_IDS = "DEDUPE_EXCLUDE_IDS"
 
+# Genre management constants
+GENRE_UPDATE_DELAY_SEC = 0.1  # Rate limit: seconds between Emby POST updates for genres
+
+# Genre normalization mapping
+# Maps variant/incorrect names to TMDB-standard canonical names (case-insensitive keys)
+# Based on real Emby audit (2026-02-23): 32 genres found across 2500+ items
+# NOTE: Musical≠Music, Children≠Family, Biography≠Documentary — intentionally NOT mapped
+GENRE_NORMALIZATION_MAP = {
+    # Typos found in real Emby audit
+    "hisotry": "History",       # Typo, 1 item
+    "horor": "Horror",          # Typo, 1 item
+    # Duplicates/standard variants
+    "sci-fi": "Science Fiction",
+    "sf": "Science Fiction",
+    "scifi": "Science Fiction",
+    "suspense": "Thriller",     # 126 items
+    "reality-tv": "Reality",    # 9 items
+    # Non-English (Slovak/Czech)
+    "vojnový": "War",           # Slovak, 1 item
+    "dokument": "Documentary",  # Czech
+    "dokumenty": "Documentary", # Slovak
+    # Custom/junk — user confirmed "dada" means Comedy
+    "dada": "Comedy",           # 1645 items!
+}
+
+# TMDB canonical genre names — the authoritative list used for audit suggestions.
+# Anything found in Emby that is NOT in this set and NOT already in
+# GENRE_NORMALIZATION_MAP is flagged as unknown by `genres audit --suggest`.
+TMDB_CANONICAL_GENRES: frozenset[str] = frozenset({
+    # TMDB movie genres
+    "Action", "Adventure", "Animation", "Comedy", "Crime",
+    "Documentary", "Drama", "Family", "Fantasy", "History",
+    "Horror", "Music", "Mystery", "Romance", "Science Fiction",
+    "Thriller", "War", "Western",
+    # TMDB TV-specific genres (as used in Emby)
+    "Reality", "Kids", "Soap", "Talk",
+    # Common extras that Emby / metadata agents use
+    "Biography", "Children", "Mini-Series", "Musical",
+    "Short", "Special Interest", "Sport", "Talk Show",
+})
+
+# Environment variable names for Phase 2 external APIs (define early)
+ENV_DEDUPE_TMDB_API_KEY = "DEDUPE_TMDB_API_KEY"
+ENV_DEDUPE_OMDB_API_KEY = "DEDUPE_OMDB_API_KEY"
+
 # Default port values
 DEFAULT_PORT_HTTP = 80
 DEFAULT_PORT_HTTPS = 443
@@ -68,13 +113,18 @@ def should_quality_override_language(
     Determine if quality should override language priority based on smart override rules.
 
     This implements the "smart override" logic used in both deduplication and quality
-    comparison workflows. Quality can win over language priority in two scenarios:
+    comparison workflows. Quality can win over language priority in three scenarios:
 
     1. Single-lang vs multi-lang: When the language-priority item has only one audio
        track but the quality item has multiple tracks (2+) and is 1.5x better quality.
 
     2. No priority language: When the quality item lacks the priority language but is
        3x better quality than the language-priority item.
+
+    3. Both have priority languages: When both items have a priority language (e.g.,
+       existing has Slovak, proposed has Czech) but quality is 2x+ better. A massive
+       quality upgrade (e.g., REMUX vs WEB-DL) justifies losing a higher-ranked
+       language track.
 
     Args:
         quality_ratio: Ratio of quality_score / lang_score (must be > 0)
@@ -91,6 +141,12 @@ def should_quality_override_language(
 
     # Scenario 2: Quality item lacks priority language but is 3x+ better
     if lang_item_has_priority_lang and not quality_item_has_priority_lang and quality_ratio > 3.0:
+        return True
+
+    # Scenario 3: Both have priority languages but quality is 2x+ better
+    # e.g., existing WEB-DL has Slovak (priority 0) vs proposed REMUX has Czech (priority 1)
+    # A 2x quality upgrade justifies losing a higher-ranked language track
+    if lang_item_has_priority_lang and quality_item_has_priority_lang and quality_ratio > 2.0:
         return True
 
     return False

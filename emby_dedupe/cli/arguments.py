@@ -79,10 +79,15 @@ def parse_args() -> argparse.Namespace:
     Supports subcommands:
     - (no subcommand): Run deduplication (default, backward compatible)
     - check: Check if media should be downloaded
+    - genres: Genre audit and normalization
 
     Returns:
         argparse.Namespace: An object holding attributes based on command-line arguments.
     """
+    # Check if 'genres' is the first argument to route to genres subcommand
+    if len(sys.argv) > 1 and sys.argv[1] == 'genres':
+        return parse_genres_args()
+
     # Check if 'check' is the first argument to route to check subcommand
     if len(sys.argv) > 1 and sys.argv[1] == 'check':
         return parse_check_args()
@@ -110,6 +115,26 @@ def parse_check_args() -> argparse.Namespace:
     # Parse arguments (skip 'check' command)
     args = parser.parse_args(sys.argv[2:])
     args.command = 'check'
+    return args
+
+
+def parse_genres_args() -> argparse.Namespace:
+    """Parse arguments for the genres subcommand.
+
+    Returns:
+        argparse.Namespace: Parsed arguments for genres command.
+    """
+    from emby_dedupe.cli.genres import add_genres_arguments
+
+    parser = argparse.ArgumentParser(
+        description="Genre audit and normalization for Emby libraries.",
+        prog="emby-dedupe genres",
+    )
+    add_genres_arguments(parser)
+
+    # Parse arguments (skip 'genres' command word)
+    args = parser.parse_args(sys.argv[2:])
+    args.command = 'genres'
     return args
 
 
