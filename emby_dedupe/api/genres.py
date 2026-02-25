@@ -101,36 +101,50 @@ def fetch_items_with_genres(
     target_ids: list[Optional[str]] = list(library_ids) if library_ids else [None]
 
     for lib_id in target_ids:
-        start_index = 0
-        page = 0
-
-        while True:
-            endpoint = f"{base_url}/Users/{user_id}/Items" if user_id else f"{base_url}/Items"
-            params = {**base_params, "StartIndex": str(start_index), "Limit": str(PAGE_SIZE)}
-            if lib_id is not None:
-                params["ParentId"] = lib_id
-
-            try:
-                response = make_http_request(client, "GET", endpoint, params=params)
-                data = response.json()
-            except (httpx.HTTPStatusError, httpx.RequestError) as e:
-                logger.error(f"Failed to fetch items page {page} for library {lib_id}: {e}")
-                break
-
-            items = data.get("Items", [])
-            total = data.get("TotalRecordCount", 0)
-            count = len(items)
-            all_items.extend(items)
-
-            logger.debug(f"Fetched page {page} from library {lib_id}: {count} items")
-
-            start_index += count
-            page += 1
-
-            if start_index >= total:
-                break
+        all_items.extend(_fetch_library_items(client, base_url, user_id, lib_id, base_params))
 
     return all_items
+
+
+def _fetch_library_items(
+    client: httpx.Client,
+    base_url: str,
+    user_id: str,
+    lib_id: Optional[str],
+    base_params: dict,
+) -> list[dict]:
+    """Fetch all pages of items for a single library (or all libraries if lib_id is None)."""
+    items: list[dict] = []
+    start_index = 0
+    page = 0
+
+    while True:
+        endpoint = f"{base_url}/Users/{user_id}/Items" if user_id else f"{base_url}/Items"
+        params = {**base_params, "StartIndex": str(start_index), "Limit": str(PAGE_SIZE)}
+        if lib_id is not None:
+            params["ParentId"] = lib_id
+
+        try:
+            response = make_http_request(client, "GET", endpoint, params=params)
+            data = response.json()
+        except (httpx.HTTPStatusError, httpx.RequestError) as e:
+            logger.error(f"Failed to fetch items page {page} for library {lib_id}: {e}")
+            break
+
+        page_items = data.get("Items", [])
+        total = data.get("TotalRecordCount", 0)
+        count = len(page_items)
+        items.extend(page_items)
+
+        logger.debug(f"Fetched page {page} from library {lib_id}: {count} items")
+
+        start_index += count
+        page += 1
+
+        if start_index >= total:
+            break
+
+    return items
 
 
 def fetch_full_item(
@@ -246,6 +260,29 @@ def normalize_genre_name(name: str, normalization_map: dict) -> str:
     return normalization_map.get(name.lower(), name)
 
 
+def _check_normalization_candidate(
+    item: dict, genres: list, variant_groups: dict
+) -> Optional[dict]:
+    """Check if an item needs genre normalization and update variant_groups in place.
+
+    Returns a candidate dict if the item needs normalization, else None.
+    """
+    suggested_genres = [normalize_genre_name(g, GENRE_NORMALIZATION_MAP) for g in genres]
+    if not any(s != g for g, s in zip(genres, suggested_genres)):
+        return None
+
+    for genre, canonical in zip(genres, suggested_genres):
+        if canonical != genre:
+            variant_groups.setdefault(canonical, set()).add(genre)
+
+    return {
+        "item_id": item.get("Id", ""),
+        "item_name": item.get("Name", ""),
+        "current_genres": genres,
+        "suggested_genres": suggested_genres,
+    }
+
+
 def build_genre_audit(items: list[dict]) -> dict:
     """Analyze all items and build a genre health audit report.
 
@@ -273,31 +310,12 @@ def build_genre_audit(items: list[dict]) -> dict:
         if not genres:
             items_without_genres.append(item)
 
-        # Count occurrences of each genre
         for genre in genres:
             genre_counts[genre] = genre_counts.get(genre, 0) + 1
 
-        # Check for normalization candidates
-        suggested_genres = [normalize_genre_name(g, GENRE_NORMALIZATION_MAP) for g in genres]
-        needs_normalization = any(
-            normalize_genre_name(g, GENRE_NORMALIZATION_MAP) != g for g in genres
-        )
-
-        if needs_normalization:
-            normalization_candidates.append(
-                {
-                    "item_id": item.get("Id", ""),
-                    "item_name": item.get("Name", ""),
-                    "current_genres": genres,
-                    "suggested_genres": suggested_genres,
-                }
-            )
-            # Track which variant maps to which canonical
-            for genre, canonical in zip(genres, suggested_genres):
-                if canonical != genre:
-                    if canonical not in variant_groups:
-                        variant_groups[canonical] = set()
-                    variant_groups[canonical].add(genre)
+        candidate = _check_normalization_candidate(item, genres, variant_groups)
+        if candidate:
+            normalization_candidates.append(candidate)
 
     # Convert sets to lists for JSON serialisation
     variant_groups_serialisable = {k: list(v) for k, v in variant_groups.items()}

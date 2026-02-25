@@ -4,6 +4,7 @@ Metadata processing utilities for Emby media items.
 
 import os
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from emby_dedupe.api.quality_compare import detect_ai_upscale, detect_source_quality
@@ -46,16 +47,9 @@ def _parse_iso_date(date_str: str, include_time: bool = True) -> Optional[str]:
         return None
 
     try:
-        date_parts = date_str.split('T')[0].split('-')
-        if len(date_parts) != 3:
-            return None
-
-        if include_time:
-            time_parts = date_str.split('T')[1].split(':')
-            return f"{date_parts[0]}-{date_parts[1]}-{date_parts[2]} {time_parts[0]}:{time_parts[1]}"
-        else:
-            return f"{date_parts[0]}-{date_parts[1]}-{date_parts[2]}"
-    except (IndexError, ValueError):
+        dt = datetime.fromisoformat(date_str)
+        return dt.strftime("%Y-%m-%d %H:%M") if include_time else dt.strftime("%Y-%m-%d")
+    except ValueError:
         return None
 
 
@@ -402,11 +396,9 @@ def _calculate_quality_rating(
     # Parse date added to get timestamp for comparison
     date_rating = 0
     try:
-        if "DateCreated" in item:
-            date_str = item["DateCreated"]
-            if isinstance(date_str, str) and 'T' in date_str:
-                date_obj = time.strptime(date_str.split('T')[0], "%Y-%m-%d")
-                date_rating = int(time.mktime(date_obj))
+        date_str = item.get("DateCreated", "")
+        if isinstance(date_str, str) and 'T' in date_str:
+            date_rating = int(datetime.fromisoformat(date_str).timestamp())
     except Exception as e:
         logger.warning(f"Error parsing DateCreated for rating: {e}")
 
