@@ -10,7 +10,11 @@ python_functions = "test_*"
 addopts = ""
 filterwarnings = [
     # Suppress warnings from tqdm progress bars that can't be properly closed in test environment
-    "ignore::pytest.PytestUnraisableExceptionWarning"
+    "ignore::pytest.PytestUnraisableExceptionWarning",
+    # Suppress Pydantic V2 deprecation warnings from rank-torrent-name (RTN) third-party library
+    "ignore::pydantic.warnings.PydanticDeprecatedSince20",
+    # Suppress asyncio.iscoroutinefunction deprecation from backoff library (third-party)
+    "ignore::DeprecationWarning:backoff"
 ]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",

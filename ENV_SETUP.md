@@ -30,30 +30,45 @@
 
 ## Usage Examples
 
-With environment file configured, you can use shorter commands:
+With environment file configured, you can use shorter commands (env vars supply host/key/library):
 
 ### Deduplication
 ```bash
-# Basic deduplication scan
-python -m emby_dedupe
+# Basic deduplication scan (dry run)
+python -m emby_dedupe dedupe
 
 # Actually delete duplicates (be careful!)
-python -m emby_dedupe --doit
+python -m emby_dedupe --doit dedupe --username "user" --password "pass"
 
-# Specific library
-python -m emby_dedupe --library "Movies"
+# Specific library with language priority
+python -m emby_dedupe --library "Movies" dedupe --lang-prio "slo,cze,eng"
+
+# Generate HTML report without opening browser
+python -m emby_dedupe dedupe --html-only
 ```
 
 ### Missing Episodes
 ```bash
 # Find missing episodes
-python -m emby_dedupe --missing-episodes
+python -m emby_dedupe missing-episodes
 
 # Multiple libraries
-python -m emby_dedupe --missing-episodes --library "SERIALS" --library "Anime"
+python -m emby_dedupe --library "SERIALS" --library "Anime" missing-episodes
+```
 
-# JSON output
-python -m emby_dedupe --missing-episodes --format json
+### Genre Management
+```bash
+# Audit genres (read-only)
+python -m emby_dedupe --library "Movies" genres audit
+
+# Normalize genre variant names (dry run)
+python -m emby_dedupe --library "Movies" genres normalize
+
+# Apply normalization
+python -m emby_dedupe --library "Movies" --doit genres normalize
+
+# Fill missing genres
+python -m emby_dedupe --library "Movies" --doit genres fix --validate
 ```
 
 ## Security Notes

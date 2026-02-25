@@ -16,6 +16,7 @@ setup(
         "pyyaml>=6.0.3",  # For config file support
         "rank-torrent-name>=1.10.0",  # For quality source detection
         "python-dotenv>=1.0.0",  # Load .env files automatically
+        "typer>=0.24.0",
     ],
     extras_require={
         "dev": [
@@ -31,14 +32,14 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "emby-dedupe=emby_dedupe.cli.main:main",
+            "emby-dedupe=emby_dedupe.cli.app:main",
         ],
     },
-    author="Troy Kelly",
-    author_email="troy@troykelly.com",
+    author="",
+    author_email="",
     description="A tool for deduplicating media items in Emby libraries",
     keywords="emby, deduplication, media, server",
-    url="https://github.com/troykelly/emby-dedupe",
+    url="",
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: End Users/Desktop",

@@ -10,7 +10,6 @@ from unittest.mock import Mock, patch
 import pytest
 
 from emby_dedupe.cli.missing_episodes import (
-    add_missing_episodes_args,
     format_missing_episodes_report,
     format_structured_json_report,
     generate_default_filename,
@@ -429,22 +428,3 @@ class TestRunMissingEpisodesCommand:
         captured = capsys.readouterr()
         assert "# Missing Episodes Report" in captured.out
         assert "**Total Missing Episodes**: 0" in captured.out
-
-
-class TestAddMissingEpisodesArgs:
-    """Tests for argument parser configuration."""
-
-    def test_add_missing_episodes_args(self):
-        """Test that missing episodes arguments are added to parser."""
-        parser = Mock()
-
-        add_missing_episodes_args(parser)
-
-        # Verify add_argument was called for key arguments
-        assert parser.add_argument.call_count == 3
-
-        # Check arguments were added
-        call_args_list = [str(call) for call in parser.add_argument.call_args_list]
-        assert any("--missing-episodes" in str(call) for call in call_args_list)
-        assert any("--format" in str(call) for call in call_args_list)
-        assert any("--output" in str(call) for call in call_args_list)

@@ -525,7 +525,8 @@ class TestEmbyChecker:
         mock_compare.assert_called_once()
 
     @patch('emby_dedupe.api.checker.compare_quality')
-    def test_check_not_found(self, mock_compare):
+    @patch('emby_dedupe.api.checker.search_media', return_value=[])
+    def test_check_not_found(self, mock_search, mock_compare):
         """Test check() when media not found in Emby."""
         checker = EmbyChecker(
             host="http://emby.local",

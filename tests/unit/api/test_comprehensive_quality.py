@@ -283,6 +283,80 @@ class TestRemuxVsWebDL:
         assert result.existing_score > result.proposed_score
 
 
+class TestRemuxVsWebDLWithLanguagePriority:
+    """Regression test: REMUX should beat WEB-DL even when WEB-DL has higher-priority language.
+
+    Real-world case: Deadpool & Wolverine
+    - Existing: 2160p WEB-DL (23.7GB) with Slovak+Czech+English audio
+    - Proposed: 2160p REMUX (58.3GB, 63.7 Mbps) with Czech+English audio
+    - With priorities ['sk', 'cs', 'en'], WEB-DL has Slovak (priority 0)
+      but REMUX quality is 3.5x better — quality should override.
+    """
+
+    def test_remux_beats_webdl_despite_lower_language_priority(self):
+        """REMUX with Czech should beat WEB-DL with Slovak when quality is 2x+ better."""
+        proposed = ProposedQuality(
+            resolution="2160p",
+            codec="x265",
+            audio="Atmos",
+            audio_languages=["eng", "cze"],
+            size_mb=58299,
+            bitrate_kbps=63700,
+            path="Deadpool.and.Wolverine.2024.UHD.BluRay.2160p.FLAC.TrueHD.Atmos.7.1.DV.HEVC.REMUX-JD",
+            source_quality_tier="remux",
+        )
+
+        existing_items = [{
+            "Id": "webdl_with_slovak",
+            "Name": "Deadpool & Wolverine",
+            "Path": "/Movies/4K/Deadpool.and.Wolverine.2024.2160p.WEB-DL.DD+5.1.Atmos.HDR.DoVi.HEVC-TreZzoR.mkv",
+            "MediaStreams": [
+                {"Type": "Video", "Width": 3840, "Height": 1608, "Codec": "hevc"},
+                {"Type": "Audio", "Channels": 6, "Language": "slo"},
+                {"Type": "Audio", "Channels": 6, "Language": "cze"},
+                {"Type": "Audio", "Channels": 6, "Language": "eng"},
+            ],
+            "Size": 24872600555,
+            "Bitrate": 25952104,
+        }]
+
+        result = compare_quality(proposed, existing_items, lang_priorities=["sk", "cs", "en"])
+
+        assert result.recommendation == "download"
+        assert result.reason == "better_quality"
+        assert result.proposed_score > result.existing_score * 2  # At least 2x better
+
+    def test_webdl_keeps_when_quality_gap_small(self):
+        """WEB-DL with Slovak should be kept when proposed quality is only marginally better."""
+        proposed = ProposedQuality(
+            resolution="2160p",
+            codec="x265",
+            audio_languages=["eng", "cze"],
+            size_mb=28000,  # Only slightly larger
+            bitrate_kbps=28000,
+            path="Movie.2160p.WEB-DL.H265.mkv",
+        )
+
+        existing_items = [{
+            "Id": "webdl_with_slovak",
+            "Name": "Movie",
+            "Path": "/Movies/4K/Movie.2160p.WEB-DL.mkv",
+            "MediaStreams": [
+                {"Type": "Video", "Width": 3840, "Height": 2160, "Codec": "hevc"},
+                {"Type": "Audio", "Channels": 6, "Language": "slo"},
+                {"Type": "Audio", "Channels": 6, "Language": "eng"},
+            ],
+            "Size": 24000000000,
+            "Bitrate": 25000000,
+        }]
+
+        result = compare_quality(proposed, existing_items, lang_priorities=["sk", "cs", "en"])
+
+        # Quality gap < 2x, so Slovak language priority should hold
+        assert result.recommendation == "skip"
+        assert result.reason == "same_or_worse"
+
+
 class TestProposedQualityScoring:
     """Tests for ProposedQuality comprehensive scoring."""
 

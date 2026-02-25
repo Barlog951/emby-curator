@@ -19,8 +19,8 @@ except ImportError:
 
 import httpx
 
+import emby_dedupe.api.client as _client_mod
 from emby_dedupe.api.client import (
-    authenticated_token_for_delete,
     check_emby_connection,
     fetch_and_process_media_items,
     get_library_id,
@@ -452,5 +452,5 @@ def main() -> None:
         logger.error(e)
         sys.exit(1)
     finally:
-        if authenticated_token_for_delete and doit:
-            logout(client, base_url, authenticated_token_for_delete)
+        if _client_mod.auth_state.token_for_delete and doit:
+            logout(client, base_url, _client_mod.auth_state.token_for_delete)

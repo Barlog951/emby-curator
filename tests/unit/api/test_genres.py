@@ -305,23 +305,21 @@ class TestFetchItemsWithGenres:
             "TotalRecordCount": 2,
         }
         mock_resp.is_success = True
-        mock_resp.raise_for_status.return_value = None
-        mock_client.get.return_value = mock_resp
+        mock_client.request.return_value = mock_resp
 
         items = fetch_items_with_genres(mock_client, "http://emby", ["lib1"])
 
         assert len(items) == 2
-        call_url = mock_client.get.call_args[0][0]
-        assert "Movie" in call_url
-        assert "Series" in call_url
+        call_kwargs = mock_client.request.call_args[1]
+        assert "Movie" in call_kwargs["params"]["IncludeItemTypes"]
+        assert "Series" in call_kwargs["params"]["IncludeItemTypes"]
 
     def test_pagination_exhausts_all_items(self, mocker):
         mock_client = mocker.MagicMock()
 
-        def side_effect(url):
+        def side_effect(method, url, **kwargs):
             mock_resp = mocker.MagicMock()
             mock_resp.is_success = True
-            mock_resp.raise_for_status.return_value = None
             if "StartIndex=0" in url:
                 mock_resp.json.return_value = {
                     "Items": [{"Id": "1", "Genres": []}, {"Id": "2", "Genres": []}],
@@ -334,7 +332,7 @@ class TestFetchItemsWithGenres:
                 }
             return mock_resp
 
-        mock_client.get.side_effect = side_effect
+        mock_client.request.side_effect = side_effect
 
         items = fetch_items_with_genres(mock_client, "http://emby", ["lib1"])
         assert len(items) == 3
@@ -344,18 +342,20 @@ class TestFetchItemsWithGenres:
         mock_resp = mocker.MagicMock()
         mock_resp.json.return_value = {"Items": [{"Id": "1", "Genres": []}], "TotalRecordCount": 1}
         mock_resp.is_success = True
-        mock_resp.raise_for_status.return_value = None
-        mock_client.get.return_value = mock_resp
+        mock_client.request.return_value = mock_resp
 
         items = fetch_items_with_genres(mock_client, "http://emby", [])
         assert len(items) == 1
         # No ParentId in URL when library_ids is empty
-        call_url = mock_client.get.call_args[0][0]
+        call_url = mock_client.request.call_args[0][1]
         assert "ParentId" not in call_url
 
     def test_returns_empty_on_request_error(self, mocker):
         mock_client = mocker.MagicMock()
-        mock_client.get.side_effect = httpx.RequestError("connection refused")
+        mocker.patch(
+            "emby_dedupe.api.genres.make_http_request",
+            side_effect=httpx.RequestError("connection refused"),
+        )
 
         items = fetch_items_with_genres(mock_client, "http://emby", ["lib1"])
         assert items == []
@@ -363,17 +363,16 @@ class TestFetchItemsWithGenres:
     def test_multiple_libraries_fetched(self, mocker):
         mock_client = mocker.MagicMock()
 
-        def side_effect(url):
+        def side_effect(method, url, **kwargs):
             mock_resp = mocker.MagicMock()
             mock_resp.is_success = True
-            mock_resp.raise_for_status.return_value = None
             if "lib1" in url:
                 mock_resp.json.return_value = {"Items": [{"Id": "1", "Genres": []}], "TotalRecordCount": 1}
             else:
                 mock_resp.json.return_value = {"Items": [{"Id": "2", "Genres": []}], "TotalRecordCount": 1}
             return mock_resp
 
-        mock_client.get.side_effect = side_effect
+        mock_client.request.side_effect = side_effect
 
         items = fetch_items_with_genres(mock_client, "http://emby", ["lib1", "lib2"])
         assert len(items) == 2
@@ -384,8 +383,7 @@ class TestFetchFullItem:
         mock_client = mocker.MagicMock()
         mock_resp = mocker.MagicMock()
         mock_resp.json.return_value = {"Id": "42", "Name": "Test Movie", "Genres": ["Drama"]}
-        mock_resp.raise_for_status.return_value = None
-        mock_client.get.return_value = mock_resp
+        mock_client.request.return_value = mock_resp
 
         item = fetch_full_item(mock_client, "http://emby", "user-123", "42")
         assert item["Id"] == "42"
@@ -395,11 +393,10 @@ class TestFetchFullItem:
         mock_client = mocker.MagicMock()
         mock_resp = mocker.MagicMock()
         mock_resp.json.return_value = {"Id": "42"}
-        mock_resp.raise_for_status.return_value = None
-        mock_client.get.return_value = mock_resp
+        mock_client.request.return_value = mock_resp
 
         fetch_full_item(mock_client, "http://emby", "user-abc", "item-xyz")
-        call_url = mock_client.get.call_args[0][0]
+        call_url = mock_client.request.call_args[0][1]
         assert call_url == "http://emby/Users/user-abc/Items/item-xyz"
 
     def test_raises_on_http_status_error(self, mocker):
@@ -408,8 +405,9 @@ class TestFetchFullItem:
         mock_response = MagicMock()
         mock_response.status_code = 404
         mock_response.content = b"Not Found"
-        mock_client.get.return_value.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "404", request=mock_request, response=mock_response
+        mocker.patch(
+            "emby_dedupe.api.genres.make_http_request",
+            side_effect=httpx.HTTPStatusError("404", request=mock_request, response=mock_response),
         )
 
         with pytest.raises(EmbyServerConnectionError):
@@ -417,7 +415,10 @@ class TestFetchFullItem:
 
     def test_raises_on_request_error(self, mocker):
         mock_client = mocker.MagicMock()
-        mock_client.get.side_effect = httpx.RequestError("connection refused")
+        mocker.patch(
+            "emby_dedupe.api.genres.make_http_request",
+            side_effect=httpx.RequestError("connection refused"),
+        )
 
         with pytest.raises(EmbyServerConnectionError):
             fetch_full_item(mock_client, "http://emby", "user-abc", "item-xyz")
@@ -427,12 +428,11 @@ class TestGetUserId:
     def test_returns_first_user_id(self, mocker):
         mock_client = mocker.MagicMock()
         mock_resp = mocker.MagicMock()
-        mock_resp.raise_for_status.return_value = None
         mock_resp.json.return_value = [
             {"Id": "user-abc-123", "Name": "Barlog"},
             {"Id": "other-user", "Name": "Other"},
         ]
-        mock_client.get.return_value = mock_resp
+        mock_client.request.return_value = mock_resp
 
         user_id = get_user_id(mock_client, "http://emby")
         assert user_id == "user-abc-123"
@@ -440,9 +440,8 @@ class TestGetUserId:
     def test_raises_when_no_users(self, mocker):
         mock_client = mocker.MagicMock()
         mock_resp = mocker.MagicMock()
-        mock_resp.raise_for_status.return_value = None
         mock_resp.json.return_value = []
-        mock_client.get.return_value = mock_resp
+        mock_client.request.return_value = mock_resp
 
         with pytest.raises(EmbyServerConnectionError, match="No users found"):
             get_user_id(mock_client, "http://emby")
@@ -452,8 +451,9 @@ class TestGetUserId:
         mock_request = MagicMock()
         mock_response = MagicMock()
         mock_response.content = b"Unauthorized"
-        mock_client.get.return_value.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "401", request=mock_request, response=mock_response
+        mocker.patch(
+            "emby_dedupe.api.genres.make_http_request",
+            side_effect=httpx.HTTPStatusError("401", request=mock_request, response=mock_response),
         )
 
         with pytest.raises(EmbyServerConnectionError):
@@ -461,7 +461,10 @@ class TestGetUserId:
 
     def test_raises_on_request_error(self, mocker):
         mock_client = mocker.MagicMock()
-        mock_client.get.side_effect = httpx.RequestError("connection refused")
+        mocker.patch(
+            "emby_dedupe.api.genres.make_http_request",
+            side_effect=httpx.RequestError("connection refused"),
+        )
 
         with pytest.raises(EmbyServerConnectionError):
             get_user_id(mock_client, "http://emby")
@@ -469,12 +472,11 @@ class TestGetUserId:
     def test_calls_users_endpoint(self, mocker):
         mock_client = mocker.MagicMock()
         mock_resp = mocker.MagicMock()
-        mock_resp.raise_for_status.return_value = None
         mock_resp.json.return_value = [{"Id": "u1", "Name": "Test"}]
-        mock_client.get.return_value = mock_resp
+        mock_client.request.return_value = mock_resp
 
         get_user_id(mock_client, "http://emby")
-        call_url = mock_client.get.call_args[0][0]
+        call_url = mock_client.request.call_args[0][1]
         assert call_url == "http://emby/Users"
 
 

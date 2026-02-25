@@ -79,12 +79,45 @@ pip install -e .
 
 ## Usage
 
-The `emby-dedupe` tool can be run either through the Docker container or directly as a Python command.
+The `emby-dedupe` tool uses a subcommand structure. Shared connection options go before the subcommand; subcommand-specific options go after.
+
+```
+emby-dedupe [shared options] SUBCOMMAND [subcommand options]
+```
+
+### Subcommands
+
+| Subcommand | Description |
+|---|---|
+| `dedupe` | Find and remove duplicate media |
+| `genres audit` | Read-only report of genre health |
+| `genres normalize` | Fix variant genre names |
+| `genres fix` | Fill missing genres from TMDB/OMDb |
+| `check` | Check if media should be downloaded |
+| `missing-episodes` | Find missing TV episodes |
+
+### Shared Options (before subcommand)
+
+| Option | Short | Env Var | Description |
+|---|---|---|---|
+| `--host` | `-H` | `DEDUPE_EMBY_HOST` | Emby server URL |
+| `--port` | `-p` | `DEDUPE_EMBY_PORT` | Emby server port |
+| `--api-key` | `-a` | `DEDUPE_EMBY_API_KEY` | Emby API key |
+| `--library` | `-l` | `DEDUPE_EMBY_LIBRARY` | Library to scan (repeatable) |
+| `--doit` | | `DEDUPE_DOIT` | Actually perform write actions |
+| `--lock/--no-lock` | | `DEDUPE_LOCK` | File lock to prevent concurrent runs |
+| `-v` | | | Verbosity (repeat for more: `-vv`, `-vvv`) |
 
 ### Basic Usage
 
 ```shell
-emby-dedupe --host http://your-emby-server --library "Your Library Name" --api-key your_api_key
+# Dry-run duplicate scan
+emby-dedupe --host http://your-emby-server --api-key your_api_key --library "Your Library" dedupe
+
+# With multiple libraries
+emby-dedupe --host http://your-emby-server --api-key your_api_key \
+  --library "Movies" --library "TV Shows" \
+  dedupe
 ```
 
 ## Environment Variables
@@ -107,42 +140,49 @@ The following environment variables can be used to configure the tool:
 
 ## Command-line Arguments
 
-Here are the available command-line arguments:
+The CLI uses a two-level structure: shared options first, then a subcommand with its own options.
+
+### Shared options (before subcommand)
 
 ```
-usage: emby-dedupe [-h] [-v] [--host HOST] [-p PORT] [-a API_KEY] [-l LIBRARY] [--doit] [--username USERNAME] 
-                   [--password PASSWORD] [--html-report] [--no-open] [--html-only] [--lang-prio LANG_PRIO]
-                   [--exclude-ids EXCLUDE_IDS] [--exclude EXCLUDE]
+emby-dedupe [OPTIONS] SUBCOMMAND [SUBCOMMAND-OPTIONS]
 
-options:
-  -h, --help            show this help message and exit
-  -v, --verbosity       increase verbosity of logging for each occurrence
-  --host HOST           the hostname of the Emby server
-  -p PORT, --port PORT  the port number to use for the Emby server
-  -a API_KEY, --api-key API_KEY
-                        the Emby server API key
-  -l LIBRARY, --library LIBRARY
-                        the Emby library to scan for duplicates. Can be specified multiple times.
-  --doit                must be provided for the script to remove media
-  --username USERNAME   the Emby username to use for authentication
-  --password PASSWORD   the Emby password to use for authentication
-  --html-report         generate an HTML report and open it in the browser
-  --no-open             generate an HTML report but don't open it in the browser
-  --html-only           generate only HTML report without terminal output
-  --lang-prio LANG_PRIO comma-separated list of language codes in priority order (e.g., 'slo,cze,eng').
-                        Items with higher priority languages will be kept over others.
-  --exclude-ids EXCLUDE_IDS
-                        comma-separated list of provider IDs to exclude from deduplication (e.g., 'tt1234567,123456').
-                        Works with IMDB (tt prefix), TMDB, and TVDB IDs.
-  --exclude EXCLUDE     comma-separated list of terms to exclude from deduplication.
-                        If a movie title contains any of these terms, it will be skipped.
+  -H, --host TEXT        Emby server URL          [env: DEDUPE_EMBY_HOST]
+  -p, --port INTEGER     Emby server port          [env: DEDUPE_EMBY_PORT]
+  -a, --api-key TEXT     Emby API key              [env: DEDUPE_EMBY_API_KEY]
+  -l, --library TEXT     Library to scan (repeatable) [env: DEDUPE_EMBY_LIBRARY]
+  --doit                 Perform write/delete actions [env: DEDUPE_DOIT]
+  --lock/--no-lock       Enable file lock           [env: DEDUPE_LOCK]
+  -v                     Verbosity (-v, -vv, -vvv)
+```
+
+### dedupe subcommand options
+
+```
+emby-dedupe ... dedupe [OPTIONS]
+
+  --username TEXT        Emby username             [env: DEDUPE_EMBY_USERNAME]
+  --password TEXT        Emby password             [env: DEDUPE_EMBY_PASSWORD]
+  --lang-prio TEXT       Language priority order, comma-separated (e.g. slo,cze,eng) [env: DEDUPE_LANG_PRIO]
+  --exclude-ids TEXT     Provider IDs to exclude (IMDB/TMDB/TVDB, comma-separated) [env: DEDUPE_EXCLUDE_IDS]
+  --html-report          Generate HTML report and open in browser
+  --no-open              Generate HTML report without opening browser
+  --html-only            HTML report only, no terminal output
+```
+
+### genres subcommand options
+
+```
+emby-dedupe ... genres audit [--suggest]
+emby-dedupe ... genres normalize [--doit] [--repair-dupes] [--item-ids IDS]
+emby-dedupe ... genres fix [--doit] [--gaps-only | --validate] [--item-ids IDS]
 ```
 
 ## Examples
 
 ### Generating a List of Duplicates (Dry Run)
 
-The following command simulates the deduplication process to provide a list of proposed changes without applying any:
+The following command simulates the deduplication process without making any changes:
 
 Using Docker:
 
@@ -164,13 +204,13 @@ docker run \
 Using Python:
 
 ```shell
-emby-dedupe --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key"
+emby-dedupe --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" dedupe
 ```
 
 To scan multiple libraries:
 
 ```shell
-emby-dedupe --host "http://your-emby-server" --library "Movies" --library "TV Shows" --api-key "your_api_key"
+emby-dedupe --host "http://your-emby-server" --library "Movies" --library "TV Shows" --api-key "your_api_key" dedupe
 ```
 
 ### Generating an HTML Report
@@ -178,13 +218,15 @@ emby-dedupe --host "http://your-emby-server" --library "Movies" --library "TV Sh
 To generate an HTML report with images and detailed metadata:
 
 ```shell
-emby-dedupe --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" --html-report
+emby-dedupe --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" \
+  dedupe --html-report
 ```
 
 Or to generate only the HTML report without terminal output:
 
 ```shell
-emby-dedupe --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" --html-only
+emby-dedupe --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" \
+  dedupe --html-only
 ```
 
 ### Performing Deduplication Actions
@@ -208,7 +250,25 @@ Using Python:
 
 ```shell
 emby-dedupe --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" \
-            --username "your_emby_username" --password "your_emby_password" --doit
+  --doit dedupe --username "your_emby_username" --password "your_emby_password"
+```
+
+### Full Deduplication with All Options
+
+```shell
+python -m emby_dedupe \
+  --host "http://your-emby-server" \
+  --api-key "your_api_key" \
+  --library "Movies" \
+  --library "TV Shows" \
+  --doit \
+  dedupe \
+  --username "your_username" \
+  --password "your_password" \
+  --lang-prio "slo,cze,eng" \
+  --exclude-ids "tt0468569,tt0080684,550" \
+  --html-report \
+  --html-only
 ```
 
 ### Using Language Prioritization
@@ -229,10 +289,11 @@ docker run \
 Using Python:
 
 ```shell
-emby-dedupe --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" --lang-prio "slo,cze,eng"
+emby-dedupe --host "http://your-emby-server" --library "Movies" --api-key "your_api_key" \
+  dedupe --lang-prio "slo,cze,eng"
 ```
 
-This example will prioritize keeping files with Slovak audio tracks first, then Czech, then English. When multiple files have the same highest-priority language, the one with better quality will be kept.
+This will prioritize keeping files with Slovak audio tracks first, then Czech, then English. When multiple files have the same highest-priority language, the one with better quality will be kept.
 
 ### Excluding Media by Provider IDs
 
@@ -252,47 +313,35 @@ docker run \
 Using Python:
 
 ```shell
-emby-dedupe --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" --exclude-ids "tt0468569,tt0080684,550"
+emby-dedupe --host "http://your-emby-server" --library "Movies" --api-key "your_api_key" \
+  dedupe --exclude-ids "tt0468569,tt0080684,550"
 ```
 
-This example will exclude The Dark Knight (tt0468569), The Empire Strikes Back (tt0080684), and Fight Club (TMDB ID 550) from the deduplication process. This is useful for preserving multiple versions of the same movie or TV show.
+This will exclude The Dark Knight (tt0468569), The Empire Strikes Back (tt0080684), and Fight Club (TMDB ID 550) from deduplication. Useful for preserving intentional multiple versions.
 
 The excluded IDs can be:
 - IMDB IDs (start with "tt" followed by 7-8 digits)
 - TMDB IDs (numeric values)
 - TVDB IDs (numeric values)
 
-### Using Exclusion Terms
-
-To exclude certain movies from deduplication based on their titles:
-
-Using Docker:
+### Genre Management
 
 ```shell
-docker run \
-  -e DEDUPE_EMBY_HOST="http://your-emby-server" \
-  -e DEDUPE_EMBY_LIBRARY="Movies" \
-  -e DEDUPE_EMBY_API_KEY="your_api_key" \
-  -e DEDUPE_EXCLUDE="extended,unrated,director" \
-  ghcr.io/troykelly/emby-dedupe
+# Audit genre health (read-only)
+emby-dedupe --host "http://your-emby-server" --api-key "your_api_key" --library "Movies" genres audit
+
+# Preview variant name normalization
+emby-dedupe --host "http://your-emby-server" --api-key "your_api_key" --library "Movies" genres normalize
+
+# Apply normalization
+emby-dedupe --host "http://your-emby-server" --api-key "your_api_key" --library "Movies" --doit genres normalize
+
+# Fill missing genres from TMDB/OMDb (validate mode — only items with no genres)
+emby-dedupe --host "http://your-emby-server" --api-key "your_api_key" --library "Movies" --doit genres fix --validate
+
+# Target specific items (used by webhook listener)
+emby-dedupe --host "http://your-emby-server" --api-key "your_api_key" --doit genres normalize --item-ids 123,456
 ```
-
-Using Python:
-
-```shell
-emby-dedupe --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" --exclude "extended,unrated,director"
-```
-
-This example will exclude movies with "extended", "unrated", or "director" in their titles from the deduplication process. This is useful for keeping special editions alongside regular versions.
-
-The exclusion feature uses smart title matching:
-
-- **Case-insensitive**: "Lord of the Rings" will match "LORD OF THE RINGS"
-- **Partial matching**: A term like "lord of the rings" will match any title containing this phrase, such as "The Lord of the Rings: The Fellowship of the Ring", "Lord of the Rings 2", etc.
-- **Multiple fields**: Matching is performed on the main title, original title, and series name (for TV shows)
-- **Special character handling**: Punctuation and special characters are ignored during matching
-
-When items are excluded from deduplication, they'll appear in a separate section in the generated reports.
 
 ## API Key Requirement
 

@@ -460,6 +460,121 @@ def _run_normalize(
         _run_repair_dupes(client, base_url, user_id, library_ids, lock=args.lock)
 
 
+def _create_provider_clients(
+    tmdb_key: Optional[str],
+    omdb_keys: list[str],
+) -> tuple:
+    """Create rate-limited HTTP clients for TMDB and OMDb.
+
+    Args:
+        tmdb_key: TMDB API bearer token, or None to skip TMDB.
+        omdb_keys: List of OMDb API keys, or empty list to skip OMDb.
+
+    Returns:
+        Tuple of (tmdb_client, tmdb_limiter, omdb_client, omdb_limiter).
+        Each pair is (None, None) when the corresponding provider is disabled.
+    """
+    from emby_dedupe.api.genre_providers import RateLimiter
+
+    tmdb_client = (
+        httpx.Client(headers={"Authorization": f"Bearer {tmdb_key}"}) if tmdb_key else None
+    )
+    tmdb_limiter = RateLimiter(35.0) if tmdb_key else None
+    omdb_client = httpx.Client() if omdb_keys else None
+    omdb_limiter = RateLimiter(10.0) if omdb_keys else None
+    return tmdb_client, tmdb_limiter, omdb_client, omdb_limiter
+
+
+def _apply_genre_updates(
+    items: list[dict],
+    tmdb_client: Optional[httpx.Client],
+    tmdb_limiter: object,
+    omdb_client: Optional[httpx.Client],
+    omdb_limiter: object,
+    omdb_keys: list[str],
+    cache: dict,
+    client: httpx.Client,
+    base_url: str,
+    user_id: str,
+    item_ids: Optional[list[str]],
+    args: argparse.Namespace,
+) -> None:
+    """Iterate items and apply external genre updates from TMDB/OMDb.
+
+    Always additive — never removes existing genres.
+    Dry-run when args.doit is False.
+
+    Args:
+        items: Items to process.
+        tmdb_client: Rate-limited TMDB HTTP client (or None).
+        tmdb_limiter: TMDB rate limiter (or None).
+        omdb_client: Rate-limited OMDb HTTP client (or None).
+        omdb_limiter: OMDb rate limiter (or None).
+        omdb_keys: List of OMDb API keys.
+        cache: Mutable genre cache dict (updated in-place).
+        client: Emby HTTP client.
+        base_url: Emby server base URL with port.
+        user_id: Emby user ID for full-item fetches.
+        item_ids: If provided, items are already full items (no second fetch needed).
+        args: Parsed CLI arguments (uses .doit and .lock).
+    """
+    from emby_dedupe.api.genre_providers import compare_genres, fetch_genres_for_item
+
+    found = 0
+    updated = 0
+    skipped_no_data = 0
+    skipped_no_diff = 0
+    errors = 0
+
+    for item in tqdm(items, desc="Fetching external genres", unit="item"):
+        try:
+            external_genres = fetch_genres_for_item(
+                item, tmdb_client, tmdb_limiter,
+                omdb_client, omdb_limiter, omdb_keys, cache
+            )
+
+            if not external_genres:
+                skipped_no_data += 1
+                continue
+
+            found += 1
+            comparison = compare_genres(item.get("Genres") or [], external_genres)
+
+            if not comparison["has_diff"]:
+                skipped_no_diff += 1
+                continue
+
+            item_name = item.get("Name", item["Id"])
+            missing = comparison["missing_from_emby"]
+
+            if not args.doit:
+                print(f"  {item_name}: would add {missing}")
+                continue
+
+            # In --item-ids mode, item is already the full item.
+            # In library scan mode, fetch the full item for safe POST-back.
+            full_item = item if item_ids else fetch_full_item(client, base_url, user_id, item["Id"])
+            result = update_item_genres(
+                client, base_url, item["Id"], full_item,
+                comparison["merged"], lock=args.lock
+            )
+            if result:
+                updated += 1
+                logger.info(f"Updated {item_name}: added {missing}")
+
+        except Exception as e:
+            errors += 1
+            logger.error(f"Failed to process {item.get('Id', '?')}: {e}")
+
+    print(
+        f"\nFix complete: {found} items had external data, "
+        f"{updated} updated, {skipped_no_diff} already complete, "
+        f"{skipped_no_data} no external data found, {errors} errors"
+    )
+    if not args.doit and found > 0:
+        print("Run with --doit to apply changes")
+
+
 def _run_fix(
     client: httpx.Client,
     base_url: str,
@@ -475,13 +590,7 @@ def _run_fix(
     --item-ids: process only these specific items (implies --validate).
     Always additive — never removes existing genres.
     """
-    from emby_dedupe.api.genre_providers import (
-        RateLimiter,
-        compare_genres,
-        fetch_genres_for_item,
-        load_genre_cache,
-        save_genre_cache,
-    )
+    from emby_dedupe.api.genre_providers import load_genre_cache, save_genre_cache
 
     # Resolve API keys
     tmdb_key = getattr(args, "tmdb_api_key", None) or get_env_variable(ENV_DEDUPE_TMDB_API_KEY)
@@ -496,15 +605,10 @@ def _run_fix(
         )
         sys.exit(1)
 
-    # Create rate-limited clients
-    tmdb_client = (
-        httpx.Client(headers={"Authorization": f"Bearer {tmdb_key}"}) if tmdb_key else None
+    tmdb_client, tmdb_limiter, omdb_client, omdb_limiter = _create_provider_clients(
+        tmdb_key, omdb_keys
     )
-    tmdb_limiter = RateLimiter(35.0) if tmdb_key else None
-    omdb_client = httpx.Client() if omdb_keys else None
-    omdb_limiter = RateLimiter(10.0) if omdb_keys else None
 
-    # Load persistent cache
     cache = load_genre_cache()
 
     if item_ids:
@@ -526,62 +630,13 @@ def _run_fix(
             items = all_items
             print(f"Validating genres for {len(items)} items")
 
-    found = 0
-    updated = 0
-    skipped_no_data = 0
-    skipped_no_diff = 0
-    errors = 0
-
     try:
-        for item in tqdm(items, desc="Fetching external genres", unit="item"):
-            try:
-                external_genres = fetch_genres_for_item(
-                    item, tmdb_client, tmdb_limiter,
-                    omdb_client, omdb_limiter, omdb_keys, cache
-                )
-
-                if not external_genres:
-                    skipped_no_data += 1
-                    continue
-
-                found += 1
-                comparison = compare_genres(item.get("Genres") or [], external_genres)
-
-                if not comparison["has_diff"]:
-                    skipped_no_diff += 1
-                    continue
-
-                item_name = item.get("Name", item["Id"])
-                missing = comparison["missing_from_emby"]
-
-                if not args.doit:
-                    print(f"  {item_name}: would add {missing}")
-                    continue
-
-                # In --item-ids mode, item is already the full item.
-                # In library scan mode, fetch the full item for safe POST-back.
-                full_item = item if item_ids else fetch_full_item(client, base_url, user_id, item["Id"])
-                result = update_item_genres(
-                    client, base_url, item["Id"], full_item,
-                    comparison["merged"], lock=args.lock
-                )
-                if result:
-                    updated += 1
-                    logger.info(f"Updated {item_name}: added {missing}")
-
-            except Exception as e:
-                errors += 1
-                logger.error(f"Failed to process {item.get('Id', '?')}: {e}")
+        _apply_genre_updates(
+            items, tmdb_client, tmdb_limiter, omdb_client, omdb_limiter,
+            omdb_keys, cache, client, base_url, user_id, item_ids, args,
+        )
     finally:
         save_genre_cache(cache)
-
-    print(
-        f"\nFix complete: {found} items had external data, "
-        f"{updated} updated, {skipped_no_diff} already complete, "
-        f"{skipped_no_data} no external data found, {errors} errors"
-    )
-    if not args.doit and found > 0:
-        print("Run with --doit to apply changes")
 
 
 def run_genres_command(args: argparse.Namespace) -> None:

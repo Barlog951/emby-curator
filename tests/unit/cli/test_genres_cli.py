@@ -479,3 +479,116 @@ class TestFixAction:
         run_genres_command(self._make_fix_args())
         # save_genre_cache must still be called (finally block)
         mock_save.assert_called_once()
+
+
+class TestWebhookCompatibility:
+    """
+    CRITICAL: these tests verify the exact CLI invocations used by the webhook listener.
+    The webhook listener calls:
+      emby-dedupe genres normalize --doit --item-ids 123,456
+      emby-dedupe genres fix --doit --validate --item-ids 123,456
+    These MUST continue to work after any CLI refactor.
+    """
+
+    def _setup_genres_mocks(self, mocker):
+        mocker.patch("emby_dedupe.cli.genres.httpx.Client")
+        mocker.patch("emby_dedupe.cli.genres.check_emby_connection", return_value=True)
+        mocker.patch("emby_dedupe.cli.genres.get_user_id", return_value="user-123")
+        mocker.patch("emby_dedupe.cli.genres.handle_host_and_port", return_value=("http://emby", 8096))
+
+    def test_typer_genres_normalize_doit_item_ids(self, mocker):
+        """Webhook: genres normalize --doit --item-ids 123,456 must work end-to-end."""
+        from typer.testing import CliRunner
+        from emby_dedupe.cli.app import app
+
+        self._setup_genres_mocks(mocker)
+        # _fetch_items_by_ids uses fetch_full_item
+        item_1 = {"Id": "123", "Name": "Movie 1", "Genres": ["dada"], "GenreItems": [], "LockedFields": []}
+        item_2 = {"Id": "456", "Name": "Movie 2", "Genres": ["Drama"], "GenreItems": [], "LockedFields": []}
+        mocker.patch("emby_dedupe.cli.genres.fetch_full_item", side_effect=[item_1, item_2])
+        mock_update = mocker.patch("emby_dedupe.cli.genres.update_item_genres", return_value=True)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            [
+                "--host", "http://emby",
+                "--api-key", "key123",
+                "genres", "normalize",
+                "--doit",
+                "--item-ids", "123,456",
+            ],
+        )
+
+        assert result.exit_code == 0, f"exit_code={result.exit_code}\n{result.output}"
+        # item 1 had "dada" → normalized to "Comedy" → should be updated
+        mock_update.assert_called_once()
+        call_args = mock_update.call_args
+        new_genres = call_args[0][4] if len(call_args[0]) > 4 else call_args.kwargs.get("new_genres", [])
+        assert "Comedy" in new_genres
+
+    def test_typer_genres_fix_doit_validate_item_ids(self, mocker):
+        """Webhook: genres fix --doit --validate --item-ids 123,456 must work end-to-end."""
+        from typer.testing import CliRunner
+        from emby_dedupe.cli.app import app
+
+        self._setup_genres_mocks(mocker)
+        item = {"Id": "123", "Name": "Movie 1", "Genres": [], "ProviderIds": {"Tmdb": "999"}}
+        full_item = {"Id": "123", "Name": "Movie 1", "Genres": [], "GenreItems": [], "LockedFields": []}
+        mocker.patch("emby_dedupe.cli.genres.fetch_full_item", return_value=item)
+        mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
+        mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
+        mocker.patch(
+            "emby_dedupe.api.genre_providers.fetch_genres_for_item", return_value=["Drama", "Thriller"]
+        )
+        mocker.patch(
+            "emby_dedupe.api.genre_providers.compare_genres",
+            return_value={
+                "missing_from_emby": ["Drama", "Thriller"],
+                "extra_in_emby": [],
+                "merged": ["Drama", "Thriller"],
+                "has_diff": True,
+            },
+        )
+        # In item-ids mode the item dict IS the full_item (no second fetch)
+        # but fetch_full_item is mocked so it returns full_item regardless
+        mocker.patch("emby_dedupe.cli.genres.fetch_full_item", return_value=full_item)
+        mock_update = mocker.patch("emby_dedupe.cli.genres.update_item_genres", return_value=True)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            [
+                "--host", "http://emby",
+                "--api-key", "key123",
+                "genres", "fix",
+                "--doit",
+                "--validate",
+                "--item-ids", "123",
+                "--tmdb-api-key", "tmdb-key",
+            ],
+        )
+
+        assert result.exit_code == 0, f"exit_code={result.exit_code}\n{result.output}"
+        mock_update.assert_called_once()
+
+    def test_typer_genres_normalize_item_ids_no_host_fails(self, mocker):
+        """Without --host (and no env vars), genres normalize --item-ids must exit non-zero."""
+        from typer.testing import CliRunner
+        from emby_dedupe.cli.app import app
+        import os
+
+        runner = CliRunner()
+        # Explicitly clear host/api-key env vars so validation fires
+        env_overrides = {
+            "DEDUPE_EMBY_HOST": "",
+            "DEDUPE_EMBY_API_KEY": "",
+            "DEDUPE_EMBY_LIBRARY": "",
+        }
+        result = runner.invoke(
+            app,
+            ["genres", "normalize", "--doit", "--item-ids", "123"],
+            env=env_overrides,
+        )
+        # Should exit with code 1 due to missing host/api-key
+        assert result.exit_code != 0

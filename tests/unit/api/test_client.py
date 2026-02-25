@@ -482,9 +482,10 @@ class TestClient:
         
         # Verify the API call
         mock_make_http_request.assert_called_once()
-        url = mock_make_http_request.call_args[0][2]
-        assert "http://example.com/Items" in url
-        assert "Ids=item1,item2" in url
+        call_args = mock_make_http_request.call_args
+        assert call_args[0][2] == "http://example.com/Items"
+        params = call_args[1]["params"]
+        assert "item1,item2" in params["Ids"]
     
     @patch('emby_dedupe.api.client.make_http_request')
     def test_fetch_items_details_error(self, mock_make_http_request):
@@ -520,14 +521,14 @@ class TestClient:
         with patch('emby_dedupe.api.client.logger'):  # To suppress logging
             # Save original values
             import emby_dedupe.api.client as client_module
-            original_token = client_module.authenticated_token_for_delete
-            original_user_id = client_module.authenticated_token_user_id
-            
+            original_token = client_module.auth_state.token_for_delete
+            original_user_id = client_module.auth_state.user_id
+
             try:
-                # Reset global variables to test initial authentication
-                client_module.authenticated_token_for_delete = None
-                client_module.authenticated_token_user_id = None
-                
+                # Reset auth state to test initial authentication
+                client_module.auth_state.token_for_delete = None
+                client_module.auth_state.user_id = None
+
                 # Create a mock get_auth_token function that returns a token for valid credentials
                 # but raises an exception for missing credentials
                 def mock_get_auth_token_side_effect(client, base_url, username, password):
@@ -535,8 +536,8 @@ class TestClient:
                         return ("test_token", "user123")
                     else:
                         raise Exception("Missing credentials")
-                
-                with patch('emby_dedupe.api.client.get_auth_token', 
+
+                with patch('emby_dedupe.api.client.get_auth_token',
                            side_effect=mock_get_auth_token_side_effect):
                     # Try with valid credentials
                     token, user_id = ensure_authenticated_for_delete(
@@ -544,22 +545,22 @@ class TestClient:
                     )
                     assert token == "test_token"
                     assert user_id == "user123"
-                    
-                    # Reset global variables for next test
-                    client_module.authenticated_token_for_delete = None
-                    client_module.authenticated_token_user_id = None
-                    
+
+                    # Reset auth state for next test
+                    client_module.auth_state.token_for_delete = None
+                    client_module.auth_state.user_id = None
+
                     # Try with missing credentials
                     token, user_id = ensure_authenticated_for_delete(
                         Mock(), "http://example.com", "", ""
                     )
                     assert token is None
                     assert user_id is None
-                    
+
             finally:
                 # Restore original values to not affect other tests
-                client_module.authenticated_token_for_delete = original_token
-                client_module.authenticated_token_user_id = original_user_id
+                client_module.auth_state.token_for_delete = original_token
+                client_module.auth_state.user_id = original_user_id
     
     def test_ensure_authenticated_for_delete_auth_failure(self):
         """Test authentication failure when get_auth_token fails."""
@@ -567,32 +568,32 @@ class TestClient:
         with patch('emby_dedupe.api.client.get_auth_token') as mock_get_auth_token:
             # Mock get_auth_token to raise an exception
             mock_get_auth_token.side_effect = Exception("Authentication failed")
-            
+
             # Mock logger to avoid actual logging
             with patch('emby_dedupe.api.client.logger'):
                 # Save original values
                 import emby_dedupe.api.client as client_module
-                original_token = client_module.authenticated_token_for_delete
-                original_user_id = client_module.authenticated_token_user_id
-                
+                original_token = client_module.auth_state.token_for_delete
+                original_user_id = client_module.auth_state.user_id
+
                 try:
-                    # Reset global variables to test initial authentication
-                    client_module.authenticated_token_for_delete = None
-                    client_module.authenticated_token_user_id = None
-                    
+                    # Reset auth state to test initial authentication
+                    client_module.auth_state.token_for_delete = None
+                    client_module.auth_state.user_id = None
+
                     # Call the function
                     token, user_id = ensure_authenticated_for_delete(
                         Mock(), "http://example.com", "testuser", "testpass"
                     )
-                    
+
                     # The function should handle the exception and return None, None
                     assert token is None
                     assert user_id is None
-                    
+
                 finally:
                     # Restore original values to not affect other tests
-                    client_module.authenticated_token_for_delete = original_token
-                    client_module.authenticated_token_user_id = original_user_id
+                    client_module.auth_state.token_for_delete = original_token
+                    client_module.auth_state.user_id = original_user_id
     
     @patch('emby_dedupe.api.client.httpx')
     def test_logout_success(self, mock_httpx):

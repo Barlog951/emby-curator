@@ -16,6 +16,7 @@ import httpx
 
 from emby_dedupe.utils.constants import GENRE_NORMALIZATION_MAP, PAGE_SIZE, TMDB_CANONICAL_GENRES
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError
+from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.logging import logger
 
 
@@ -33,8 +34,7 @@ def get_user_id(client: httpx.Client, base_url: str) -> str:
         EmbyServerConnectionError: If the request fails or no users are found.
     """
     try:
-        response = client.get(f"{base_url}/Users")
-        response.raise_for_status()
+        response = make_http_request(client, "GET", f"{base_url}/Users")
         users = response.json()
         if not users:
             raise EmbyServerConnectionError("No users found on Emby server.")
@@ -61,8 +61,7 @@ def fetch_all_genres(client: httpx.Client, base_url: str) -> list[dict]:
         Returns empty list on failure.
     """
     try:
-        response = client.get(f"{base_url}/Genres?Recursive=true")
-        response.raise_for_status()
+        response = make_http_request(client, "GET", f"{base_url}/Genres", params={"Recursive": "true"})
         data = response.json()
         return data.get("Items", [])
     except (httpx.HTTPStatusError, httpx.RequestError) as e:
@@ -89,13 +88,15 @@ def fetch_items_with_genres(
         Flat list of all media items with all metadata fields.
     """
     all_items: list[dict] = []
-    base_params = (
-        "Recursive=true"
-        "&IncludeItemTypes=Movie,Series"
-        "&Fields=Genres,GenreItems,ProviderIds,LockedFields,Overview,Tags,Studios,"
-        "OfficialRating,CommunityRating,CriticRating,SortName,Taglines,"
-        "DateCreated,PremiereDate,ProductionYear,EndDate,Status,AirDays"
-    )
+    base_params = {
+        "Recursive": "true",
+        "IncludeItemTypes": "Movie,Series",
+        "Fields": (
+            "Genres,GenreItems,ProviderIds,LockedFields,Overview,Tags,Studios,"
+            "OfficialRating,CommunityRating,CriticRating,SortName,Taglines,"
+            "DateCreated,PremiereDate,ProductionYear,EndDate,Status,AirDays"
+        ),
+    }
 
     target_ids: list[Optional[str]] = list(library_ids) if library_ids else [None]
 
@@ -105,13 +106,12 @@ def fetch_items_with_genres(
 
         while True:
             endpoint = f"{base_url}/Users/{user_id}/Items" if user_id else f"{base_url}/Items"
-            url = f"{endpoint}?{base_params}&StartIndex={start_index}&Limit={PAGE_SIZE}"
+            params = {**base_params, "StartIndex": str(start_index), "Limit": str(PAGE_SIZE)}
             if lib_id is not None:
-                url += f"&ParentId={lib_id}"
+                params["ParentId"] = lib_id
 
             try:
-                response = client.get(url)
-                response.raise_for_status()
+                response = make_http_request(client, "GET", endpoint, params=params)
                 data = response.json()
             except (httpx.HTTPStatusError, httpx.RequestError) as e:
                 logger.error(f"Failed to fetch items page {page} for library {lib_id}: {e}")
@@ -155,8 +155,7 @@ def fetch_full_item(
     """
     url = f"{base_url}/Users/{user_id}/Items/{item_id}"
     try:
-        response = client.get(url)
-        response.raise_for_status()
+        response = make_http_request(client, "GET", url)
         return response.json()
     except httpx.HTTPStatusError as e:
         raise EmbyServerConnectionError(

@@ -5,9 +5,9 @@ Reuses existing CLI infrastructure without modifying the main deduplication func
 
 import json
 import logging
-import os
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -60,47 +60,20 @@ def generate_default_filename(format_type: str) -> str:
 
 def write_to_file(content: str, output_path: str) -> None:
     """
-    Write content to file and create directory if needed.
+    Write content to file, creating parent directories as needed.
 
     Args:
         content (str): Content to write
         output_path (str): Path to output file
     """
-    # Create directory if it doesn't exist
-    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
-
     try:
-        with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(content)
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
         logger.info(f"Missing episodes report saved to: {output_path}")
     except Exception as e:
         logger.error(f"Failed to write to file {output_path}: {e}")
         raise
-
-
-def add_missing_episodes_args(parser):
-    """
-    Add missing episodes specific arguments to the argument parser.
-    Reuses existing argument patterns from the main CLI.
-    """
-    parser.add_argument(
-        "--missing-episodes",
-        action="store_true",
-        help="Search for missing episodes instead of duplicates"
-    )
-
-    parser.add_argument(
-        "--format",
-        choices=["console", "html", "json", "structured_json"],
-        default="console",
-        help="Output format for missing episodes report (default: console)"
-    )
-
-    parser.add_argument(
-        "--output",
-        type=str,
-        help="Output file path for JSON formats (default: missing_episodes-YYYYMMDD_HHMMSS.json)"
-    )
 
 
 def format_structured_json_report(analysis_results: dict) -> str:

@@ -4,6 +4,7 @@ Emby API client for interacting with the Emby server.
 
 import hashlib
 import logging
+from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import httpx
@@ -20,8 +21,14 @@ from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.logging import logger
 
-authenticated_token_for_delete: Optional[str] = None
-authenticated_token_user_id: Optional[str] = None
+
+@dataclass
+class AuthState:
+    token_for_delete: Optional[str] = None
+    user_id: Optional[str] = None
+
+
+auth_state = AuthState()
 
 
 def get_auth_token(
@@ -251,24 +258,21 @@ def ensure_authenticated_for_delete(
     Returns:
         Tuple[Optional[str], Optional[str]]: The authentication token and user_id if authenticated, None otherwise.
     """
-    global authenticated_token_for_delete
-    global authenticated_token_user_id
-
-    if authenticated_token_for_delete is not None:
-        return authenticated_token_for_delete, authenticated_token_user_id
+    if auth_state.token_for_delete is not None:
+        return auth_state.token_for_delete, auth_state.user_id
 
     try:
         # Authenticate and save the token for future DELETE operations
-        authenticated_token_for_delete, authenticated_token_user_id = get_auth_token(
+        auth_state.token_for_delete, auth_state.user_id = get_auth_token(
             client, base_url, username, password
         )
         logger.info("Authenticated for DELETE operations.")
     except Exception as e:
         logger.error(f"Failed to authenticate for DELETE operations: {str(e)}")
-        authenticated_token_for_delete = None
-        authenticated_token_user_id = None
+        auth_state.token_for_delete = None
+        auth_state.user_id = None
 
-    return authenticated_token_for_delete, authenticated_token_user_id
+    return auth_state.token_for_delete, auth_state.user_id
 
 
 def _process_item_ids_and_libraries(item_ids: list) -> tuple:
@@ -287,46 +291,12 @@ def _process_item_ids_and_libraries(item_ids: list) -> tuple:
     return processed_ids, library_names
 
 
-def _check_for_wanted_item_ids(item_ids: list) -> bool:
-    """Check if special wanted IDs are present in the list."""
-    wanted_ids = ["99424", "20131603"]
-    return any(id in wanted_ids for id in item_ids) or any(
-        isinstance(item, dict) and item.get("id") in wanted_ids for item in item_ids
-    )
-
-
 def _add_library_names_to_items(items: list, library_names: dict) -> None:
     """Add library name to each item from the library names mapping."""
     for item in items:
         item_id = item.get("Id")
         if item_id and item_id in library_names:
             item["LibraryName"] = library_names[item_id]
-
-
-def _log_special_case_angels_demons(items: list, processed_ids: list, has_wanted_ids: bool) -> None:
-    """Log special case handling for Angels & Demons duplicate items."""
-    if not has_wanted_ids or "99424" not in processed_ids or "20131603" not in processed_ids:
-        return
-
-    logger.info("Found special case items - Angels & Demons duplicates")
-    # Look up the items
-    item1 = next((item for item in items if item.get("Id") == "99424"), None)
-    item2 = next((item for item in items if item.get("Id") == "20131603"), None)
-
-    if not (item1 and item2):
-        return
-
-    logger.info(f"Special case items found: {item1.get('Name')} and {item2.get('Name')}")
-
-    # Make sure they share provider IDs for deduplication
-    if "ProviderIds" not in item1 or "ProviderIds" not in item2:
-        return
-
-    item1_providers = item1["ProviderIds"]
-    item2_providers = item2["ProviderIds"]
-
-    if "Imdb" in item1_providers and "Imdb" in item2_providers:
-        logger.info(f"Special case IMDB IDs: {item1_providers['Imdb']} and {item2_providers['Imdb']}")
 
 
 def fetch_items_details(client: httpx.Client, base_url: str, item_ids: list) -> list:
@@ -344,17 +314,18 @@ def fetch_items_details(client: httpx.Client, base_url: str, item_ids: list) -> 
     # Process item IDs which may be dicts or strings
     processed_ids, library_names = _process_item_ids_and_libraries(item_ids)
 
-    # Check for specific item IDs we know should be duplicates
-    has_wanted_ids = _check_for_wanted_item_ids(item_ids)
-
     # Comma-separated item IDs for the query parameter
     ids_param = ",".join(processed_ids)
     # Request ALL available fields to ensure we get date information
     # Add TV series specific fields (SeriesName, SeasonNumber, IndexNumber)
-    url = f"{base_url}/Items?Fields=MediaStreams,Path,ProviderIds,DateCreated,DateModified,PremiereDate,ProductionYear,Tags,Overview,ParentId,SeriesName,SeasonNumber,IndexNumber&Ids={ids_param}"
+    url = f"{base_url}/Items"
+    params = {
+        "Fields": "MediaStreams,Path,ProviderIds,DateCreated,DateModified,PremiereDate,ProductionYear,Tags,Overview,ParentId,SeriesName,SeasonNumber,IndexNumber",
+        "Ids": ids_param,
+    }
 
     try:
-        response = make_http_request(client, "GET", url)
+        response = make_http_request(client, "GET", url, params=params)
         items = response.json().get("Items", [])
 
         # Debug log the fields in the first item to understand what's available
@@ -365,9 +336,6 @@ def fetch_items_details(client: httpx.Client, base_url: str, item_ids: list) -> 
 
         # Add the library name to each item
         _add_library_names_to_items(items, library_names)
-
-        # Special handling for specific item IDs we know should be duplicates
-        _log_special_case_angels_demons(items, processed_ids, has_wanted_ids)
 
         return items
     except (httpx.HTTPStatusError, httpx.RequestError) as e:
@@ -391,8 +359,17 @@ def _fetch_total_item_count(
     Raises:
         httpx.HTTPStatusError, httpx.RequestError: If fetch fails.
     """
-    url = f"{base_url}/Items?StartIndex=0&Limit=0&Recursive=True&ParentId={library_id}&Fields=ProviderIds&Is3D=False&IsFolder=False"
-    response = make_http_request(client, "GET", url)
+    url = f"{base_url}/Items"
+    params = {
+        "StartIndex": "0",
+        "Limit": "0",
+        "Recursive": "True",
+        "ParentId": library_id,
+        "Fields": "ProviderIds",
+        "Is3D": "False",
+        "IsFolder": "False",
+    }
+    response = make_http_request(client, "GET", url, params=params)
     total_items = response.json().get("TotalRecordCount", 0)
     logger.debug(f"Total media items to fetch: {total_items}")
     return total_items
@@ -422,8 +399,17 @@ def _fetch_paginated_items(
 
     try:
         while start_index < total_items:
-            url = f"{base_url}/Items?StartIndex={start_index}&Limit={PAGE_SIZE}&Recursive=True&ParentId={library_id}&Fields=ProviderIds,SeriesName,ParentIndexNumber,IndexNumber&Is3D=False&IsFolder=False"
-            response = make_http_request(client, "GET", url)
+            url = f"{base_url}/Items"
+            params = {
+                "StartIndex": str(start_index),
+                "Limit": str(PAGE_SIZE),
+                "Recursive": "True",
+                "ParentId": library_id,
+                "Fields": "ProviderIds,SeriesName,ParentIndexNumber,IndexNumber",
+                "Is3D": "False",
+                "IsFolder": "False",
+            }
+            response = make_http_request(client, "GET", url, params=params)
             media_items = response.json().get("Items", [])
             build_provider_id_tables(media_items, provider_tables)
             processed_items = len(media_items)

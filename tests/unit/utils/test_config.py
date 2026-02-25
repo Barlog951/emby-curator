@@ -83,14 +83,14 @@ class TestGetConfigValue:
 
     def test_get_config_value_from_env(self):
         """Test that get_config_value reads from environment variable."""
-        with patch.dict(os.environ, {"EMBY_DEDUPE_TEST_KEY": "env_value"}):
+        with patch.dict(os.environ, {"DEDUPE_TEST_KEY": "env_value"}):
             with patch('emby_dedupe.utils.config.load_config', return_value={}):
                 value = get_config_value("test_key")
                 assert value == "env_value"
 
     def test_get_config_value_env_list_parsing(self):
         """Test that get_config_value parses comma-separated lists from env."""
-        with patch.dict(os.environ, {"EMBY_DEDUPE_LIBRARIES": "Movies,TV Shows,Music"}):
+        with patch.dict(os.environ, {"DEDUPE_LIBRARIES": "Movies,TV Shows,Music"}):
             with patch('emby_dedupe.utils.config.load_config', return_value={}):
                 value = get_config_value("libraries")
                 assert value == ["Movies", "TV Shows", "Music"]

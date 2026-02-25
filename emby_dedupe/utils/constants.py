@@ -53,7 +53,6 @@ GENRE_UPDATE_DELAY_SEC = 0.1  # Rate limit: seconds between Emby POST updates fo
 GENRE_NORMALIZATION_MAP = {
     # Typos found in real Emby audit
     "hisotry": "History",       # Typo, 1 item
-    "horor": "Horror",          # Typo, 1 item
     # Duplicates/standard variants
     "sci-fi": "Science Fiction",
     "sf": "Science Fiction",

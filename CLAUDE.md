@@ -2,98 +2,44 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 🔍 MANDATORY: USE CLAUDE CONTEXT MCP FOR CODE SEARCH (CRITICAL PRIORITY)
+## 🔍 MANDATORY: USE COCOINDEX FOR CODE SEARCH (CRITICAL PRIORITY)
 
-**Claude Context MCP (`mcp__claude-context__*`) is the PRIMARY tool for codebase exploration. USE IT FIRST, ALWAYS.**
+**CocoIndex (`mcp__cocoindex-code__search`) is the PRIMARY tool for codebase exploration. USE IT FIRST, ALWAYS.**
 
-### **RULE 1: ALWAYS USE `mcp__claude-context__search_code` FOR:**
-
-**Deduplication & Media Processing:**
-- Finding functionality: "where is duplicate detection logic", "find quality rating algorithm", "show deduplication workflow"
-- Understanding architecture: "how does language prioritization work", "what handles provider ID exclusions", "duplicate grouping strategy"
-- API integration: "Emby API client implementation", "metadata fetching logic", "image URL handling"
-- Report generation: "HTML report creation", "Markdown formatting", "template rendering"
-
-**Media Quality & Analysis:**
-- Quality comparison: "video codec rating", "audio quality scoring", "resolution detection"
-- Provider ID handling: "IMDB ID matching", "TMDB provider integration", "TVDB exclusions"
-- Language handling: "audio language detection", "language normalization", "priority matching"
-
-**Data Structures & Algorithms:**
-- Disjoint sets: "union-find implementation", "duplicate grouping", "rationalize duplicates"
-- Rating systems: "media item scoring", "quality factors", "weighted ratings"
-
-**ANY conceptual/semantic query about deduplication, media analysis, or API integration**
+### **RULE 1: ALWAYS USE `mcp__cocoindex-code__search` FOR:**
+- Any conceptual/semantic query about the codebase
+- Finding functionality, understanding architecture, API integration, report generation
+- Quality comparison, provider ID handling, language handling
+- Data structures, algorithms, rating systems
+- **ANY conceptual/semantic query about deduplication, media analysis, or API integration**
 
 ### **RULE 2: Use Grep/Glob ONLY FOR:**
 - **Grep**: Exact string matching (`def determine_items_to_delete`, specific function names, literal imports)
 - **Glob**: File patterns only (`**/*.py`, `tests/unit/api/*.py`, `emby_dedupe/reports/*.py`)
 
-### **WHY THIS MATTERS:**
-- **Semantic search understands context and meaning** (not just text matching)
-- **Index persists in Zilliz Cloud between sessions** (instant results, no re-indexing)
-- **Reduces token usage dramatically** - no grep flooding with thousands of code lines
-- **Finds related code** that grep would miss (e.g., "quality rating" finds codec scoring, resolution detection, bitrate analysis)
-- **Cross-module relationships** - understands how API client, deduplication, and reports interact
-
 ### **ENFORCEMENT:**
 ❌ **NEVER** start with grep for conceptual queries
-✅ **ALWAYS** use `mcp__claude-context__search_code` first, then grep for exact refinement if needed
+✅ **ALWAYS** use `mcp__cocoindex-code__search` first, then grep for exact refinement if needed
 
-### **EXAMPLES:**
+### **REINDEXING:**
+- **Start of each session**: Run first query with `refresh_index=true` to pick up any file changes
+- **After code changes**: Use `refresh_index=true` on next query to update the index
+- **Subsequent queries**: Use `refresh_index=false` for faster results
 
-**❌ WRONG APPROACH:**
-```
-User: "How does duplicate detection work?"
-Claude: *uses Grep to search for "duplicate"*
-```
+### **USAGE:**
+```python
+# First query per session — reindex to pick up changes
+mcp__cocoindex-code__search(query="your semantic query here", refresh_index=true, limit=10)
 
-**✅ CORRECT APPROACH:**
+# Subsequent queries — skip reindex for speed
+mcp__cocoindex-code__search(query="deduplication logic", refresh_index=false, limit=10)
 ```
-User: "How does duplicate detection work?"
-Claude: *uses mcp__claude-context__search_code with query: "duplicate detection algorithm provider ID grouping disjoint set"*
-Result: Finds identify_duplicates(), rationalize_duplicates(), DisjointSet class, and all related logic
-```
-
-**Additional Examples:**
-- "Where is quality rating implemented?" → `mcp__claude-context__search_code` with query: "quality rating media items codec resolution audio bitrate scoring"
-- "How do we handle language priorities?" → `mcp__claude-context__search_code` with query: "language prioritization audio tracks normalization preference"
-- "Find HTML report generation" → `mcp__claude-context__search_code` with query: "HTML report template rendering generation statistics"
-- "Show Emby API integration" → `mcp__claude-context__search_code` with query: "Emby API client authentication fetch items metadata"
 
 ## **PLANNING MODE WORKFLOW:**
-- **BEFORE entering plan mode**, use `mcp__claude-context__search_code` to gather relevant code context
+- **BEFORE entering plan mode**, use `mcp__cocoindex-code__search` to gather relevant code context
 - Search for: related functionality, similar patterns, integration points, existing implementations
 - **THEN** enter plan mode with context already gathered
-- This reduces token usage and provides better results than Explore agents using grep
 - **NEVER skip semantic search** - it's mandatory before any significant code changes
-
-## **INDEXING STATUS:**
-- **Repository**: `/Users/dodko/DEV/emby-dedupe`
-- **Status**: ✅ Fully indexed (57 files, 605 chunks)
-- **Coverage**: All Python modules, tests, configuration, documentation
-- **Performance**: Instant semantic search results, <100ms query time
-
-## **VERIFICATION COMMANDS:**
-```python
-# Check index status
-mcp__claude-context__get_indexing_status(path="/Users/dodko/DEV/emby-dedupe")
-
-# Search codebase semantically
-mcp__claude-context__search_code(
-    path="/Users/dodko/DEV/emby-dedupe",
-    query="your semantic query here",
-    limit=15
-)
-
-# Filter by file type (optional)
-mcp__claude-context__search_code(
-    path="/Users/dodko/DEV/emby-dedupe",
-    query="deduplication logic",
-    extensionFilter=[".py"],
-    limit=10
-)
-```
 
 ---
 
@@ -108,11 +54,8 @@ Following analytical errors that nearly caused production code damage, these ver
 
 **STEP 0: SEMANTIC SEARCH FIRST (REQUIRED)**
 ```python
-# ALWAYS start with Claude Context MCP for understanding relationships and usage
-mcp__claude-context__search_code(
-    path="/Users/dodko/DEV/emby-dedupe",
-    query="method_name function usage purpose relationships dependencies"
-)
+# ALWAYS start with CocoIndex for understanding relationships and usage
+mcp__cocoindex-code__search(query="method_name function usage purpose relationships dependencies")
 
 # Examples:
 # - "determine_items_to_delete function usage caller dependencies"
@@ -141,10 +84,7 @@ grep -r -E "(self\.)?method_name\s*\(" . --include="*.py"
 **STEP 2: PRODUCTION USAGE VERIFICATION (REQUIRED)**
 **Start with semantic search to understand full usage context:**
 ```python
-mcp__claude-context__search_code(
-    path="/Users/dodko/DEV/emby-dedupe",
-    query="method_name calls usage imports integration points"
-)
+mcp__cocoindex-code__search(query="method_name calls usage imports integration points")
 ```
 Then verify specific patterns:
 - Internal calls: Search for method calls within same file
@@ -208,13 +148,14 @@ python -m pytest tests/ -x --tb=short
 ## Project Structure
 The project has been refactored into a proper Python package with the following structure:
 - `emby_dedupe/` - Main package
-  - `api/` - Emby API client and media operations
-  - `cli/` - Command-line interface
+  - `api/` - Emby API client, media operations, genre CRUD, external genre providers (TMDB/OMDb)
+  - `cli/` - Command-line interface (dedupe, genres subcommands)
   - `models/` - Data models
   - `reports/` - Report generation (HTML and Markdown)
   - `templates/` - HTML templates for report generation
   - `static/` - Static assets (CSS, images, etc.)
-  - `utils/` - Utility functions
+  - `utils/` - Utility functions and constants
+- `scripts/` - Standalone scripts (genre webhook listener, smoke tests)
 
 ## Build/Run/Test Commands
 - Install locally: `pip install -e .`
@@ -226,8 +167,45 @@ The project has been refactored into a proper Python package with the following 
 - Run tests: `pytest`
 - Check test coverage: `pytest --cov-report term-missing --cov=emby_dedupe`
 
+## CLI Structure (Typer subcommands)
+
+The CLI uses shared options before the subcommand and subcommand-specific options after:
+
+```
+emby-dedupe [shared options] SUBCOMMAND [subcommand options]
+```
+
+Shared options (env vars): `--host/-H` (`DEDUPE_EMBY_HOST`), `--port/-p` (`DEDUPE_EMBY_PORT`), `--api-key/-a` (`DEDUPE_EMBY_API_KEY`), `--library/-l` (`DEDUPE_EMBY_LIBRARY`, repeatable), `--doit` (`DEDUPE_DOIT`), `--lock/--no-lock` (`DEDUPE_LOCK`), `-v` (verbosity)
+
+Subcommands: `dedupe`, `genres audit`, `genres normalize`, `genres fix`, `check`, `missing-episodes`
+
+`dedupe` options (after `dedupe`): `--username` (`DEDUPE_EMBY_USERNAME`), `--password` (`DEDUPE_EMBY_PASSWORD`), `--lang-prio` (`DEDUPE_LANG_PRIO`), `--exclude-ids` (`DEDUPE_EXCLUDE_IDS`), `--html-report`, `--html-only`, `--no-open`
+
+Example dry-run scan:
+```bash
+emby-dedupe --host "https://emby.example.com" --api-key "KEY" --library "Movies" dedupe
+```
+
+Example full run with deletion:
+```bash
+python -m emby_dedupe \
+  --host "https://emby.example.com" --api-key "KEY" \
+  --library "Movies" --library "TV Shows" --doit \
+  dedupe \
+  --username "admin" --password "pass" \
+  --lang-prio "slo,cze,eng" --html-report --html-only
+```
+
+Genre commands:
+```bash
+emby-dedupe --host "..." --api-key "..." -l Movies genres audit
+emby-dedupe --host "..." --api-key "..." -l Movies --doit genres normalize
+emby-dedupe --host "..." --api-key "..." -l Movies --doit genres fix --validate
+emby-dedupe --host "..." --api-key "..." --doit genres normalize --item-ids 123,456
+```
+
 ## Code Style Guidelines
-- Use Python 3.12 compatible code (Docker container uses Python 3.12-slim)
+- Use Python 3.14 compatible code (local dev uses Python 3.14)
 - Use type hints for all function parameters and return values
 - Include comprehensive docstrings for all functions (Google style)
 - Follow PEP 8 naming conventions (snake_case for functions/variables)
@@ -250,10 +228,19 @@ The project has been refactored into a proper Python package with the following 
 - Shows external links (IMDB/TMDB) for deleted items in reports
 - Supports both interactive and non-interactive modes
 - Can be run locally or via Docker
+- **Genre management**: audit, normalize, and fix genres across libraries (`emby-dedupe genres`)
+  - Audit: read-only report of all genres with counts and unknown/variant detection
+  - Normalize: fix variant names (Sci-Fi→Science Fiction, dada→Comedy, etc.) with genre locking
+  - Fix: fill missing genres from TMDB/OMDb with rate-limited API clients and local cache
+  - `--item-ids` flag for targeted processing of specific items (used by webhook listener)
+- **Webhook listener**: `scripts/genre-webhook-listener.py` — real-time genre processing for new media
+  - Receives Emby ItemAdded webhooks, debounces, runs normalize+fix on new items
+  - Episode→SeriesId deduplication (genres live on Series, not Episodes)
+  - Deployed as systemd service on Emby VM with monthly full-scan safety net
 
 ## Testing
-- Comprehensive test suite with 129 tests covering all key functionality
-- Current test coverage: 70% (over 1400 statements covered)
+- Comprehensive test suite with 632 tests covering all key functionality
+- Current test coverage: 70%+
 - Run via Makefile: `make lint`, `make mypy`, `make test`, `make coverage`, `make allfx`
 - CI/CD with GitHub Actions workflows for testing, security scanning, and Docker builds
 - Tests are organized in the same structure as the main package
