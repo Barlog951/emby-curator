@@ -49,12 +49,12 @@ class TestBPPMultiplier:
     def test_excellent_quality(self):
         """Test excellent quality multiplier (>0.3 bpp)."""
         multiplier = get_bpp_multiplier(0.35)
-        assert multiplier == 1.2
+        assert multiplier == 1.1
 
     def test_good_quality(self):
         """Test good quality multiplier (0.15-0.3 bpp)."""
         multiplier = get_bpp_multiplier(0.20)
-        assert multiplier == 1.1
+        assert multiplier == 1.05
 
     def test_acceptable_quality(self):
         """Test acceptable quality multiplier (0.08-0.15 bpp)."""
@@ -64,12 +64,21 @@ class TestBPPMultiplier:
     def test_poor_quality(self):
         """Test poor quality multiplier (0.05-0.08 bpp)."""
         multiplier = get_bpp_multiplier(0.06)
-        assert multiplier == 0.8
+        assert multiplier == 0.85
 
     def test_critical_quality(self):
         """Test critical quality multiplier (<0.05 bpp)."""
         multiplier = get_bpp_multiplier(0.03)
         assert multiplier == 0.5
+
+    def test_hevc_codec_adjusts_bpp_bands(self):
+        """Test that HEVC codec adjusts BPP for fairer band placement.
+
+        HEVC at 0.07 bpp = 0.107 bpp equivalent → 'acceptable' (1.0x)
+        Without codec, 0.07 bpp = 'poor' (0.85x).
+        """
+        assert get_bpp_multiplier(0.07) == 0.85       # No codec → poor
+        assert get_bpp_multiplier(0.07, "hevc") == 1.0  # HEVC → acceptable
 
 
 class TestRedFlagDetection:
@@ -211,8 +220,8 @@ class TestTehranS03E02RegressionCase:
         assert result.recommendation == "skip"
         # 4K should be heavily penalized (RED FLAG gives minimal score)
         assert result.proposed_score < 10  # Very low score due to RED FLAG
-        # Existing 720p should have much higher score
-        assert result.existing_score > 100_000_000
+        # Existing 720p should have much higher score (in millions after KB normalization)
+        assert result.existing_score > 1_000_000
 
 
 class TestRemuxVsWebDL:
@@ -458,7 +467,7 @@ class TestHEVCThresholdRegression:
         )
 
         score = proposed.calculate_score()
-        assert score > 100_000_000, f"HEVC 4K at 11.1 Mbps should score high, got {score}"
+        assert score > 1_000_000, f"HEVC 4K at 11.1 Mbps should score high, got {score}"
 
     def test_h264_4k_11mbps_rejected(self):
         """H.264 4K at 11.1 Mbps SHOULD be rejected (too low for inefficient codec)."""
