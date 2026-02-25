@@ -109,7 +109,7 @@ def get_config_value(key: str, default: Any = None, config: Optional[dict] = Non
     Priority:
     1. Provided config dict
     2. Config file
-    3. Environment variable (EMBY_DEDUPE_{KEY})
+    3. Environment variable (DEDUPE_{KEY})
     4. Default value
 
     Args:
@@ -129,8 +129,9 @@ def get_config_value(key: str, default: Any = None, config: Optional[dict] = Non
     if key in file_config:
         return file_config[key]
 
-    # Check environment variable
-    env_key = f"EMBY_DEDUPE_{key.upper()}"
+    # Check environment variable using DEDUPE_ prefix (e.g., DEDUPE_EMBY_HOST, DEDUPE_EMBY_API_KEY)
+    # Note: The old EMBY_DEDUPE_ prefix is no longer recognized
+    env_key = f"DEDUPE_{key.upper()}"
     env_value = os.environ.get(env_key)
     if env_value is not None:
         # Handle list values from environment (comma-separated)

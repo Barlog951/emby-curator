@@ -87,14 +87,26 @@ class TestConstants:
         # Should NOT override since ratio < 3x
         assert result is False
 
-    def test_should_quality_override_both_have_priority_lang(self):
-        """Test no override when both items have priority language."""
+    def test_should_quality_override_both_have_priority_lang_high_ratio(self):
+        """Test override when both have priority language and quality is 2x+ better."""
         result = should_quality_override_language(
-            quality_ratio=5.0,  # Even with high ratio
+            quality_ratio=5.0,  # 5x quality difference
             lang_item_has_priority_lang=True,
             quality_item_has_priority_lang=True,
             is_single_lang_scenario=False
         )
 
-        # Should NOT override - both have priority language
+        # Scenario 3: both have priority langs but quality is 2x+ better → override
+        assert result is True
+
+    def test_should_quality_override_both_have_priority_lang_low_ratio(self):
+        """Test no override when both have priority language and quality gap is small."""
+        result = should_quality_override_language(
+            quality_ratio=1.5,  # Only 1.5x — below 2x threshold
+            lang_item_has_priority_lang=True,
+            quality_item_has_priority_lang=True,
+            is_single_lang_scenario=False
+        )
+
+        # Quality gap < 2x, language priority should hold
         assert result is False

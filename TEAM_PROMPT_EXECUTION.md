@@ -38,11 +38,17 @@ Fix all 48 SonarQube issues + all health report recommendations. End state:
 
 ### ABSOLUTE RULES — ZERO EXCEPTIONS (ALL AGENTS MUST FOLLOW):
 
-**QUALITY GATE ENFORCEMENT:**
-1. **`make sonar` is the SINGLE SOURCE OF TRUTH** — it must pass (exit code 0) after EVERY phase completion. No new issues allowed.
-2. **ZERO new SonarQube issues permitted** — every change must reduce or maintain the issue count, never increase. If `make sonar` shows new issues from your changes, FIX THEM before reporting completion.
-3. **ALL tests must pass at ALL times** — run `make test` after every single change. If tests break, fix IMMEDIATELY before doing anything else. A broken test suite blocks ALL agents.
-4. **`make sonar` at EVERY phase gate** — the lead runs `make sonar` between phases. If it fails, the phase is NOT complete. Go back and fix.
+**QUALITY GATE ENFORCEMENT — ALL FOUR MUST PASS:**
+1. **`make test`** — ALL tests must pass at ALL times. Run after every single change. If tests break, fix IMMEDIATELY. A broken test suite blocks ALL agents.
+2. **`make lint`** — ruff must be clean. No new lint issues permitted. Run after every batch of changes.
+3. **`make mypy`** — type checking must be clean (or improving). No new type errors permitted.
+4. **`make sonar`** — SonarQube quality gate must pass (exit code 0). ZERO new SonarQube issues (security hotspots exempt).
+
+**The full quality gate command sequence at every phase gate:**
+```bash
+make test && make lint && make mypy && make sonar
+```
+**ALL FOUR must pass. If ANY fails, the phase is NOT complete — go back and fix.**
 
 **SECURITY HOTSPOT EXCEPTION:**
 5. **Security hotspots are EXCLUDED from the zero-new-issues rule** — the user will review these manually in a separate session. Do NOT spend time fixing security hotspots. Do NOT mark them as resolved. Leave them for the user.
@@ -61,10 +67,11 @@ Fix all 48 SonarQube issues + all health report recommendations. End state:
 
 **VERIFICATION CADENCE:**
 ```
-After each individual fix:     make test          (must pass)
-After batch of fixes:          make test          (must pass)
-After completing a phase:      make sonar         (must exit 0, no new issues except security hotspots)
-Before reporting to lead:      make test          (must pass)
+After each individual fix:     make test                                    (must pass)
+After batch of fixes:          make test && make lint                       (must pass)
+After completing a file:       make test && make lint && make mypy          (must pass)
+After completing a phase:      make test && make lint && make mypy && make sonar   (ALL must pass)
+Before reporting to lead:      make test && make lint                       (must pass)
 ```
 
 ### Shared Files Protocol:
@@ -89,7 +96,11 @@ Before reporting to lead:      make test          (must pass)
 - Fix 0.3: `cli/missing_episodes.py:294` — S5655. Same pattern as 0.2. Fix consistently. (5 min)
 - Run `make test` → verify 272 tests pass
 
-**Lead:** Wait for both to report success. Run `make sonar` to confirm clean baseline and verify no new issues introduced. Issue count must be ≤ 48 (only security hotspots exempt). Then proceed to Phase 1.
+**Lead:** Wait for both to report success. Run full gate check:
+```bash
+make test && make lint && make mypy && make sonar
+```
+All four must pass. Issue count must be ≤ 48 (security hotspots exempt). Then proceed to Phase 1.
 
 ---
 
@@ -150,9 +161,12 @@ Before reporting to lead:      make test          (must pass)
   - 1.6 (disjoint_set.py) → Agent A owns this. Either Agent A does it, or grant Agent D one-time access.
   - 1.14 (file_ops.py) → Not clearly owned. Assign to whichever agent is free.
 - **PHASE 1 GATE:** After all agents report Phase 1 complete:
-  - Run `make sonar` → must exit 0. Issue count must drop (expected: 48 → ~26).
-  - If ANY new issues appeared → identify which agent introduced them, send back to fix.
-  - Only proceed to Phase 2 after `make sonar` confirms no new issues (security hotspots exempt).
+  ```bash
+  make test && make lint && make mypy && make sonar
+  ```
+  - All four must pass. SonarQube issue count must drop (expected: 48 → ~26).
+  - If ANY new issues (lint, mypy, or sonar) → identify which agent introduced them, send back to fix.
+  - Only proceed to Phase 2 after all four checks pass (security hotspots exempt from sonar count).
 
 ---
 
@@ -211,12 +225,14 @@ Per plan Appendix C4, these changes are safe without additional tests:
 
 **Lead — PHASE 2 GATE:**
 After Agents C and D report test suites complete:
-- Run `make sonar` → must exit 0. No new issues (security hotspots exempt).
-- Run `make coverage` → verify 70%+ overall
+```bash
+make test && make lint && make mypy && make sonar
+```
+- All four must pass. Run `make coverage` → verify 70%+ overall.
 - Verify ~370+ tests all passing
 - If coverage < 70%, ask Agent C to add more edge case tests
-- If `make sonar` shows new issues from test files → fix (e.g., test code complexity, unused imports)
-- Only signal Phase 3 start after `make sonar` passes clean.
+- If lint/mypy/sonar show new issues from test files → fix (e.g., unused imports, missing type hints in tests)
+- Only signal Phase 3 start after all four checks pass clean.
 
 ---
 
@@ -320,12 +336,15 @@ Also handle step 3.2E from the plan: `process_deletion_and_generate_report` (CC 
 - Review and approve Agent A's plans for steps 5, 7, 9, 10 before they implement
 - Approval criteria: extracted functions have clear single responsibility, target CC < 15, no behavioral changes, test plan included
 - After Agent A completes step 7: signal Agent B to start step 8
-- **MANDATORY: Run `make sonar` after EACH completed file** (not just at the end):
-  - Issue count must be DECREASING or stable — never increasing
-  - If new issues appear → send agent back to fix before they move to next function
-  - Security hotspots are exempt — ignore them, user will review separately
+- **MANDATORY: Run full gate check after EACH completed file** (not just at the end):
+  ```bash
+  make test && make lint && make mypy && make sonar
+  ```
+  - All four must pass. Issue counts must be DECREASING or stable — never increasing.
+  - If new issues appear (lint, mypy, or sonar) → send agent back to fix before they move to next function
+  - Security hotspots are exempt from sonar count — ignore them, user will review separately
 - If any agent reports > 3 broken tests: STOP all work, assess, potentially revert
-- **No agent proceeds to next function until `make sonar` confirms their current file is clean**
+- **No agent proceeds to next function until all four checks pass for their current file**
 
 ---
 
@@ -376,22 +395,22 @@ This single command:
 5. Checks quality gate
 6. **Exit 0 = SUCCESS | Exit 1 = FAILED**
 
-**Additional verification:**
+**Full final verification (ALL must pass):**
 ```bash
-make lint        # Must be clean
-make mypy        # Must be clean or improved
-make sonar-all   # Should show 0 issues
+make test && make lint && make mypy && make sonar
+make sonar-all      # Should show 0 issues
 make sonar-metrics  # Record final metrics
 ```
 
 **Success criteria:**
+- [ ] `make test` passes (~420+ tests)
+- [ ] `make lint` clean (0 ruff issues)
+- [ ] `make mypy` clean (0 type errors, or strictly fewer than baseline)
 - [ ] `make sonar` exits 0 (quality gate PASSES)
 - [ ] 0 SonarQube issues (security hotspots exempt — user reviews those separately)
 - [ ] All functions < cognitive complexity 15
 - [ ] Test coverage ≥ 80%
-- [ ] ~420+ tests passing
 - [ ] No behavioral changes (all Phase 2 behavioral tests still pass)
-- [ ] `make lint` clean
 - [ ] Docker build succeeds
 - [ ] Git status shows ONLY uncommitted changes — no commits, no staged files, no branches created
 
@@ -434,8 +453,8 @@ You coordinate the team. Use **delegate mode** (Shift+Tab) to stay focused on co
 There is a pre-built agent at `.claude/agents/sonarqube-issue-fixer.md` — it's Opus-powered and knows the full SonarQube workflow (MCP tools, quality gate checks, fix patterns). If a Sonnet agent (B, C, or D) struggles with a SonarQube issue — can't reduce complexity, introduces new issues, or gets stuck on a rule they don't understand — **spawn the sonarqube-issue-fixer agent** to handle that specific fix. Use it as a targeted specialist, not a replacement. Give it the specific file:line and rule, let it fix and verify with `make test`, then hand the file back to the owning agent.
 
 **Go/No-Go rules (ENFORCED BY `make sonar` AT EVERY GATE):**
-- PROCEED when: `make sonar` exits 0, all tests pass, issue count is decreasing, no new issues (security hotspots exempt)
-- STOP when: > 3 tests break from one change, `make sonar` shows new issues, CC reduction < 30% after extraction, coverage drops below 56%
+- PROCEED when: all four checks pass (`make test && make lint && make mypy && make sonar`), issue counts decreasing, no new issues (security hotspots exempt)
+- STOP when: > 3 tests break from one change, any of the four checks show new issues, CC reduction < 30% after extraction, coverage drops below 56%
 - ESCALATE OPTIONS when an agent is stuck:
   1. **First:** Spawn `sonarqube-issue-fixer` agent for the specific issue (it's Opus, it can handle complex fixes)
   2. **Second:** Reassign the file to Agent A (Opus) if it's an architectural problem

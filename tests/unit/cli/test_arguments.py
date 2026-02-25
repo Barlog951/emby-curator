@@ -1,153 +1,182 @@
 """
-Tests for CLI argument parsing
+Tests for CLI argument parsing (legacy argparse functions) and typer app structure.
 """
 import os
 import pytest
 from unittest.mock import patch
-from argparse import Namespace
 
 from emby_dedupe.cli.arguments import (
-    parse_args,
     get_env_variable,
     override_warning,
-    validate_required_arguments
+    validate_required_arguments,
 )
 
 
-class TestArguments:
-    """Tests for CLI argument parsing."""
+class TestGetEnvVariable:
+    def test_nonexistent_returns_none(self):
+        assert get_env_variable("NONEXISTENT_VAR_XYZ") is None
 
-    def test_parse_args_defaults(self):
-        """Test parsing arguments with defaults."""
-        with patch('sys.argv', ['emby-dedupe']):
-            args = parse_args()
-            assert args.verbosity == 0
-            assert args.host is None
-            assert args.port is None
-            assert args.api_key is None
-            assert args.library is None
-            assert args.doit is False
-            assert args.username is None
-            assert args.password is None
+    def test_existing_returns_value(self):
+        with patch.dict("os.environ", {"TEST_VAR_ABC": "test_value"}):
+            assert get_env_variable("TEST_VAR_ABC") == "test_value"
 
-    def test_parse_args_with_values(self):
-        """Test parsing arguments with provided values."""
-        with patch('sys.argv', [
-            'emby-dedupe',
-            '--host', 'emby.example.com',
-            '--port', '8096',
-            '--api-key', 'api_key_value',
-            '--library', 'Movies',
-            '--doit',
-            '--username', 'user',
-            '--password', 'pass',
-            '-v'
-        ]):
-            args = parse_args()
-            assert args.verbosity == 1
-            assert args.host == 'emby.example.com'
-            assert args.port == 8096
-            assert args.api_key == 'api_key_value'
-            # In the current implementation, library is a list to support multiple libraries
-            assert args.library == ['Movies']
-            assert args.doit is True
-            assert args.username == 'user'
-            assert args.password == 'pass'
 
-    def test_get_env_variable(self):
-        """Test getting environment variables."""
-        # Test with a non-existent variable
-        assert get_env_variable('NONEXISTENT_VAR') is None
-        
-        # Test with an existing variable
-        with patch.dict('os.environ', {'TEST_VAR': 'test_value'}):
-            assert get_env_variable('TEST_VAR') == 'test_value'
+class TestOverrideWarning:
+    def test_no_warning_if_no_env_value(self):
+        result = override_warning("--host", "cmd_value", None)
+        assert result is None
 
-    def test_override_warning(self):
-        """Test warning when command-line args override env vars."""
-        # Testing override_warning logic directly
-        # No warning if no env value - nothing should happen
-        result1 = override_warning('--host', 'cmd_value', None)
-        assert result1 is None
-        
-        # No warning if no cmd value - nothing should happen
-        result2 = override_warning('--host', None, 'env_value')
-        assert result2 is None
-        
-        # For both values present we're relying on logger.warning being called
-        # which is difficult to test without complex mocking
-        # Just verifying the if condition is met
-        with patch('emby_dedupe.cli.arguments.logger') as mock_logger:
-            override_warning('--host', 'cmd_value', 'env_value')
+    def test_no_warning_if_no_cmd_value(self):
+        result = override_warning("--host", None, "env_value")
+        assert result is None
+
+    def test_warning_logged_when_both_set(self):
+        with patch("emby_dedupe.cli.arguments.logger") as mock_logger:
+            override_warning("--host", "cmd_value", "env_value")
             assert mock_logger.warning.called
 
-    def test_validate_required_arguments_all_valid(self):
-        """Test validation with all required arguments."""
-        # Without doit
+
+class TestValidateRequiredArguments:
+    def test_valid_without_doit(self):
         validate_required_arguments(
-            host='emby.example.com',
-            api_key='api_key',
-            libraries=['Movies'],
-            doit=False
-        )
-        
-        # With doit and credentials
-        validate_required_arguments(
-            host='emby.example.com',
-            api_key='api_key',
-            libraries=['Movies'],
-            doit=True,
-            username='user',
-            password='pass'
+            host="emby.example.com",
+            api_key="api_key",
+            libraries=["Movies"],
+            doit=False,
         )
 
-    def test_validate_required_arguments_missing(self):
-        """Test validation with missing required arguments."""
-        # Missing host
+    def test_valid_with_doit_and_credentials(self):
+        validate_required_arguments(
+            host="emby.example.com",
+            api_key="api_key",
+            libraries=["Movies"],
+            doit=True,
+            username="user",
+            password="pass",
+        )
+
+    def test_missing_host_exits(self):
         with pytest.raises(SystemExit):
             validate_required_arguments(
-                host=None,
-                api_key='api_key',
-                libraries=['Movies'],
-                doit=False
+                host=None, api_key="api_key", libraries=["Movies"], doit=False
             )
-        
-        # Missing API key
+
+    def test_missing_api_key_exits(self):
         with pytest.raises(SystemExit):
             validate_required_arguments(
-                host='emby.example.com',
-                api_key=None,
-                libraries=['Movies'],
-                doit=False
+                host="emby.example.com", api_key=None, libraries=["Movies"], doit=False
             )
-        
-        # Missing libraries
+
+    def test_missing_libraries_exits(self):
         with pytest.raises(SystemExit):
             validate_required_arguments(
-                host='emby.example.com',
-                api_key='api_key',
-                libraries=[],
-                doit=False
+                host="emby.example.com", api_key="api_key", libraries=[], doit=False
             )
-        
-        # With doit but missing username
+
+    def test_doit_missing_username_exits(self):
         with pytest.raises(SystemExit):
             validate_required_arguments(
-                host='emby.example.com',
-                api_key='api_key',
-                libraries=['Movies'],
+                host="emby.example.com",
+                api_key="api_key",
+                libraries=["Movies"],
                 doit=True,
                 username=None,
-                password='pass'
+                password="pass",
             )
-        
-        # With doit but missing password
+
+    def test_doit_missing_password_exits(self):
         with pytest.raises(SystemExit):
             validate_required_arguments(
-                host='emby.example.com',
-                api_key='api_key',
-                libraries=['Movies'],
+                host="emby.example.com",
+                api_key="api_key",
+                libraries=["Movies"],
                 doit=True,
-                username='user',
-                password=None
+                username="user",
+                password=None,
             )
+
+
+class TestTyperAppStructure:
+    """Verify that the typer app is correctly wired up."""
+
+    def test_app_help_exit_zero(self):
+        from typer.testing import CliRunner
+        from emby_dedupe.cli.app import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+
+    def test_app_has_genres_group(self):
+        from typer.testing import CliRunner
+        from emby_dedupe.cli.app import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        assert "genres" in result.output
+
+    def test_genres_help_shows_subcommands(self):
+        from typer.testing import CliRunner
+        from emby_dedupe.cli.app import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["genres", "--help"])
+        assert result.exit_code == 0
+        assert "audit" in result.output
+        assert "normalize" in result.output
+        assert "fix" in result.output
+
+    def test_genres_audit_help(self):
+        from typer.testing import CliRunner
+        from emby_dedupe.cli.app import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["genres", "audit", "--help"])
+        assert result.exit_code == 0
+        assert "--suggest" in result.output
+
+    def test_genres_normalize_help(self):
+        from typer.testing import CliRunner
+        from emby_dedupe.cli.app import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["genres", "normalize", "--help"])
+        assert result.exit_code == 0
+        assert "--doit" in result.output
+        assert "--item-ids" in result.output
+
+    def test_genres_fix_help(self):
+        from typer.testing import CliRunner
+        from emby_dedupe.cli.app import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["genres", "fix", "--help"])
+        assert result.exit_code == 0
+        assert "--doit" in result.output
+        assert "--validate" in result.output
+        assert "--item-ids" in result.output
+
+    def test_dedupe_help(self):
+        from typer.testing import CliRunner
+        from emby_dedupe.cli.app import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["dedupe", "--help"])
+        assert result.exit_code == 0
+
+    def test_check_help(self):
+        from typer.testing import CliRunner
+        from emby_dedupe.cli.app import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["check", "--help"])
+        assert result.exit_code == 0
+
+    def test_missing_episodes_help(self):
+        from typer.testing import CliRunner
+        from emby_dedupe.cli.app import app
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["missing-episodes", "--help"])
+        assert result.exit_code == 0

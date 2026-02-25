@@ -1,5 +1,5 @@
 """
-Tests for the main module
+Tests for the __main__ module.
 """
 import pytest
 from unittest.mock import patch
@@ -7,14 +7,16 @@ import sys
 
 
 class TestMain:
-    """Tests for the main module."""
+    """Tests for the __main__ entry point."""
 
-    @patch('emby_dedupe.cli.main.main')
-    def test_main_calls_cli_main(self, mock_cli_main):
-        """Test that the main module calls the CLI's main function."""
-        # We need to patch sys.argv to avoid argparse errors
-        with patch.object(sys, 'argv', ['emby_dedupe']):
-            # Import the module here to avoid argparse parsing during collection
+    def test_main_callable(self):
+        """The main entry point must be importable and callable."""
+        from emby_dedupe.__main__ import main
+        assert callable(main)
+
+    def test_main_calls_app(self):
+        """__main__.main() must delegate to the typer app."""
+        with patch("emby_dedupe.__main__.app") as mock_app:
             from emby_dedupe.__main__ import main
             main()
-        mock_cli_main.assert_called_once()
+            mock_app.assert_called_once()

@@ -116,3 +116,13 @@ class TestSetLoggingLevel:
         handler_arg = mock_logger.addHandler.call_args[0][0]
         assert isinstance(handler_arg, logging.StreamHandler)
         assert handler_arg.level == logging.ERROR
+
+    def test_filter_accumulation_prevention(self):
+        """Test that calling set_logging_level twice results in exactly 1 filter, not 2."""
+        # Call set_logging_level twice
+        set_logging_level(0, None)
+        set_logging_level(0, None)
+
+        # Verify that exactly 1 filter is present (not 2 accumulated filters)
+        assert len(logger.filters) == 1
+        assert isinstance(logger.filters[0], SensitiveDataFilter)

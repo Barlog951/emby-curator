@@ -77,6 +77,7 @@ def set_logging_level(verbosity_count: int, env_verbosity: Optional[str] = None)
 
     # Create a log filter and formatter
     sensitive_data_filter = SensitiveDataFilter()
+    logger.filters.clear()  # Clear any previously added filters to prevent accumulation
     logger.addFilter(sensitive_data_filter)  # Add the custom filter to the logger
 
     # To avoid duplicate logging if the function is called multiple times, clear any previously added handlers

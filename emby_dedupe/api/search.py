@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 import httpx
 
+from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.logging import logger
 
 # Standard fields to fetch when searching for media items
@@ -110,8 +111,7 @@ def search_by_name(
 
     url = f"{host}/Items"
     try:
-        response = client.get(url, params=params)
-        response.raise_for_status()
+        response = make_http_request(client, "GET", url, params=params)
         data = response.json()
         items = data.get("Items", [])
 
@@ -174,8 +174,7 @@ def search_by_provider_id(
 
     url = f"{host}/Items"
     try:
-        response = client.get(url, params=params)
-        response.raise_for_status()
+        response = make_http_request(client, "GET", url, params=params)
         data = response.json()
         items = data.get("Items", [])
         logger.debug(f"Found {len(items)} items with {provider_type} ID '{provider_id}'")
@@ -226,8 +225,7 @@ def search_tv_episode(
 
     url = f"{host}/Items"
     try:
-        response = client.get(url, params=params)
-        response.raise_for_status()
+        response = make_http_request(client, "GET", url, params=params)
         data = response.json()
         series_items = data.get("Items", [])
 
@@ -252,8 +250,7 @@ def search_tv_episode(
             "Fields": SEARCH_FIELDS,
         }
 
-        response = client.get(url, params=episode_params)
-        response.raise_for_status()
+        response = make_http_request(client, "GET", url, params=episode_params)
         data = response.json()
         episodes = data.get("Items", [])
 
@@ -295,8 +292,7 @@ def get_all_library_ids(
     params = {"api_key": api_key}
 
     try:
-        response = client.get(url, params=params)
-        response.raise_for_status()
+        response = make_http_request(client, "GET", url, params=params)
         data = response.json()
 
         libraries = []

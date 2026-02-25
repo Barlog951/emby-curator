@@ -4,6 +4,7 @@ Used by `genres fix` to fill missing genres and cross-validate existing ones.
 """
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -36,13 +37,15 @@ class RateLimiter:
     def __init__(self, calls_per_second: float) -> None:
         self._interval = 1.0 / calls_per_second
         self._last: float = 0.0
+        self._lock = threading.Lock()
 
     def acquire(self) -> None:
-        now = time.monotonic()
-        wait = self._interval - (now - self._last)
+        with self._lock:
+            now = time.monotonic()
+            wait = self._interval - (now - self._last)
+            self._last = now + max(wait, 0)
         if wait > 0:
             time.sleep(wait)
-        self._last = time.monotonic()
 
 
 def load_genre_cache() -> dict:
