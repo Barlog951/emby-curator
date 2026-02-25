@@ -258,23 +258,39 @@ def calculate_bpp(
     return bitrate / total_pixels_per_second
 
 
-def get_bpp_multiplier(bpp: float) -> float:
+def get_bpp_multiplier(bpp: float, codec: Optional[str] = None) -> float:
     """Get quality multiplier based on bits per pixel.
 
+    Adjusts for codec efficiency: HEVC/AV1 achieve the same visual quality
+    with fewer bits per pixel than H.264. A 4K HEVC file at 0.07 bpp is
+    roughly equivalent to an H.264 file at 0.11 bpp.
+
     Args:
-        bpp: Bits per pixel value
+        bpp: Bits per pixel value.
+        codec: Video codec name for efficiency adjustment.
 
     Returns:
         Multiplier (0.5-1.2)
     """
-    if bpp >= BPP_QUALITY_BANDS["excellent"]:
-        return 1.2  # Excellent quality
-    elif bpp >= BPP_QUALITY_BANDS["good"]:
-        return 1.1  # Good quality
-    elif bpp >= BPP_QUALITY_BANDS["acceptable"]:
+    # Adjust BPP for codec efficiency before comparing to bands
+    effective_bpp = bpp
+    if codec:
+        codec_lower = codec.lower()
+        if any(x in codec_lower for x in ("hevc", "x265", "h265")):
+            effective_bpp = bpp / 0.65  # HEVC equivalent in H.264 terms
+        elif "av1" in codec_lower:
+            effective_bpp = bpp / 0.5   # AV1 equivalent in H.264 terms
+
+    if effective_bpp >= BPP_QUALITY_BANDS["excellent"]:
+        return 1.1  # Excellent quality (tightened from 1.2 to prevent
+                     # 1080p files with naturally high BPP from dominating
+                     # 4K files with lower but codec-efficient BPP)
+    elif effective_bpp >= BPP_QUALITY_BANDS["good"]:
+        return 1.05  # Good quality
+    elif effective_bpp >= BPP_QUALITY_BANDS["acceptable"]:
         return 1.0  # Acceptable quality
-    elif bpp >= BPP_QUALITY_BANDS["poor"]:
-        return 0.8  # Poor quality
+    elif effective_bpp >= BPP_QUALITY_BANDS["poor"]:
+        return 0.85  # Poor quality
     else:
         return 0.5  # Critical - severe penalty
 
@@ -591,16 +607,20 @@ class ProposedQuality:
             return 0.0  # Auto-reject
 
         # Calculate base score with updated weights
+        # NOTE: file_size uses KB (not bytes) to stay in the same magnitude as
+        # resolution (millions of pixels) and bitrate (millions of bps).
+        # Raw bytes at 0.1 weight was 200x larger than resolution, dominating
+        # the score despite the "reduced" weight.
         base_score = 0.0
         base_score += (width * height) * QUALITY_WEIGHTS["resolution"]
         base_score += self.get_audio_channels() * QUALITY_WEIGHTS["audio_channels"]
-        base_score += bitrate * QUALITY_WEIGHTS["bitrate"]  # Now 0.8 weight!
-        base_score += self.get_size_bytes() * QUALITY_WEIGHTS["file_size"]  # Reduced to 0.1
+        base_score += bitrate * QUALITY_WEIGHTS["bitrate"]
+        base_score += (self.get_size_bytes() / 1024) * QUALITY_WEIGHTS["file_size"]
         base_score += int(time.time()) * QUALITY_WEIGHTS["date_added"]
 
         # Calculate multipliers using RTN-enhanced detection
         source_multiplier = detect_source_quality_with_rtn(self.path, self.name)
-        bpp_multiplier = get_bpp_multiplier(bpp)
+        bpp_multiplier = get_bpp_multiplier(bpp, self.codec)
         codec_multiplier = get_codec_multiplier_with_rtn(self.codec, self.path)
         ai_multiplier = 0.7 if self.is_ai_upscaled() else 1.0
 
@@ -736,6 +756,72 @@ class ExistingQuality:
                 return tier_name
         return None
 
+    @staticmethod
+    def _infer_source_quality_from_streams(
+        bitrate: int, height: int, audio_codec: Optional[str]
+    ) -> Optional[str]:
+        """Infer source quality tier from stream metadata when path/name gives no signal.
+
+        Uses bitrate ranges per resolution and audio codec as heuristics:
+        - Lossless audio (TrueHD, DTS-HD MA) → bluray_remux or bluray
+        - DDP/EAC3/AAC → webdl (streaming services)
+        - Very high bitrate → bluray_remux
+        - High bitrate → bluray
+        - Medium bitrate → webdl
+        - Low bitrate → hdtv
+
+        Args:
+            bitrate: Item bitrate in bps.
+            height: Video height in pixels.
+            audio_codec: Audio codec string from Emby stream (e.g. "eac3", "truehd").
+
+        Returns:
+            Inferred source quality tier name, or None if insufficient data.
+        """
+        if bitrate <= 0 and not audio_codec:
+            return None
+
+        audio_lower = (audio_codec or "").lower()
+
+        # Lossless audio codecs strongly indicate BluRay/REMUX source
+        lossless_audio = audio_lower in (
+            "truehd", "dts-hd ma", "dts-hd", "dtshd", "flac", "pcm", "lpcm",
+        )
+        # DDP/EAC3/AAC strongly indicate WEB-DL source
+        webdl_audio = audio_lower in ("eac3", "aac", "he-aac", "opus")
+
+        # Bitrate thresholds per resolution (bps)
+        if height >= 2000:  # 4K
+            if lossless_audio and bitrate > 40_000_000:
+                return "bluray_remux"
+            if lossless_audio or bitrate > 25_000_000:
+                return "bluray"
+            if webdl_audio or bitrate > 8_000_000:
+                return "webdl"
+            return "hdtv"
+        elif height >= 1000:  # 1080p
+            if lossless_audio and bitrate > 20_000_000:
+                return "bluray_remux"
+            if lossless_audio or bitrate > 12_000_000:
+                return "bluray"
+            if webdl_audio or bitrate > 3_000_000:
+                return "webdl"
+            return "hdtv"
+        elif height >= 700:  # 720p
+            if lossless_audio or bitrate > 8_000_000:
+                return "bluray"
+            if webdl_audio or bitrate > 2_000_000:
+                return "webdl"
+            return "hdtv"
+        else:
+            # SD content — audio codec is best signal
+            if lossless_audio:
+                return "bluray"
+            if webdl_audio:
+                return "webdl"
+
+        return None
+
     @classmethod
     def from_emby_item(cls, item: dict[str, Any]) -> 'ExistingQuality':
         """Create ExistingQuality from an Emby item dict."""
@@ -755,6 +841,19 @@ class ExistingQuality:
         item_path = item.get("Path")
         item_name = item.get("Name", "")
         source_quality_tier = cls._detect_source_quality_tier(item_path, item_name)
+
+        # Fallback: infer from stream metadata when path/name gives unknown
+        if source_quality_tier is None or source_quality_tier == "unknown":
+            audio_codec = audio_stream.get("Codec") if audio_stream else None
+            item_bitrate = item.get("Bitrate", 0)
+            inferred = cls._infer_source_quality_from_streams(item_bitrate, height, audio_codec)
+            if inferred:
+                logger.debug(
+                    f"Source quality inferred from streams: {inferred} "
+                    f"(bitrate={item_bitrate}, audio={audio_codec}, height={height})"
+                )
+                source_quality_tier = inferred
+
         is_ai_upscale = detect_ai_upscale(item_path, item_name)
 
         return cls(
@@ -807,16 +906,23 @@ class ExistingQuality:
             base_score = 1.0  # Minimal score
         else:
             # Calculate base score with updated weights
+            # NOTE: file_size uses KB (not bytes) — see ProposedQuality.calculate_score
             base_score = 0.0
             base_score += (self.width * self.height) * QUALITY_WEIGHTS["resolution"]
             base_score += self.audio_channels * QUALITY_WEIGHTS["audio_channels"]
-            base_score += bitrate * QUALITY_WEIGHTS["bitrate"]  # Use estimated bitrate if available
-            base_score += self.size_bytes * QUALITY_WEIGHTS["file_size"]  # Reduced to 0.1
+            base_score += bitrate * QUALITY_WEIGHTS["bitrate"]
+            base_score += (self.size_bytes / 1024) * QUALITY_WEIGHTS["file_size"]
             base_score += self.date_rating * QUALITY_WEIGHTS["date_added"]
 
-        # Calculate multipliers using RTN-enhanced detection
-        source_multiplier = detect_source_quality_with_rtn(self.path, self.name)
-        bpp_multiplier = get_bpp_multiplier(bpp)
+        # Use stored tier if available (e.g. inferred from streams),
+        # otherwise fall back to path/name detection
+        if self.source_quality_tier and self.source_quality_tier != "unknown":
+            source_multiplier = SOURCE_QUALITY_TIERS.get(
+                self.source_quality_tier, {}
+            ).get("bonus", 0.95)
+        else:
+            source_multiplier = detect_source_quality_with_rtn(self.path, self.name)
+        bpp_multiplier = get_bpp_multiplier(bpp, self.codec)
         codec_multiplier = get_codec_multiplier_with_rtn(self.codec, self.path)
         ai_multiplier = 0.7 if self.is_ai_upscale else 1.0
 
@@ -999,6 +1105,7 @@ def _create_proposed_as_existing(proposed: ProposedQuality) -> ExistingQuality:
         name="Proposed",
         width=width,
         height=height,
+        codec=proposed.codec,
         audio_channels=proposed.get_audio_channels(),
         audio_languages=proposed.audio_languages,
         size_bytes=proposed.get_size_bytes(),

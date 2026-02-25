@@ -359,13 +359,100 @@ class TestExistingQuality:
         assert existing.source_quality_tier == "bluray_remux"
         assert existing.is_ai_upscale is True
 
+    def test_infer_webdl_from_eac3_audio(self):
+        """Test that EAC3 audio infers webdl when filename has no source indicator."""
+        item = {
+            "Id": "100",
+            "Name": "Clean Name Episode",
+            "Path": "/Series/Show (2020)/S01/Show (2020) S01E01 - 1080p.mkv",
+            "MediaStreams": [
+                {"Type": "Video", "Width": 1920, "Height": 1080, "Codec": "h264"},
+                {"Type": "Audio", "Channels": 6, "Codec": "eac3", "Language": "eng"},
+            ],
+            "Size": 655000000,
+            "Bitrate": 4050000,
+        }
+        existing = ExistingQuality.from_emby_item(item)
+        assert existing.source_quality_tier == "webdl"
+
+    def test_infer_bluray_from_truehd_audio(self):
+        """Test that TrueHD audio infers bluray when filename has no source indicator."""
+        item = {
+            "Id": "101",
+            "Name": "Movie Title",
+            "Path": "/Movies/Movie Title (2023)/Movie Title (2023) - 1080p.mkv",
+            "MediaStreams": [
+                {"Type": "Video", "Width": 1920, "Height": 1080, "Codec": "h264"},
+                {"Type": "Audio", "Channels": 8, "Codec": "truehd", "Language": "eng"},
+            ],
+            "Size": 8000000000,
+            "Bitrate": 15000000,
+        }
+        existing = ExistingQuality.from_emby_item(item)
+        assert existing.source_quality_tier == "bluray"
+
+    def test_infer_remux_from_truehd_high_bitrate_4k(self):
+        """Test that lossless audio + very high bitrate 4K infers remux."""
+        item = {
+            "Id": "102",
+            "Name": "4K Movie",
+            "Path": "/Movies/4K Movie (2023)/4K Movie (2023) - 2160p.mkv",
+            "MediaStreams": [
+                {"Type": "Video", "Width": 3840, "Height": 2160, "Codec": "hevc"},
+                {"Type": "Audio", "Channels": 8, "Codec": "truehd", "Language": "eng"},
+            ],
+            "Size": 50000000000,
+            "Bitrate": 50000000,
+        }
+        existing = ExistingQuality.from_emby_item(item)
+        assert existing.source_quality_tier == "bluray_remux"
+
+    def test_infer_webdl_from_aac_audio(self):
+        """Test that AAC audio infers webdl."""
+        item = {
+            "Id": "103",
+            "Name": "Episode Title",
+            "Path": "/Series/Show/S02/Show S02E05 - 720p.mkv",
+            "MediaStreams": [
+                {"Type": "Video", "Width": 1280, "Height": 720, "Codec": "h264"},
+                {"Type": "Audio", "Channels": 2, "Codec": "aac", "Language": "eng"},
+            ],
+            "Size": 400000000,
+            "Bitrate": 2500000,
+        }
+        existing = ExistingQuality.from_emby_item(item)
+        assert existing.source_quality_tier == "webdl"
+
+    def test_path_detection_takes_priority_over_stream_inference(self):
+        """Test that explicit path indicator is not overridden by stream inference."""
+        item = {
+            "Id": "104",
+            "Name": "Test",
+            "Path": "/movies/Test.BluRay.1080p.mkv",
+            "MediaStreams": [
+                {"Type": "Video", "Width": 1920, "Height": 1080, "Codec": "h264"},
+                {"Type": "Audio", "Channels": 6, "Codec": "eac3", "Language": "eng"},
+            ],
+            "Size": 5000000000,
+            "Bitrate": 4000000,
+        }
+        existing = ExistingQuality.from_emby_item(item)
+        # Path says BluRay — stream inference should NOT override
+        assert existing.source_quality_tier == "bluray"
+
+    def test_infer_no_data_returns_none(self):
+        """Test that no bitrate and no audio codec leaves source unknown."""
+        result = ExistingQuality._infer_source_quality_from_streams(0, 1080, None)
+        assert result is None
+
     def test_calculate_score_applies_bluray_multiplier(self):
         """Test that BluRay source increases score."""
         # Create items with same specs but different source quality
+        # Note: base_item at 10 Mbps 1080p gets inferred as webdl from stream metadata
         base_item = {
             "Id": "1",
             "Name": "Test",
-            "Path": "/movies/Test.1080p.mkv",  # Unknown source
+            "Path": "/movies/Test.1080p.mkv",  # No source in filename
             "MediaStreams": [{"Type": "Video", "Width": 1920, "Height": 1080}],
             "Size": 5000000000,
             "Bitrate": 10000000,
@@ -385,9 +472,10 @@ class TestExistingQuality:
         base_score = base_quality.calculate_score()
         bluray_score = bluray_quality.calculate_score()
 
-        # BluRay should score higher
+        # BluRay should score higher than stream-inferred webdl
         assert bluray_score > base_score
-        expected_ratio = SOURCE_QUALITY_TIERS["bluray"]["bonus"] / SOURCE_QUALITY_TIERS["unknown"]["bonus"]
+        # base_item inferred as webdl (1.0) from bitrate, bluray is 1.15
+        expected_ratio = SOURCE_QUALITY_TIERS["bluray"]["bonus"] / SOURCE_QUALITY_TIERS["webdl"]["bonus"]
         actual_ratio = bluray_score / base_score
         assert abs(actual_ratio - expected_ratio) < 0.01
 
@@ -569,6 +657,46 @@ class TestCompareQuality:
         }]
         result = compare_quality(proposed, existing_items)
         assert result.recommendation == "download"
+        assert result.reason == "better_quality"
+
+    def test_4k_hevc_webdl_vs_1080p_bluray_h264(self):
+        """Regression: 4K HEVC WEB-DL should beat 1080p BluRay H264.
+
+        Real case: Kingsman 2160p DSNP WEB-DL DV HEVC 13.3GB at 14.2 Mbps
+        was rejected vs 1080p BluRay H264 15.9GB because codec was not
+        passed to _create_proposed_as_existing, causing RED FLAG to trigger
+        at 15 Mbps threshold instead of 9.75 Mbps (HEVC-adjusted).
+        """
+        proposed = ProposedQuality(
+            resolution="2160p",
+            codec="x265",
+            hdr="DV",
+            audio="DDP",
+            audio_languages=["cze", "eng", "slk"],
+            size_mb=13303,
+            bitrate_kbps=14200,
+            source_quality_tier="webdl",
+            path="The.Kings.Man.2021.2160p.DSNP.WEB-DL.DDP5.1.HDR.DoVi.Hybrid.HEVC-TreZzoR",
+        )
+        existing_items = [{
+            "Id": "existing_bluray",
+            "Name": "The King's Man",
+            "Path": "/Movies/HD/The.Kings.Man.2021.1080p.BluRay.DD+7.1.x264-KASHMiR.mkv",
+            "MediaStreams": [
+                {"Type": "Video", "Width": 1920, "Height": 1080, "Codec": "h264"},
+                {"Type": "Audio", "Channels": 8, "Language": "cze"},
+                {"Type": "Audio", "Channels": 6, "Language": "eng"},
+                {"Type": "Audio", "Channels": 6, "Language": "slk"},
+            ],
+            "Size": 16703913984,  # ~15929 MB
+            "Bitrate": 17_000_000,  # ~17 Mbps
+        }]
+        result = compare_quality(proposed, existing_items)
+        assert result.recommendation == "download", (
+            f"4K HEVC DV should upgrade over 1080p BluRay H264. "
+            f"Proposed score: {result.proposed_score:.0f}, "
+            f"Existing score: {result.existing_score:.0f}"
+        )
         assert result.reason == "better_quality"
 
     def test_worse_quality_returns_skip(self):
