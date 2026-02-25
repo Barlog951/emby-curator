@@ -6,7 +6,10 @@ Provides audit and normalization of Emby library genres.
 import argparse
 import json
 import sys
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from emby_dedupe.api.genre_providers import RateLimiter
 
 import httpx
 from tqdm import tqdm
@@ -209,6 +212,40 @@ def _fetch_items_by_ids(
     return items
 
 
+def _print_genre_counts(genre_counts: dict) -> None:
+    """Print genre frequency table with normalization hints."""
+    if not genre_counts:
+        return
+    print("Genre counts (by frequency):")
+    for genre, count in sorted(genre_counts.items(), key=lambda x: x[1], reverse=True):
+        canonical = normalize_genre_name(genre, GENRE_NORMALIZATION_MAP)
+        if canonical != genre:
+            print(f"  {genre}: {count} items  [← needs normalization → {canonical}]")
+        else:
+            print(f"  {genre}: {count} items")
+    print()
+
+
+def _print_normalization_candidates(normalization_candidates: list) -> None:
+    """Print a summary of items that need genre normalization."""
+    if not normalization_candidates:
+        print("No normalization needed — all genres are already canonical.")
+        return
+
+    print("Normalization summary:")
+    print(f"  {len(normalization_candidates)} items need normalization:")
+    variant_item_counts: dict[str, dict[str, int]] = {}
+    for candidate in normalization_candidates:
+        for orig, suggested in zip(candidate["current_genres"], candidate["suggested_genres"]):
+            if orig != suggested:
+                variant_item_counts.setdefault(suggested, {})[orig] = (
+                    variant_item_counts.get(suggested, {}).get(orig, 0) + 1
+                )
+    for canonical, variants in sorted(variant_item_counts.items()):
+        for variant, item_count in sorted(variants.items(), key=lambda x: x[1], reverse=True):
+            print(f"  {variant} → {canonical}: {item_count} items")
+
+
 def _print_audit_report(audit: dict, all_genres: list) -> None:
     """Print a formatted genre audit report to the terminal.
 
@@ -226,41 +263,8 @@ def _print_audit_report(audit: dict, all_genres: list) -> None:
     print(f"Items without genres: {total_without} ({pct:.1f}%)")
     print()
 
-    genre_counts = audit["genre_counts"]
-    if genre_counts:
-        print("Genre counts (by frequency):")
-        sorted_genres = sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)
-        for genre, count in sorted_genres:
-            canonical = normalize_genre_name(genre, GENRE_NORMALIZATION_MAP)
-            if canonical != genre:
-                print(f"  {genre}: {count} items  [← needs normalization → {canonical}]")
-            else:
-                print(f"  {genre}: {count} items")
-        print()
-
-    normalization_candidates = audit.get("normalization_candidates", [])
-    if normalization_candidates:
-        print("Normalization summary:")
-        print(f"  {len(normalization_candidates)} items need normalization:")
-        # Compute per-variant item counts
-        variant_item_counts: dict[str, dict[str, int]] = {}
-        for candidate in normalization_candidates:
-            for orig, suggested in zip(
-                candidate["current_genres"], candidate["suggested_genres"]
-            ):
-                if orig != suggested:
-                    if suggested not in variant_item_counts:
-                        variant_item_counts[suggested] = {}
-                    variant_item_counts[suggested][orig] = (
-                        variant_item_counts[suggested].get(orig, 0) + 1
-                    )
-        for canonical, variants in sorted(variant_item_counts.items()):
-            for variant, item_count in sorted(
-                variants.items(), key=lambda x: x[1], reverse=True
-            ):
-                print(f"  {variant} → {canonical}: {item_count} items")
-    else:
-        print("No normalization needed — all genres are already canonical.")
+    _print_genre_counts(audit["genre_counts"])
+    _print_normalization_candidates(audit.get("normalization_candidates", []))
 
 
 def _run_audit(
@@ -353,6 +357,73 @@ def _run_repair_dupes(
     print(f"Duplicate repair: {repaired} repaired, {clean} already clean, {errors} errors")
 
 
+def _collect_normalization_candidates(items: list[dict]) -> list[tuple[dict, list[str]]]:
+    """Return (item, new_genres) pairs for items that need normalization."""
+    candidates = []
+    for item in items:
+        # Normalize and deduplicate (e.g. item had both "Suspense" and "Thriller"
+        # — normalizing "Suspense"→"Thriller" would create a duplicate without dedup)
+        new_genres = list(dict.fromkeys(
+            normalize_genre_name(g, GENRE_NORMALIZATION_MAP)
+            for g in (item.get("Genres") or [])
+        ))
+        # Emby deduplicates Genres in API responses but may keep duplicates in GenreItems.
+        # Check GenreItems for duplicates too so we can repair items the previous run broke.
+        genre_item_names = [gi["Name"] for gi in (item.get("GenreItems") or [])]
+        genre_items_has_duplicates = len(genre_item_names) != len(set(genre_item_names))
+        if new_genres != (item.get("Genres") or []) or genre_items_has_duplicates:
+            candidates.append((item, new_genres))
+    return candidates
+
+
+def _preview_normalization_changes(items_to_update: list[tuple[dict, list[str]]]) -> None:
+    """Print a dry-run preview of pending normalization changes."""
+    print(f"Would update {len(items_to_update)} items:")
+    mapping_counts: dict[tuple[str, str], int] = {}
+    for item, new_genres in items_to_update:
+        for orig, canonical in zip(item.get("Genres") or [], new_genres):
+            if orig != canonical:
+                key = (orig, canonical)
+                mapping_counts[key] = mapping_counts.get(key, 0) + 1
+    for (variant, canonical), count in sorted(
+        mapping_counts.items(), key=lambda x: x[1], reverse=True
+    ):
+        print(f"  {variant} → {canonical}: {count} items")
+    print(f"Run with --doit to apply ({len(items_to_update)} items)")
+
+
+def _apply_normalization_updates(
+    items_to_update: list,
+    client: httpx.Client,
+    base_url: str,
+    user_id: str,
+    item_ids: Optional[list[str]],
+    lock: bool,
+) -> None:
+    """Apply normalization updates for each (item, new_genres) pair and print summary."""
+    updated = 0
+    skipped = 0
+    errors = 0
+    for item, new_genres in tqdm(items_to_update, desc="Normalizing genres", unit="item"):
+        try:
+            # In --item-ids mode, item is already the full item from fetch_full_item.
+            # In library scan mode, fetch the full item for safe POST-back.
+            full_item = item if item_ids else fetch_full_item(client, base_url, user_id, item["Id"])
+            result = update_item_genres(client, base_url, item["Id"], full_item, new_genres, lock=lock)
+            if result:
+                updated += 1
+                logger.info(f"Updated: {item.get('Name', item['Id'])} ({item['Id']})")
+            else:
+                skipped += 1
+        except Exception as e:
+            errors += 1
+            logger.error(f"Failed to update {item['Id']}: {e}")
+    print(
+        f"Normalization complete: {updated} updated, "
+        f"{skipped} skipped (already correct), {errors} errors"
+    )
+
+
 def _run_normalize(
     client: httpx.Client,
     base_url: str,
@@ -387,21 +458,7 @@ def _run_normalize(
             )
         )
 
-    items_to_update = []
-    for item in items:
-        # Normalize and deduplicate (e.g. item had both "Suspense" and "Thriller"
-        # — normalizing "Suspense"→"Thriller" would create a duplicate without dedup)
-        new_genres = list(dict.fromkeys(
-            normalize_genre_name(g, GENRE_NORMALIZATION_MAP)
-            for g in (item.get("Genres") or [])
-        ))
-        # Emby deduplicates Genres in API responses but may keep duplicates in GenreItems.
-        # Check GenreItems for duplicates too so we can repair items the previous run broke.
-        genre_item_names = [gi["Name"] for gi in (item.get("GenreItems") or [])]
-        genre_items_has_duplicates = len(genre_item_names) != len(set(genre_item_names))
-        if new_genres != (item.get("Genres") or []) or genre_items_has_duplicates:
-            items_to_update.append((item, new_genres))
-
+    items_to_update = _collect_normalization_candidates(items)
     repair_dupes = getattr(args, "repair_dupes", False)
 
     if not items_to_update:
@@ -412,47 +469,11 @@ def _run_normalize(
         return
 
     if not args.doit:
-        # Dry-run: show preview
-        print(f"Would update {len(items_to_update)} items:")
-        # Group by variant → canonical mapping
-        mapping_counts: dict[tuple[str, str], int] = {}
-        for item, new_genres in items_to_update:
-            for orig, canonical in zip(item.get("Genres") or [], new_genres):
-                if orig != canonical:
-                    key = (orig, canonical)
-                    mapping_counts[key] = mapping_counts.get(key, 0) + 1
-        for (variant, canonical), count in sorted(
-            mapping_counts.items(), key=lambda x: x[1], reverse=True
-        ):
-            print(f"  {variant} → {canonical}: {count} items")
-        print(f"Run with --doit to apply ({len(items_to_update)} items)")
+        _preview_normalization_changes(items_to_update)
         return
 
-    # Apply normalization changes
-    updated = 0
-    skipped = 0
-    errors = 0
-    for item, new_genres in tqdm(items_to_update, desc="Normalizing genres", unit="item"):
-        try:
-            # In --item-ids mode, item is already the full item from fetch_full_item.
-            # In library scan mode, fetch the full item for safe POST-back (the batch
-            # endpoint returns partial fields; single-item returns all 52 fields).
-            full_item = item if item_ids else fetch_full_item(client, base_url, user_id, item["Id"])
-            result = update_item_genres(
-                client, base_url, item["Id"], full_item, new_genres, lock=args.lock
-            )
-            if result:
-                updated += 1
-                logger.info(f"Updated: {item.get('Name', item['Id'])} ({item['Id']})")
-            else:
-                skipped += 1
-        except Exception as e:
-            errors += 1
-            logger.error(f"Failed to update {item['Id']}: {e}")
-
-    print(
-        f"Normalization complete: {updated} updated, "
-        f"{skipped} skipped (already correct), {errors} errors"
+    _apply_normalization_updates(
+        items_to_update, client, base_url, user_id, item_ids, args.lock
     )
 
     if repair_dupes:
@@ -485,12 +506,53 @@ def _create_provider_clients(
     return tmdb_client, tmdb_limiter, omdb_client, omdb_limiter
 
 
+def _process_single_item_genres(
+    item: dict,
+    tmdb_client, tmdb_limiter, omdb_client, omdb_limiter,
+    omdb_keys: list, cache: dict,
+    client, base_url: str, user_id: str,
+    item_ids: Optional[list], args,
+) -> str:
+    """Process one item's external genres. Returns status: no_data|no_diff|dry_run|updated|error."""
+    from emby_dedupe.api.genre_providers import compare_genres, fetch_genres_for_item
+
+    try:
+        external_genres = fetch_genres_for_item(
+            item, tmdb_client, tmdb_limiter, omdb_client, omdb_limiter, omdb_keys, cache
+        )
+        if not external_genres:
+            return "no_data"
+
+        comparison = compare_genres(item.get("Genres") or [], external_genres)
+        if not comparison["has_diff"]:
+            return "no_diff"
+
+        item_name = item.get("Name", item["Id"])
+        missing = comparison["missing_from_emby"]
+
+        if not args.doit:
+            print(f"  {item_name}: would add {missing}")
+            return "dry_run"
+
+        full_item = item if item_ids else fetch_full_item(client, base_url, user_id, item["Id"])
+        result = update_item_genres(
+            client, base_url, item["Id"], full_item, comparison["merged"], lock=args.lock
+        )
+        if result:
+            logger.info(f"Updated {item_name}: added {missing}")
+            return "updated"
+        return "no_diff"
+    except Exception as e:
+        logger.error(f"Failed to process {item.get('Id', '?')}: {e}")
+        return "error"
+
+
 def _apply_genre_updates(
     items: list[dict],
     tmdb_client: Optional[httpx.Client],
-    tmdb_limiter: object,
+    tmdb_limiter: Optional["RateLimiter"],
     omdb_client: Optional[httpx.Client],
-    omdb_limiter: object,
+    omdb_limiter: Optional["RateLimiter"],
     omdb_keys: list[str],
     cache: dict,
     client: httpx.Client,
@@ -518,8 +580,6 @@ def _apply_genre_updates(
         item_ids: If provided, items are already full items (no second fetch needed).
         args: Parsed CLI arguments (uses .doit and .lock).
     """
-    from emby_dedupe.api.genre_providers import compare_genres, fetch_genres_for_item
-
     found = 0
     updated = 0
     skipped_no_data = 0
@@ -527,44 +587,22 @@ def _apply_genre_updates(
     errors = 0
 
     for item in tqdm(items, desc="Fetching external genres", unit="item"):
-        try:
-            external_genres = fetch_genres_for_item(
-                item, tmdb_client, tmdb_limiter,
-                omdb_client, omdb_limiter, omdb_keys, cache
-            )
-
-            if not external_genres:
-                skipped_no_data += 1
-                continue
-
+        status = _process_single_item_genres(
+            item, tmdb_client, tmdb_limiter, omdb_client, omdb_limiter,
+            omdb_keys, cache, client, base_url, user_id, item_ids, args,
+        )
+        if status == "no_data":
+            skipped_no_data += 1
+        elif status == "no_diff":
             found += 1
-            comparison = compare_genres(item.get("Genres") or [], external_genres)
-
-            if not comparison["has_diff"]:
-                skipped_no_diff += 1
-                continue
-
-            item_name = item.get("Name", item["Id"])
-            missing = comparison["missing_from_emby"]
-
-            if not args.doit:
-                print(f"  {item_name}: would add {missing}")
-                continue
-
-            # In --item-ids mode, item is already the full item.
-            # In library scan mode, fetch the full item for safe POST-back.
-            full_item = item if item_ids else fetch_full_item(client, base_url, user_id, item["Id"])
-            result = update_item_genres(
-                client, base_url, item["Id"], full_item,
-                comparison["merged"], lock=args.lock
-            )
-            if result:
-                updated += 1
-                logger.info(f"Updated {item_name}: added {missing}")
-
-        except Exception as e:
+            skipped_no_diff += 1
+        elif status == "dry_run":
+            found += 1
+        elif status == "updated":
+            found += 1
+            updated += 1
+        elif status == "error":
             errors += 1
-            logger.error(f"Failed to process {item.get('Id', '?')}: {e}")
 
     print(
         f"\nFix complete: {found} items had external data, "
@@ -639,26 +677,43 @@ def _run_fix(
         save_genre_cache(cache)
 
 
-def run_genres_command(args: argparse.Namespace) -> None:
-    """Main entry point for the genres command.
+def _resolve_library_ids(
+    client: httpx.Client,
+    base_url: str,
+    api_key: str,
+    library: list[str],
+    all_libraries: bool,
+) -> list[str]:
+    """Resolve library names or --all-libraries flag to a list of Emby library IDs."""
+    if all_libraries:
+        from emby_dedupe.api.search import get_all_library_ids
 
-    Args:
-        args: Parsed CLI arguments.
-    """
-    # Parse environment variables
+        lib_infos = get_all_library_ids(client, base_url, api_key)
+        return [lib["id"] for lib in lib_infos]
+
+    library_ids = []
+    for lib_name in library:
+        lib_id = get_library_id(client, base_url, lib_name)
+        if lib_id:
+            library_ids.append(lib_id)
+        else:
+            logger.warning(f"Library not found: {lib_name}")
+    return library_ids
+
+
+def _resolve_genres_config(args: argparse.Namespace) -> tuple:
+    """Parse env vars, apply overrides, and return resolved (host, api_key, library, all_libraries, item_ids)."""
     env_host = get_env_variable(ENV_DEDUPE_EMBY_HOST)
     env_port = get_env_variable(ENV_DEDUPE_EMBY_PORT)
     env_api_key = get_env_variable(ENV_DEDUPE_EMBY_API_KEY)
     env_library_str = get_env_variable(ENV_DEDUPE_EMBY_LIBRARY)
     env_library = (
         [lib.strip() for lib in env_library_str.split(",")]
-        if env_library_str
-        else None
+        if env_library_str else None
     )
     env_verbosity = get_env_variable(ENV_DEDUPE_LOGGING)
 
     set_logging_level(args.verbosity, env_verbosity)
-
     override_warning("--host", args.host, env_host or "")
     override_warning("--port", args.port and str(args.port) or "", env_port or "")
     override_warning("--api-key", args.api_key, env_api_key or "")
@@ -674,8 +729,17 @@ def run_genres_command(args: argparse.Namespace) -> None:
         [i.strip() for i in item_ids_raw.split(",") if i.strip()]
         if item_ids_raw else None
     )
-
     _validate_genres_args(host, api_key, library, all_libraries, item_ids)
+    return host, port, api_key, library, all_libraries, item_ids
+
+
+def run_genres_command(args: argparse.Namespace) -> None:
+    """Main entry point for the genres command.
+
+    Args:
+        args: Parsed CLI arguments.
+    """
+    host, port, api_key, library, all_libraries, item_ids = _resolve_genres_config(args)
 
     # After _validate_genres_args, host and api_key are guaranteed non-None (or sys.exit was called)
     resolved_host: str = host  # type: ignore[assignment]
@@ -693,21 +757,9 @@ def run_genres_command(args: argparse.Namespace) -> None:
             sys.exit(1)
 
         user_id = get_user_id(client, base_url)
-
-        # Resolve library IDs
-        if all_libraries:
-            from emby_dedupe.api.search import get_all_library_ids
-
-            lib_infos = get_all_library_ids(client, base_url, resolved_api_key)
-            library_ids = [lib["id"] for lib in lib_infos]
-        else:
-            library_ids = []
-            for lib_name in library:
-                lib_id = get_library_id(client, base_url, lib_name)
-                if lib_id:
-                    library_ids.append(lib_id)
-                else:
-                    logger.warning(f"Library not found: {lib_name}")
+        library_ids = _resolve_library_ids(
+            client, base_url, resolved_api_key, library, all_libraries
+        )
 
         if args.action == "audit":
             _run_audit(client, base_url, library_ids, args)

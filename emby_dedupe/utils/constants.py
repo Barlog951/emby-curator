@@ -50,13 +50,14 @@ GENRE_UPDATE_DELAY_SEC = 0.1  # Rate limit: seconds between Emby POST updates fo
 # Maps variant/incorrect names to TMDB-standard canonical names (case-insensitive keys)
 # Based on real Emby audit (2026-02-23): 32 genres found across 2500+ items
 # NOTE: Musical≠Music, Children≠Family, Biography≠Documentary — intentionally NOT mapped
+_SCIENCE_FICTION = "Science Fiction"
 GENRE_NORMALIZATION_MAP = {
     # Typos found in real Emby audit
     "hisotry": "History",       # Typo, 1 item
     # Duplicates/standard variants
-    "sci-fi": "Science Fiction",
-    "sf": "Science Fiction",
-    "scifi": "Science Fiction",
+    "sci-fi": _SCIENCE_FICTION,
+    "sf": _SCIENCE_FICTION,
+    "scifi": _SCIENCE_FICTION,
     "suspense": "Thriller",     # 126 items
     "reality-tv": "Reality",    # 9 items
     # Non-English (Slovak/Czech) — found in real audits
@@ -71,7 +72,7 @@ GENRE_NORMALIZATION_MAP = {
     "akčný": "Action",              # Slovak
     "dobrodružný": "Adventure",     # Slovak
     "krimi": "Crime",               # Slovak/Czech colloquial
-    "vedeckofantastický": "Science Fiction",  # Slovak
+    "vedeckofantastický": _SCIENCE_FICTION,  # Slovak
     "horor": "Horror",              # Typo + Slovak (horor = horror)
     # Custom/junk — user confirmed "dada" means Comedy
     "dada": "Comedy",               # 1645 items!

@@ -28,6 +28,11 @@ app = typer.Typer(
 genres_app = typer.Typer(name="genres", help="Genre audit and management.")
 app.add_typer(genres_app, name="genres")
 
+# Shared help strings used across multiple genre subcommands
+_LOCK_OPT = "--lock/--no-lock"
+_ALL_LIBS_HELP = "Scan all Emby libraries."
+_ITEM_IDS_HELP = "Comma-separated Emby item IDs to process (skips full library scan)."
+
 
 @dataclass
 class AppConfig:
@@ -63,7 +68,7 @@ def common(
         0, "--verbose", "-v", count=True, help="Verbosity (-v, -vv, -vvv)."
     ),
     lock: bool = typer.Option(
-        True, "--lock/--no-lock", envvar="DEDUPE_LOCK", help="Lock genres after normalization."
+        True, _LOCK_OPT, envvar="DEDUPE_LOCK", help="Lock genres after normalization."
     ),
     doit: bool = typer.Option(
         False, "--doit/--no-doit", envvar="DEDUPE_DOIT", help="Execute changes (dry-run by default)."
@@ -204,7 +209,7 @@ def dedupe_cmd(
 
 @app.command("check")
 def check_cmd(
-    ctx: typer.Context,
+    ctx: typer.Context,  # NOSONAR — typer CLI requires one param per CLI option; cannot reduce
     name: Optional[str] = typer.Option(None, "--name", help="Media name to search for."),
     year: Optional[int] = typer.Option(None, "--year", help="Release year (movies)."),
     imdb: Optional[str] = typer.Option(None, "--imdb", help="IMDB ID (e.g. tt1375666)."),
@@ -333,12 +338,8 @@ def genres_audit(
     output_json: Optional[str] = typer.Option(
         None, "--output-json", help="Save audit results as JSON to this path."
     ),
-    all_libraries: bool = typer.Option(False, "--all-libraries", help="Scan all Emby libraries."),
-    item_ids: Optional[str] = typer.Option(
-        None,
-        "--item-ids",
-        help="Comma-separated Emby item IDs to process (skips full library scan).",
-    ),
+    all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
+    item_ids: Optional[str] = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
 ) -> None:
     """Audit genre health across libraries (read-only)."""
     _run_genres_subcommand(
@@ -355,16 +356,12 @@ def genres_audit(
 def genres_normalize(
     ctx: typer.Context,
     doit: bool = typer.Option(False, "--doit", help="Apply normalization (dry-run by default)."),
-    lock: bool = typer.Option(True, "--lock/--no-lock", help="Lock genres after update."),
+    lock: bool = typer.Option(True, _LOCK_OPT, help="Lock genres after update."),
     repair_dupes: bool = typer.Option(
         False, "--repair-dupes", help="Also fix duplicate genres caused by normalization collisions."
     ),
-    all_libraries: bool = typer.Option(False, "--all-libraries", help="Scan all Emby libraries."),
-    item_ids: Optional[str] = typer.Option(
-        None,
-        "--item-ids",
-        help="Comma-separated Emby item IDs to process (skips full library scan).",
-    ),
+    all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
+    item_ids: Optional[str] = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
 ) -> None:
     """Fix variant genre names (Sci-Fi→Science Fiction, dada→Comedy …)."""
     _run_genres_subcommand(
@@ -382,7 +379,7 @@ def genres_normalize(
 def genres_fix(
     ctx: typer.Context,
     doit: bool = typer.Option(False, "--doit", help="Apply changes (dry-run by default)."),
-    lock: bool = typer.Option(True, "--lock/--no-lock", help="Lock genres after update."),
+    lock: bool = typer.Option(True, _LOCK_OPT, help="Lock genres after update."),
     gaps_only: bool = typer.Option(False, "--gaps-only", help="Only process items with no genres."),
     validate: bool = typer.Option(
         False, "--validate", help="Compare existing genres against TMDB/OMDb and add missing ones."
@@ -390,12 +387,8 @@ def genres_fix(
     tmdb_api_key: Optional[str] = typer.Option(
         None, "--tmdb-api-key", envvar="DEDUPE_TMDB_API_KEY", help="TMDB API key."
     ),
-    all_libraries: bool = typer.Option(False, "--all-libraries", help="Scan all Emby libraries."),
-    item_ids: Optional[str] = typer.Option(
-        None,
-        "--item-ids",
-        help="Comma-separated Emby item IDs to process (skips full library scan).",
-    ),
+    all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
+    item_ids: Optional[str] = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
 ) -> None:
     """Fetch genres from TMDB/OMDb and fill gaps or validate existing genres."""
     _run_genres_subcommand(
