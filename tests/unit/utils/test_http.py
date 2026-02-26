@@ -48,12 +48,25 @@ class TestHttpUtils:
         
         assert result is False
 
-    def test_handle_giveup(self):
-        """Test handle_giveup logs an error message."""
-        details = {'tries': 5}
-        
-        # Just call the function to ensure it doesn't raise exceptions
-        # We can't easily mock the logger because it's a module-level variable
+    def test_handle_giveup_generic(self):
+        """Test handle_giveup with a generic exception."""
+        details = {'tries': 5, 'exception': RuntimeError("timeout")}
+        handle_giveup(details)
+
+    def test_handle_giveup_http_status_error(self):
+        """Test handle_giveup includes HTTP status and URL for HTTPStatusError."""
+        mock_request = Mock()
+        mock_request.url = "http://emby/Users/u1/Items/42"
+        mock_response = Mock()
+        mock_response.status_code = 404
+        exc = httpx.HTTPStatusError("404", request=mock_request, response=mock_response)
+        details = {'tries': 1, 'exception': exc}
+        # Should not raise; just log
+        handle_giveup(details)
+
+    def test_handle_giveup_no_exception(self):
+        """Test handle_giveup when no exception key present."""
+        details = {'tries': 3}
         handle_giveup(details)
 
     def test_make_http_request_success(self):

@@ -63,23 +63,21 @@ def _run_genre_fix() -> None:
     cli = f"{VENV_BIN}/emby-dedupe"
     ids_arg = ",".join(item_ids)
 
-    for label, cmd in [
-        ("normalize", [cli, "genres", "normalize", "--doit", "--item-ids", ids_arg]),
-        ("fix+validate", [cli, "genres", "fix", "--doit", "--validate", "--item-ids", ids_arg]),
-    ]:
-        logger.info(f"--- {label} ---")
-        try:
-            result = subprocess.run(
-                cmd, cwd=WORKDIR, text=True,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            )
-            for line in result.stdout.splitlines():
-                if line.strip():
-                    logger.info(line)
-            if result.returncode != 0:
-                logger.error(f"{label} exited with code {result.returncode}")
-        except Exception as exc:
-            logger.error(f"{label} failed: {exc}")
+    # Single "genres process" command: normalize + fix in one pass, items fetched once
+    cmd = [cli, "genres", "process", "--doit", "--validate", "--item-ids", ids_arg]
+    logger.info("--- normalize + fix (single pass) ---")
+    try:
+        result = subprocess.run(
+            cmd, cwd=WORKDIR, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        )
+        for line in result.stdout.splitlines():
+            if line.strip():
+                logger.info(line)
+        if result.returncode != 0:
+            logger.error(f"genres process exited with code {result.returncode}")
+    except Exception as exc:
+        logger.error(f"genres process failed: {exc}")
 
     logger.info("=== Genre fix complete ===")
 

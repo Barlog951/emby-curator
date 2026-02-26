@@ -35,7 +35,14 @@ def handle_giveup(details: Dict[str, Any]) -> None:
     Args:
         details: Details about the retries that were attempted.
     """
-    logger.error(f"Giving up on request after retries: {details['tries']}")
+    exc = details.get("exception")
+    if isinstance(exc, httpx.HTTPStatusError):
+        logger.error(
+            f"Giving up after {details['tries']} tries: "
+            f"HTTP {exc.response.status_code} {exc.request.url}"
+        )
+    else:
+        logger.error(f"Giving up after {details['tries']} tries: {exc}")
 
 
 @backoff.on_exception(
