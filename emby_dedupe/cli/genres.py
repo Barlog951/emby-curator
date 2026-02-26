@@ -23,6 +23,7 @@ from emby_dedupe.api.genres import (
     build_genre_audit,
     fetch_all_genres,
     fetch_full_item,
+    fetch_items_by_ids,
     fetch_items_with_genres,
     get_user_id,
     normalize_genre_name,
@@ -188,10 +189,10 @@ def _fetch_items_by_ids(
     user_id: str,
     item_ids: list[str],
 ) -> list[dict]:
-    """Fetch specific items by ID via the single-item endpoint.
+    """Fetch specific items by ID via the batch endpoint.
 
-    Used by --item-ids mode to process only specific items without a full
-    library scan. Returns the raw stored item dicts (not batch-normalized).
+    Uses Emby's ``Ids`` query parameter to retrieve up to 100 items per request.
+    Non-existent IDs are silently skipped by Emby (no 404 noise).
 
     Args:
         client: Configured httpx client.
@@ -200,15 +201,14 @@ def _fetch_items_by_ids(
         item_ids: List of item IDs to fetch.
 
     Returns:
-        List of full item dicts. Items that fail to fetch are skipped.
+        List of full item dicts. Items that no longer exist are omitted.
     """
-    items = []
-    for iid in item_ids:
-        try:
-            item = fetch_full_item(client, base_url, user_id, iid)
-            items.append(item)
-        except Exception as e:
-            logger.warning(f"Could not fetch item {iid}: {e}")
+    items = fetch_items_by_ids(client, base_url, user_id, item_ids)
+    if len(items) < len(item_ids):
+        logger.info(
+            f"Batch fetch: {len(items)} of {len(item_ids)} items found "
+            f"({len(item_ids) - len(items)} no longer exist)"
+        )
     return items
 
 
@@ -431,6 +431,7 @@ def _run_normalize(
     library_ids: list[str],
     args: argparse.Namespace,
     item_ids: Optional[list[str]] = None,
+    prefetched_items: Optional[list[dict]] = None,
 ) -> None:
     """Run the genre normalization action.
 
@@ -441,8 +442,11 @@ def _run_normalize(
         library_ids: List of library IDs to scan.
         args: Parsed CLI arguments.
         item_ids: If provided, only process these specific item IDs.
+        prefetched_items: Pre-fetched items to use instead of fetching (avoids double-fetch).
     """
-    if item_ids:
+    if prefetched_items is not None:
+        items = prefetched_items
+    elif item_ids:
         # Targeted mode: fetch only specific items (from webhook)
         items = _fetch_items_by_ids(client, base_url, user_id, item_ids)
     else:
@@ -620,6 +624,7 @@ def _run_fix(
     library_ids: list[str],
     args: argparse.Namespace,
     item_ids: Optional[list[str]] = None,
+    prefetched_items: Optional[list[dict]] = None,
 ) -> None:
     """Fetch genres from TMDB/OMDb and fill gaps or validate existing genres.
 
@@ -649,7 +654,10 @@ def _run_fix(
 
     cache = load_genre_cache()
 
-    if item_ids:
+    if prefetched_items is not None:
+        items = prefetched_items
+        print(f"Processing {len(items)} specific item(s) (normalize + validate)")
+    elif item_ids:
         # Targeted mode: fetch only specific items, always validate (check + fill)
         items = _fetch_items_by_ids(client, base_url, user_id, item_ids)
         print(f"Processing {len(items)} specific item(s) (normalize + validate)")
@@ -675,6 +683,48 @@ def _run_fix(
         )
     finally:
         save_genre_cache(cache)
+
+
+def _run_process(
+    client: httpx.Client,
+    base_url: str,
+    user_id: str,
+    library_ids: list[str],
+    args: argparse.Namespace,
+    item_ids: list[str],
+) -> None:
+    """Run normalize + fix in a single pass, fetching items only once.
+
+    Used by the webhook listener to avoid double-fetching when both
+    normalize and fix need to run on the same set of item IDs.
+
+    Args:
+        client: Configured httpx client.
+        base_url: Emby server base URL with port.
+        user_id: Emby user ID.
+        library_ids: List of library IDs (unused in item-ids mode).
+        args: Parsed CLI arguments.
+        item_ids: List of Emby item IDs to process.
+    """
+    items = _fetch_items_by_ids(client, base_url, user_id, item_ids)
+    print(f"Processing {len(items)} item(s) (normalize + fix)")
+
+    # Phase 1: Normalize
+    items_to_update = _collect_normalization_candidates(items)
+    if items_to_update and args.doit:
+        _apply_normalization_updates(
+            items_to_update, client, base_url, user_id, item_ids, args.lock
+        )
+        # Re-fetch to get fresh state after normalize modified genres on the server
+        items = _fetch_items_by_ids(client, base_url, user_id, item_ids)
+    elif not items_to_update:
+        print("All genres are already normalized.")
+
+    # Phase 2: Fix (reuse fetched items — no second fetch)
+    _run_fix(
+        client, base_url, user_id, library_ids, args,
+        item_ids=item_ids, prefetched_items=items,
+    )
 
 
 def _resolve_library_ids(
@@ -765,6 +815,8 @@ def run_genres_command(args: argparse.Namespace) -> None:
             _run_audit(client, base_url, library_ids, args)
         elif args.action == "fix":
             _run_fix(client, base_url, user_id, library_ids, args, item_ids=item_ids)
+        elif args.action == "process":
+            _run_process(client, base_url, user_id, library_ids, args, item_ids=item_ids)
         else:
             _run_normalize(client, base_url, user_id, library_ids, args, item_ids=item_ids)
 

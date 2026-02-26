@@ -7,6 +7,7 @@ import httpx
 
 from emby_dedupe.api.genres import (
     build_genre_audit,
+    fetch_items_by_ids,
     fetch_items_with_genres,
     normalize_genre_name,
     suggest_genre_mappings,
@@ -509,3 +510,110 @@ class TestSuggestGenreMappings:
     def test_no_match_returns_empty_suggestions(self):
         results = suggest_genre_mappings({"XyzQwerty": 3})
         assert results[0]["suggestions"] == []
+
+
+class TestFetchItemsByIds:
+    def test_returns_items_from_batch_endpoint(self, mocker):
+        mock_client = mocker.MagicMock()
+        mock_resp = mocker.MagicMock()
+        mock_resp.json.return_value = {
+            "Items": [
+                {"Id": "1", "Name": "Movie A", "Genres": ["Drama"]},
+                {"Id": "2", "Name": "Movie B", "Genres": []},
+            ],
+            "TotalRecordCount": 2,
+        }
+        mock_resp.is_success = True
+        mock_client.request.return_value = mock_resp
+
+        items = fetch_items_by_ids(mock_client, "http://emby", "user-123", ["1", "2"])
+
+        assert len(items) == 2
+        assert items[0]["Id"] == "1"
+        assert items[1]["Id"] == "2"
+
+    def test_uses_ids_parameter(self, mocker):
+        mock_client = mocker.MagicMock()
+        mock_resp = mocker.MagicMock()
+        mock_resp.json.return_value = {"Items": [], "TotalRecordCount": 0}
+        mock_resp.is_success = True
+        mock_client.request.return_value = mock_resp
+
+        fetch_items_by_ids(mock_client, "http://emby", "user-abc", ["10", "20", "30"])
+
+        call_kwargs = mock_client.request.call_args[1]
+        assert call_kwargs["params"]["Ids"] == "10,20,30"
+
+    def test_uses_user_scoped_endpoint(self, mocker):
+        mock_client = mocker.MagicMock()
+        mock_resp = mocker.MagicMock()
+        mock_resp.json.return_value = {"Items": [], "TotalRecordCount": 0}
+        mock_resp.is_success = True
+        mock_client.request.return_value = mock_resp
+
+        fetch_items_by_ids(mock_client, "http://emby", "user-abc", ["10"])
+
+        call_url = mock_client.request.call_args[0][1]
+        assert call_url == "http://emby/Users/user-abc/Items"
+
+    def test_chunks_large_id_lists(self, mocker):
+        mock_client = mocker.MagicMock()
+        mock_resp = mocker.MagicMock()
+        mock_resp.json.return_value = {"Items": [{"Id": "x"}], "TotalRecordCount": 1}
+        mock_resp.is_success = True
+        mock_client.request.return_value = mock_resp
+
+        ids = [str(i) for i in range(250)]
+        items = fetch_items_by_ids(mock_client, "http://emby", "user-123", ids, chunk_size=100)
+
+        # 250 IDs / 100 chunk_size = 3 requests
+        assert mock_client.request.call_count == 3
+        # 3 chunks × 1 item per response = 3 items
+        assert len(items) == 3
+
+    def test_empty_ids_returns_empty(self, mocker):
+        mock_client = mocker.MagicMock()
+        items = fetch_items_by_ids(mock_client, "http://emby", "user-123", [])
+        assert items == []
+        mock_client.request.assert_not_called()
+
+    def test_skips_nonexistent_ids_silently(self, mocker):
+        """Emby returns only items that exist; ghost IDs produce no errors."""
+        mock_client = mocker.MagicMock()
+        mock_resp = mocker.MagicMock()
+        # Asked for 3 IDs but only 1 exists
+        mock_resp.json.return_value = {
+            "Items": [{"Id": "2", "Name": "Exists", "Genres": []}],
+            "TotalRecordCount": 1,
+        }
+        mock_resp.is_success = True
+        mock_client.request.return_value = mock_resp
+
+        items = fetch_items_by_ids(mock_client, "http://emby", "user-123", ["1", "2", "3"])
+
+        assert len(items) == 1
+        assert items[0]["Id"] == "2"
+
+    def test_continues_on_chunk_failure(self, mocker):
+        """If one chunk fails, remaining chunks are still processed."""
+        mock_client = mocker.MagicMock()
+        good_resp = mocker.MagicMock()
+        good_resp.json.return_value = {
+            "Items": [{"Id": "200", "Genres": []}],
+            "TotalRecordCount": 1,
+        }
+        good_resp.is_success = True
+
+        mocker.patch(
+            "emby_dedupe.api.genres.make_http_request",
+            side_effect=[
+                httpx.RequestError("timeout"),  # chunk 1 fails
+                good_resp,  # chunk 2 succeeds
+            ],
+        )
+
+        ids = [str(i) for i in range(6)]
+        items = fetch_items_by_ids(mock_client, "http://emby", "user-123", ids, chunk_size=3)
+
+        assert len(items) == 1
+        assert items[0]["Id"] == "200"

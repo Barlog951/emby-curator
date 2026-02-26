@@ -375,6 +375,35 @@ def genres_normalize(
     )
 
 
+@genres_app.command("process")
+def genres_process(
+    ctx: typer.Context,
+    doit: bool = typer.Option(False, "--doit", help="Apply changes (dry-run by default)."),
+    lock: bool = typer.Option(True, _LOCK_OPT, help="Lock genres after update."),
+    validate: bool = typer.Option(
+        False, "--validate", help="Compare existing genres against TMDB/OMDb and add missing ones."
+    ),
+    tmdb_api_key: Optional[str] = typer.Option(
+        None, "--tmdb-api-key", envvar="DEDUPE_TMDB_API_KEY", help="TMDB API key."
+    ),
+    item_ids: str = typer.Option(..., "--item-ids", help="Comma-separated Emby item IDs (required)."),
+) -> None:
+    """Normalize + fix in a single pass (webhook listener mode).
+
+    Fetches items once and runs both normalize and fix, avoiding double-fetch.
+    Requires --item-ids.
+    """
+    _run_genres_subcommand(
+        ctx,
+        action="process",
+        doit=doit,
+        lock=lock,
+        validate=validate,
+        tmdb_api_key=tmdb_api_key,
+        item_ids=item_ids,
+    )
+
+
 @genres_app.command("fix")
 def genres_fix(
     ctx: typer.Context,

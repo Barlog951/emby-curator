@@ -19,6 +19,13 @@ from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.logging import logger
 
+# Shared metadata fields for genre-related item fetches
+_GENRE_FIELDS = (
+    "Genres,GenreItems,ProviderIds,LockedFields,Overview,Tags,Studios,"
+    "OfficialRating,CommunityRating,CriticRating,SortName,Taglines,"
+    "DateCreated,PremiereDate,ProductionYear,EndDate,Status,AirDays"
+)
+
 
 def get_user_id(client: httpx.Client, base_url: str) -> str:
     """Fetch the first user's ID from the Emby server.
@@ -91,17 +98,58 @@ def fetch_items_with_genres(
     base_params = {
         "Recursive": "true",
         "IncludeItemTypes": "Movie,Series",
-        "Fields": (
-            "Genres,GenreItems,ProviderIds,LockedFields,Overview,Tags,Studios,"
-            "OfficialRating,CommunityRating,CriticRating,SortName,Taglines,"
-            "DateCreated,PremiereDate,ProductionYear,EndDate,Status,AirDays"
-        ),
+        "Fields": _GENRE_FIELDS,
     }
 
     target_ids: list[Optional[str]] = list(library_ids) if library_ids else [None]
 
     for lib_id in target_ids:
         all_items.extend(_fetch_library_items(client, base_url, user_id, lib_id, base_params))
+
+    return all_items
+
+
+def fetch_items_by_ids(
+    client: httpx.Client,
+    base_url: str,
+    user_id: str,
+    item_ids: list[str],
+    chunk_size: int = 100,
+) -> list[dict]:
+    """Fetch specific items by ID using the batch endpoint.
+
+    Uses the ``Ids`` query parameter on ``/Users/{user_id}/Items`` to retrieve
+    multiple items per request.  Non-existent IDs are silently ignored by Emby
+    (no 404 errors), so transient/deleted items simply don't appear in the result.
+
+    Args:
+        client: Configured httpx client with auth headers.
+        base_url: Emby server base URL with port.
+        user_id: Emby user ID for the user-scoped endpoint.
+        item_ids: List of Emby item IDs to fetch.
+        chunk_size: Max IDs per request (default 100).
+
+    Returns:
+        List of full item dicts.  Items that no longer exist are omitted.
+    """
+    if not item_ids:
+        return []
+
+    all_items: list[dict] = []
+
+    for i in range(0, len(item_ids), chunk_size):
+        chunk = item_ids[i : i + chunk_size]
+        endpoint = f"{base_url}/Users/{user_id}/Items"
+        params = {
+            "Ids": ",".join(chunk),
+            "Fields": _GENRE_FIELDS,
+        }
+        try:
+            response = make_http_request(client, "GET", endpoint, params=params)
+            data = response.json()
+            all_items.extend(data.get("Items", []))
+        except (httpx.HTTPStatusError, httpx.RequestError) as e:
+            logger.warning(f"Failed to batch-fetch {len(chunk)} items: {e}")
 
     return all_items
 
