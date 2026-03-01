@@ -258,6 +258,22 @@ def calculate_bpp(
     return bitrate / total_pixels_per_second
 
 
+def _get_codec_efficiency_ratio(codec: Optional[str]) -> float:
+    """Return the codec compression efficiency ratio vs H.264 baseline.
+
+    HEVC achieves ~35% better compression than H.264, AV1 ~50% better.
+    Used to normalize BPP and bitrate thresholds across codecs.
+    """
+    if not codec:
+        return 1.0
+    codec_lower = codec.lower()
+    if any(x in codec_lower for x in ("hevc", "x265", "h265")):
+        return 0.65
+    if "av1" in codec_lower:
+        return 0.5
+    return 1.0
+
+
 def get_bpp_multiplier(bpp: float, codec: Optional[str] = None) -> float:
     """Get quality multiplier based on bits per pixel.
 
@@ -273,13 +289,7 @@ def get_bpp_multiplier(bpp: float, codec: Optional[str] = None) -> float:
         Multiplier (0.5-1.2)
     """
     # Adjust BPP for codec efficiency before comparing to bands
-    effective_bpp = bpp
-    if codec:
-        codec_lower = codec.lower()
-        if any(x in codec_lower for x in ("hevc", "x265", "h265")):
-            effective_bpp = bpp / 0.65  # HEVC equivalent in H.264 terms
-        elif "av1" in codec_lower:
-            effective_bpp = bpp / 0.5   # AV1 equivalent in H.264 terms
+    effective_bpp = bpp / _get_codec_efficiency_ratio(codec)
 
     if effective_bpp >= BPP_QUALITY_BANDS["excellent"]:
         return 1.1  # Excellent quality (tightened from 1.2 to prevent
@@ -313,13 +323,7 @@ def has_quality_red_flags(
         (has_red_flag, reason)
     """
     # Apply codec efficiency adjustment to thresholds
-    codec_efficiency = 1.0
-    if codec:
-        codec_lower = codec.lower()
-        if any(x in codec_lower for x in ["hevc", "x265", "h265"]):
-            codec_efficiency = 0.65  # HEVC ~35% more efficient
-        elif "av1" in codec_lower:
-            codec_efficiency = 0.5   # AV1 ~50% more efficient
+    codec_efficiency = _get_codec_efficiency_ratio(codec)
 
     # Check minimum bitrate by resolution
     if resolution_height >= 2000:  # 4K
@@ -563,8 +567,8 @@ class ProposedQuality:
         if self.source_quality_tier:
             # Get the multiplier for the provided tier
             provided_multiplier = SOURCE_QUALITY_TIERS.get(
-                self.source_quality_tier, {}
-            ).get("bonus", 0.95)
+                self.source_quality_tier, SOURCE_QUALITY_TIERS["unknown"]
+            )["bonus"]
 
             # Cross-check if path/name also provided
             self._cross_check_source_quality(provided_multiplier)
@@ -748,13 +752,13 @@ class ExistingQuality:
             item_name: Item name.
 
         Returns:
-            Source quality tier name or None.
+            Source quality tier name (falls back to ``"unknown"`` when no tier matches).
         """
         source_multiplier = detect_source_quality(item_path, item_name)
         for tier_name, tier_info in SOURCE_QUALITY_TIERS.items():
             if tier_info["bonus"] == source_multiplier:
                 return tier_name
-        return None
+        return "unknown"
 
     @staticmethod
     def _infer_source_quality_from_streams(
@@ -843,7 +847,7 @@ class ExistingQuality:
         source_quality_tier = cls._detect_source_quality_tier(item_path, item_name)
 
         # Fallback: infer from stream metadata when path/name gives unknown
-        if source_quality_tier is None or source_quality_tier == "unknown":
+        if source_quality_tier == "unknown":
             audio_codec = audio_stream.get("Codec") if audio_stream else None
             item_bitrate = item.get("Bitrate", 0)
             inferred = cls._infer_source_quality_from_streams(item_bitrate, height, audio_codec)
@@ -918,8 +922,8 @@ class ExistingQuality:
         # otherwise fall back to path/name detection
         if self.source_quality_tier and self.source_quality_tier != "unknown":
             source_multiplier = SOURCE_QUALITY_TIERS.get(
-                self.source_quality_tier, {}
-            ).get("bonus", 0.95)
+                self.source_quality_tier, SOURCE_QUALITY_TIERS["unknown"]
+            )["bonus"]
         else:
             source_multiplier = detect_source_quality_with_rtn(self.path, self.name)
         bpp_multiplier = get_bpp_multiplier(bpp, self.codec)
@@ -1092,12 +1096,7 @@ def _create_proposed_as_existing(proposed: ProposedQuality) -> ExistingQuality:
             width, height = RESOLUTION_MAP[res_lower]
 
     # Detect source quality and AI upscale for proposed item
-    proposed_source_multiplier = detect_source_quality(proposed.path, proposed.name)
-    proposed_source_tier = None
-    for tier_name, tier_info in SOURCE_QUALITY_TIERS.items():
-        if tier_info["bonus"] == proposed_source_multiplier:
-            proposed_source_tier = tier_name
-            break
+    proposed_source_tier = ExistingQuality._detect_source_quality_tier(proposed.path, proposed.name)
     proposed_is_ai_upscale = detect_ai_upscale(proposed.path, proposed.name)
 
     return ExistingQuality(

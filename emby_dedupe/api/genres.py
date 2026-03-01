@@ -19,12 +19,15 @@ from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.logging import logger
 
-# Shared metadata fields for genre-related item fetches
+# Full metadata fields for library-wide genre audit/reports
 _GENRE_FIELDS = (
     "Genres,GenreItems,ProviderIds,LockedFields,Overview,Tags,Studios,"
     "OfficialRating,CommunityRating,CriticRating,SortName,Taglines,"
     "DateCreated,PremiereDate,ProductionYear,EndDate,Status,AirDays"
 )
+
+# Minimal fields for targeted batch fetch (webhook/item-ids mode)
+_GENRE_FIELDS_BATCH = "Genres,GenreItems,ProviderIds,LockedFields"
 
 
 def get_user_id(client: httpx.Client, base_url: str) -> str:
@@ -142,7 +145,7 @@ def fetch_items_by_ids(
         endpoint = f"{base_url}/Users/{user_id}/Items"
         params = {
             "Ids": ",".join(chunk),
-            "Fields": _GENRE_FIELDS,
+            "Fields": _GENRE_FIELDS_BATCH,
         }
         try:
             response = make_http_request(client, "GET", endpoint, params=params)
@@ -150,6 +153,12 @@ def fetch_items_by_ids(
             all_items.extend(data.get("Items", []))
         except (httpx.HTTPStatusError, httpx.RequestError) as e:
             logger.warning(f"Failed to batch-fetch {len(chunk)} items: {e}")
+
+    if len(all_items) < len(item_ids):
+        logger.info(
+            f"Batch fetch: {len(all_items)} of {len(item_ids)} items found "
+            f"({len(item_ids) - len(all_items)} no longer exist)"
+        )
 
     return all_items
 
@@ -165,12 +174,13 @@ def _fetch_library_items(
     items: list[dict] = []
     start_index = 0
     page = 0
+    endpoint = f"{base_url}/Users/{user_id}/Items" if user_id else f"{base_url}/Items"
+    params = {**base_params, "Limit": str(PAGE_SIZE)}
+    if lib_id is not None:
+        params["ParentId"] = lib_id
 
     while True:
-        endpoint = f"{base_url}/Users/{user_id}/Items" if user_id else f"{base_url}/Items"
-        params = {**base_params, "StartIndex": str(start_index), "Limit": str(PAGE_SIZE)}
-        if lib_id is not None:
-            params["ParentId"] = lib_id
+        params["StartIndex"] = str(start_index)
 
         try:
             response = make_http_request(client, "GET", endpoint, params=params)

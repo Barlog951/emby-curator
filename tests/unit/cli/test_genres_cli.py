@@ -377,7 +377,7 @@ class TestFixAction:
         mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
         mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
         mock_fetch_genres = mocker.patch(
-            "emby_dedupe.api.genre_providers.fetch_genres_for_item", return_value=[]
+            "emby_dedupe.cli.genres.fetch_genres_for_item", return_value=[]
         )
 
         run_genres_command(self._make_fix_args(gaps_only=True))
@@ -391,8 +391,8 @@ class TestFixAction:
         self._setup_common_mocks(mocker)
         items = [{"Id": "1", "Name": "Movie", "Genres": [], "ProviderIds": {"Tmdb": "123"}}]
         mocker.patch("emby_dedupe.cli.genres.fetch_items_with_genres", return_value=items)
-        mocker.patch("emby_dedupe.api.genre_providers.fetch_genres_for_item", return_value=["Drama"])
-        mocker.patch("emby_dedupe.api.genre_providers.compare_genres", return_value={
+        mocker.patch("emby_dedupe.cli.genres.fetch_genres_for_item", return_value=["Drama"])
+        mocker.patch("emby_dedupe.cli.genres.compare_genres", return_value={
             "missing_from_emby": ["Drama"], "extra_in_emby": [],
             "merged": ["Drama"], "has_diff": True,
         })
@@ -408,8 +408,8 @@ class TestFixAction:
         self._setup_common_mocks(mocker)
         items = [{"Id": "1", "Name": "Movie", "Genres": [], "ProviderIds": {"Tmdb": "123"}}]
         mocker.patch("emby_dedupe.cli.genres.fetch_items_with_genres", return_value=items)
-        mocker.patch("emby_dedupe.api.genre_providers.fetch_genres_for_item", return_value=["Drama"])
-        mocker.patch("emby_dedupe.api.genre_providers.compare_genres", return_value={
+        mocker.patch("emby_dedupe.cli.genres.fetch_genres_for_item", return_value=["Drama"])
+        mocker.patch("emby_dedupe.cli.genres.compare_genres", return_value={
             "missing_from_emby": ["Drama"], "extra_in_emby": [],
             "merged": ["Drama"], "has_diff": True,
         })
@@ -437,7 +437,7 @@ class TestFixAction:
         self._setup_common_mocks(mocker)
         items = [{"Id": "1", "Name": "Unknown Movie", "Genres": [], "ProviderIds": {}}]
         mocker.patch("emby_dedupe.cli.genres.fetch_items_with_genres", return_value=items)
-        mocker.patch("emby_dedupe.api.genre_providers.fetch_genres_for_item", return_value=[])
+        mocker.patch("emby_dedupe.cli.genres.fetch_genres_for_item", return_value=[])
         mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
         mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
         mock_update = mocker.patch("emby_dedupe.cli.genres.update_item_genres")
@@ -456,7 +456,7 @@ class TestFixAction:
         mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
         mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
         mock_fetch_genres = mocker.patch(
-            "emby_dedupe.api.genre_providers.fetch_genres_for_item", return_value=[]
+            "emby_dedupe.cli.genres.fetch_genres_for_item", return_value=[]
         )
 
         run_genres_command(self._make_fix_args(validate=True, gaps_only=False))
@@ -470,7 +470,7 @@ class TestFixAction:
         items = [{"Id": "1", "Name": "Bad Item", "Genres": [], "ProviderIds": {"Tmdb": "123"}}]
         mocker.patch("emby_dedupe.cli.genres.fetch_items_with_genres", return_value=items)
         mocker.patch(
-            "emby_dedupe.api.genre_providers.fetch_genres_for_item",
+            "emby_dedupe.cli.genres.fetch_genres_for_item",
             side_effect=RuntimeError("network failure"),
         )
         mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
@@ -539,10 +539,10 @@ class TestWebhookCompatibility:
         mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
         mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
         mocker.patch(
-            "emby_dedupe.api.genre_providers.fetch_genres_for_item", return_value=["Drama", "Thriller"]
+            "emby_dedupe.cli.genres.fetch_genres_for_item", return_value=["Drama", "Thriller"]
         )
         mocker.patch(
-            "emby_dedupe.api.genre_providers.compare_genres",
+            "emby_dedupe.cli.genres.compare_genres",
             return_value={
                 "missing_from_emby": ["Drama", "Thriller"],
                 "extra_in_emby": [],
@@ -603,9 +603,9 @@ class TestWebhookCompatibility:
         mock_update = mocker.patch("emby_dedupe.cli.genres.update_item_genres", return_value=True)
         mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
         mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
-        mocker.patch("emby_dedupe.api.genre_providers.fetch_genres_for_item", return_value=[])
+        mocker.patch("emby_dedupe.cli.genres.fetch_genres_for_item", return_value=[])
         mocker.patch(
-            "emby_dedupe.api.genre_providers.compare_genres",
+            "emby_dedupe.cli.genres.compare_genres",
             return_value={"missing_from_emby": [], "extra_in_emby": [], "merged": [], "has_diff": False},
         )
 

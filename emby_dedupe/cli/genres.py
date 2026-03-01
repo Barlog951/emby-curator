@@ -6,10 +6,7 @@ Provides audit and normalization of Emby library genres.
 import argparse
 import json
 import sys
-from typing import TYPE_CHECKING, Optional
-
-if TYPE_CHECKING:
-    from emby_dedupe.api.genre_providers import RateLimiter
+from typing import Optional
 
 import httpx
 from tqdm import tqdm
@@ -41,6 +38,7 @@ from emby_dedupe.utils.constants import (
     ENV_DEDUPE_TMDB_API_KEY,
     GENRE_NORMALIZATION_MAP,
 )
+from emby_dedupe.api.genre_providers import RateLimiter, compare_genres, fetch_genres_for_item
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.logging import logger, set_logging_level
 
@@ -183,34 +181,6 @@ def _validate_genres_args(
         sys.exit(1)
 
 
-def _fetch_items_by_ids(
-    client: httpx.Client,
-    base_url: str,
-    user_id: str,
-    item_ids: list[str],
-) -> list[dict]:
-    """Fetch specific items by ID via the batch endpoint.
-
-    Uses Emby's ``Ids`` query parameter to retrieve up to 100 items per request.
-    Non-existent IDs are silently skipped by Emby (no 404 noise).
-
-    Args:
-        client: Configured httpx client.
-        base_url: Emby server base URL with port.
-        user_id: Emby user ID.
-        item_ids: List of item IDs to fetch.
-
-    Returns:
-        List of full item dicts. Items that no longer exist are omitted.
-    """
-    items = fetch_items_by_ids(client, base_url, user_id, item_ids)
-    if len(items) < len(item_ids):
-        logger.info(
-            f"Batch fetch: {len(items)} of {len(item_ids)} items found "
-            f"({len(item_ids) - len(items)} no longer exist)"
-        )
-    return items
-
 
 def _print_genre_counts(genre_counts: dict) -> None:
     """Print genre frequency table with normalization hints."""
@@ -238,9 +208,8 @@ def _print_normalization_candidates(normalization_candidates: list) -> None:
     for candidate in normalization_candidates:
         for orig, suggested in zip(candidate["current_genres"], candidate["suggested_genres"]):
             if orig != suggested:
-                variant_item_counts.setdefault(suggested, {})[orig] = (
-                    variant_item_counts.get(suggested, {}).get(orig, 0) + 1
-                )
+                inner = variant_item_counts.setdefault(suggested, {})
+                inner[orig] = inner.get(orig, 0) + 1
     for canonical, variants in sorted(variant_item_counts.items()):
         for variant, item_count in sorted(variants.items(), key=lambda x: x[1], reverse=True):
             print(f"  {variant} → {canonical}: {item_count} items")
@@ -448,7 +417,7 @@ def _run_normalize(
         items = prefetched_items
     elif item_ids:
         # Targeted mode: fetch only specific items (from webhook)
-        items = _fetch_items_by_ids(client, base_url, user_id, item_ids)
+        items = fetch_items_by_ids(client, base_url, user_id, item_ids)
     else:
         # Use the non-user-scoped endpoint for detection: it returns raw stored genre names
         # (e.g. "Suspense"). The user-scoped endpoint silently normalises some names in its
@@ -499,8 +468,6 @@ def _create_provider_clients(
         Tuple of (tmdb_client, tmdb_limiter, omdb_client, omdb_limiter).
         Each pair is (None, None) when the corresponding provider is disabled.
     """
-    from emby_dedupe.api.genre_providers import RateLimiter
-
     tmdb_client = (
         httpx.Client(headers={"Authorization": f"Bearer {tmdb_key}"}) if tmdb_key else None
     )
@@ -518,8 +485,6 @@ def _process_single_item_genres(
     item_ids: Optional[list], args,
 ) -> str:
     """Process one item's external genres. Returns status: no_data|no_diff|dry_run|updated|error."""
-    from emby_dedupe.api.genre_providers import compare_genres, fetch_genres_for_item
-
     try:
         external_genres = fetch_genres_for_item(
             item, tmdb_client, tmdb_limiter, omdb_client, omdb_limiter, omdb_keys, cache
@@ -554,9 +519,9 @@ def _process_single_item_genres(
 def _apply_genre_updates(
     items: list[dict],
     tmdb_client: Optional[httpx.Client],
-    tmdb_limiter: Optional["RateLimiter"],
+    tmdb_limiter: Optional[RateLimiter],
     omdb_client: Optional[httpx.Client],
-    omdb_limiter: Optional["RateLimiter"],
+    omdb_limiter: Optional[RateLimiter],
     omdb_keys: list[str],
     cache: dict,
     client: httpx.Client,
@@ -659,7 +624,7 @@ def _run_fix(
         print(f"Processing {len(items)} specific item(s) (normalize + validate)")
     elif item_ids:
         # Targeted mode: fetch only specific items, always validate (check + fill)
-        items = _fetch_items_by_ids(client, base_url, user_id, item_ids)
+        items = fetch_items_by_ids(client, base_url, user_id, item_ids)
         print(f"Processing {len(items)} specific item(s) (normalize + validate)")
     else:
         # Determine mode: validate processes all items, gaps-only (default) processes only untagged
@@ -706,7 +671,7 @@ def _run_process(
         args: Parsed CLI arguments.
         item_ids: List of Emby item IDs to process.
     """
-    items = _fetch_items_by_ids(client, base_url, user_id, item_ids)
+    items = fetch_items_by_ids(client, base_url, user_id, item_ids)
     print(f"Processing {len(items)} item(s) (normalize + fix)")
 
     # Phase 1: Normalize
@@ -715,8 +680,13 @@ def _run_process(
         _apply_normalization_updates(
             items_to_update, client, base_url, user_id, item_ids, args.lock
         )
-        # Re-fetch to get fresh state after normalize modified genres on the server
-        items = _fetch_items_by_ids(client, base_url, user_id, item_ids)
+        # Re-fetch only the modified items to get fresh genres from the server
+        updated_ids = [item["Id"] for item, _ in items_to_update]
+        refreshed = {
+            i["Id"]: i
+            for i in fetch_items_by_ids(client, base_url, user_id, updated_ids)
+        }
+        items = [refreshed.get(i["Id"], i) for i in items]
     elif not items_to_update:
         print("All genres are already normalized.")
 
