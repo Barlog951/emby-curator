@@ -103,7 +103,7 @@ Then verify specific patterns:
 ```bash
 # REQUIRED: Always run full test suite before recommending changes
 python -m pytest tests/ -x --tb=short
-# Must show: "588 passed, 1 skipped" or similar success status
+# Must show: "669 passed" or similar success status
 ```
 
 **STEP 5: NEVER ASSUME - ALWAYS VERIFY**
@@ -178,7 +178,7 @@ emby-dedupe [shared options] SUBCOMMAND [subcommand options]
 
 Shared options (env vars): `--host/-H` (`DEDUPE_EMBY_HOST`), `--port/-p` (`DEDUPE_EMBY_PORT`), `--api-key/-a` (`DEDUPE_EMBY_API_KEY`), `--library/-l` (`DEDUPE_EMBY_LIBRARY`, repeatable), `--doit` (`DEDUPE_DOIT`), `--lock/--no-lock` (`DEDUPE_LOCK`), `-v` (verbosity)
 
-Subcommands: `dedupe`, `genres audit`, `genres normalize`, `genres fix`, `check`, `missing-episodes`
+Subcommands: `dedupe`, `genres audit`, `genres normalize`, `genres fix`, `genres process`, `check`, `missing-episodes`
 
 `dedupe` options (after `dedupe`): `--username` (`DEDUPE_EMBY_USERNAME`), `--password` (`DEDUPE_EMBY_PASSWORD`), `--lang-prio` (`DEDUPE_LANG_PRIO`), `--exclude-ids` (`DEDUPE_EXCLUDE_IDS`), `--html-report`, `--html-only`, `--no-open`
 
@@ -203,6 +203,7 @@ emby-dedupe --host "..." --api-key "..." -l Movies genres audit
 emby-dedupe --host "..." --api-key "..." -l Movies --doit genres normalize
 emby-dedupe --host "..." --api-key "..." -l Movies --doit genres fix --validate
 emby-dedupe --host "..." --api-key "..." --doit genres normalize --item-ids 123,456
+emby-dedupe --host "..." --api-key "..." genres process --doit --validate --item-ids 123,456
 ```
 
 ## Code Style Guidelines
@@ -235,12 +236,13 @@ emby-dedupe --host "..." --api-key "..." --doit genres normalize --item-ids 123,
   - Fix: fill missing genres from TMDB/OMDb with rate-limited API clients and local cache
   - `--item-ids` flag for targeted processing of specific items (used by webhook listener)
 - **Webhook listener**: `scripts/genre-webhook-listener.py` — real-time genre processing for new media
-  - Receives Emby ItemAdded webhooks, debounces, runs normalize+fix on new items
+  - Receives Emby ItemAdded webhooks, debounces, runs `genres process` (normalize+fix single pass)
+  - Batch fetch via `Ids=` query param — 591 items in ~6 requests instead of 591 individual GETs
   - Episode→SeriesId deduplication (genres live on Series, not Episodes)
   - Deployed as systemd service on Emby VM with monthly full-scan safety net
 
 ## Testing
-- Comprehensive test suite with 632 tests covering all key functionality
+- Comprehensive test suite with 669 tests covering all key functionality
 - Current test coverage: 70%+
 - Run via Makefile: `make lint`, `make mypy`, `make test`, `make coverage`, `make allfx`
 - CI/CD with GitHub Actions workflows for testing, security scanning, and Docker builds
