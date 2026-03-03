@@ -349,9 +349,10 @@ def _preview_normalization_changes(items_to_update: list[tuple[dict, list[str]]]
     """Print a dry-run preview of pending normalization changes."""
     print(f"Would update {len(items_to_update)} items:")
     mapping_counts: dict[tuple[str, str], int] = {}
-    for item, new_genres in items_to_update:
-        for orig, canonical in zip(item.get("Genres") or [], new_genres):
-            if orig != canonical:
+    for item, _new_genres in items_to_update:
+        for orig in item.get("Genres") or []:
+            canonical = normalize_genre_name(orig, GENRE_NORMALIZATION_MAP)
+            if canonical != orig:
                 key = (orig, canonical)
                 mapping_counts[key] = mapping_counts.get(key, 0) + 1
     for (variant, canonical), count in sorted(
