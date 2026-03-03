@@ -241,6 +241,16 @@ emby-dedupe --host "..." --api-key "..." genres process --doit --validate --item
   - Episode→SeriesId deduplication (genres live on Series, not Episodes)
   - Deployed as systemd service on Emby VM with monthly full-scan safety net
 
+## Analytics Dashboard (marimo)
+- **Location**: `dashboards/emby_unplayed.py` — interactive marimo notebook
+- **Venv**: `.dashboard-venv/` (separate from main project venv)
+- **Install**: `uv venv .dashboard-venv --python 3.14 && source .dashboard-venv/bin/activate && uv pip install marimo plotly pandas httpx`
+- **Run as app**: `.dashboard-venv/bin/marimo run dashboards/emby_unplayed.py --port 2718`
+- **Edit interactively**: `.dashboard-venv/bin/marimo edit dashboards/emby_unplayed.py`
+- **6 tabs**: Overview, By Library, Cleanup by Size, By Language, Added but Forgotten, Abandoned Series
+- **Live data**: Connects to Emby API on load (~60s to scan all users)
+- **Marimo gotcha**: All cell variables must be unique — use `_` prefix for cell-local vars
+
 ## Testing
 - Comprehensive test suite with 669 tests covering all key functionality
 - Current test coverage: 70%+
