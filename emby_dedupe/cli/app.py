@@ -318,6 +318,70 @@ def missing_episodes_cmd(
 
 
 # ---------------------------------------------------------------------------
+# cleanup subcommand
+# ---------------------------------------------------------------------------
+
+@app.command("cleanup")
+def cleanup_cmd(
+    ctx: typer.Context,
+    username: Optional[str] = typer.Option(
+        None, "--username", envvar="DEDUPE_EMBY_USERNAME",
+        help="Emby username (recommended for accurate actor protection; required with --doit)."
+    ),
+    password: Optional[str] = typer.Option(
+        None, "--password", envvar="DEDUPE_EMBY_PASSWORD",
+        help="Emby password (required with --doit)."
+    ),
+    min_age_years: int = typer.Option(3, "--min-age-years", help="Minimum age in years to be eligible for cleanup."),
+    protect_path: Optional[list[str]] = typer.Option(
+        None, "--protect-path", help="Path substring to protect (repeatable, default: /Dokumenty/)."
+    ),
+    base_rating: float = typer.Option(6.0, "--base-rating", help="Rating threshold at minimum age."),
+    decay_step: float = typer.Option(0.5, "--decay-step", help="Rating increase per year over minimum age."),
+    max_rating: float = typer.Option(8.0, "--max-rating", help="Maximum rating threshold cap."),
+    exclude_ids: Optional[str] = typer.Option(
+        None, "--exclude-ids", envvar="DEDUPE_EXCLUDE_IDS",
+        help="Comma-separated provider IDs to always protect (IMDB tt*, TMDB IDs)."
+    ),
+    all_libraries: bool = typer.Option(False, "--all-libraries", help="Scan all libraries (skips -l requirement)."),
+    format: str = typer.Option("console", "--format", help="Output format: console, json."),
+    html_report: bool = typer.Option(False, "--html-report", envvar="DEDUPE_HTML_REPORT", help="Generate HTML report."),
+    html_only: bool = typer.Option(False, "--html-only", envvar="DEDUPE_HTML_ONLY", help="HTML report only."),
+    no_open: bool = typer.Option(False, "--no-open", help="Don't open HTML report in browser."),
+) -> None:
+    """Identify dead movies nobody watches for library hygiene (dynamic rating decay model)."""
+    from argparse import Namespace
+
+    from emby_dedupe.cli.cleanup import run_cleanup_command
+
+    config: AppConfig = ctx.obj
+
+    args = Namespace(
+        host=config.host,
+        port=config.port,
+        api_key=config.api_key,
+        library=config.libraries or [],
+        verbosity=config.verbosity,
+        doit=config.doit,
+        username=username,
+        password=password,
+        min_age_years=min_age_years,
+        protect_paths=protect_path or ["/Dokumenty/"],
+        base_rating=base_rating,
+        decay_step=decay_step,
+        max_rating=max_rating,
+        exclude_ids=exclude_ids,
+        all_libraries=all_libraries,
+        format=format,
+        html_report=html_report,
+        html_only=html_only,
+        no_open=no_open,
+    )
+
+    run_cleanup_command(args)
+
+
+# ---------------------------------------------------------------------------
 # genres subcommands
 # ---------------------------------------------------------------------------
 
@@ -451,7 +515,7 @@ def _run_genres_subcommand(ctx: typer.Context, **kwargs) -> None:
         verbosity=config.verbosity,
         # subcommand-specific fields (with sensible defaults)
         action=kwargs.get("action", "audit"),
-        doit=kwargs.get("doit", config.doit),
+        doit=kwargs.get("doit", False) or config.doit,
         lock=kwargs.get("lock", config.lock),
         repair_dupes=kwargs.get("repair_dupes", False),
         suggest=kwargs.get("suggest", False),

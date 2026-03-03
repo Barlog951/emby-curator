@@ -72,8 +72,12 @@ GENRE_NORMALIZATION_MAP = {
     "akčný": "Action",              # Slovak
     "dobrodružný": "Adventure",     # Slovak
     "krimi": "Crime",               # Slovak/Czech colloquial
+    "kriminálny": "Crime",          # Slovak (11 items)
     "vedeckofantastický": _SCIENCE_FICTION,  # Slovak
     "horor": "Horror",              # Typo + Slovak (horor = horror)
+    "komédia": "Comedy",            # Slovak (52 items)
+    "mysteriózny": "Mystery",       # Slovak (4 items)
+    "hudobný": "Music",             # Slovak (4 items)
     # Custom/junk — user confirmed "dada" means Comedy
     "dada": "Comedy",               # 1645 items!
 }
