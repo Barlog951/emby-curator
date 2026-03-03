@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Emby Library Cleanup Report</title>
+    <link rel="stylesheet" href="report.css">
+    <style>
+        .cleanup-card {
+            display: flex;
+            gap: 20px;
+            background: var(--card-bg, #2a2a3e);
+            border: 1px solid var(--border-color, #444);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 16px;
+            align-items: flex-start;
+        }
+        .cleanup-poster {
+            width: 120px;
+            min-width: 120px;
+            height: 180px;
+            object-fit: cover;
+            border-radius: 4px;
+            background: #333;
+        }
+        .cleanup-poster-placeholder {
+            width: 120px;
+            min-width: 120px;
+            height: 180px;
+            background: #333;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #666;
+            font-size: 12px;
+            text-align: center;
+        }
+        .cleanup-info { flex: 1; min-width: 0; }
+        .cleanup-title {
+            font-size: 1.2em;
+            font-weight: bold;
+            margin-bottom: 4px;
+        }
+        .cleanup-title a { color: #8be9fd; text-decoration: none; }
+        .cleanup-title a:hover { text-decoration: underline; }
+        .cleanup-year { color: #aaa; font-size: 0.9em; margin-bottom: 10px; }
+        .cleanup-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+        .badge {
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 0.82em;
+            font-weight: 600;
+        }
+        .badge-rating-ok   { background: rgba(255,85,85,0.2);    color: #ff5555; border: 1px solid #ff5555; }
+        .badge-rating-none { background: rgba(255,184,108,0.2);  color: #ffb86c; border: 1px solid #ffb86c; }
+        .badge-required    { background: rgba(139,233,253,0.15); color: #8be9fd; border: 1px solid #8be9fd; }
+        .badge-age         { background: rgba(180,180,180,0.12); color: #ccc;    border: 1px solid #555; }
+        .badge-size        { background: rgba(80,250,123,0.12);  color: #50fa7b; border: 1px solid #50fa7b; }
+        .badge-lib         { background: rgba(189,147,249,0.15); color: #bd93f9; border: 1px solid #bd93f9; }
+        .badge-deleted     { background: rgba(80,250,123,0.2);   color: #50fa7b; border: 1px solid #50fa7b; }
+        .badge-failed      { background: rgba(255,85,85,0.2);    color: #ff5555; border: 1px solid #ff5555; }
+        .badge-dryrun      { background: rgba(180,180,180,0.12); color: #aaa;    border: 1px solid #555; }
+        .badge-episodes    { background: rgba(255,184,108,0.15); color: #ffb86c; border: 1px solid #ffb86c; }
+        .cleanup-path { font-size: 0.78em; color: #666; margin-top: 8px; word-break: break-all; }
+        .cleanup-links { margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap; }
+        .cleanup-number {
+            color: #666; font-size: 0.85em; min-width: 30px;
+            padding-top: 4px; text-align: right;
+        }
+        .filter-funnel {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+            gap: 10px;
+            margin: 16px 0;
+        }
+        .filter-step {
+            background: var(--card-bg, #2a2a3e);
+            border: 1px solid var(--border-color, #444);
+            border-radius: 6px;
+            padding: 12px;
+            text-align: center;
+        }
+        .filter-count { font-size: 1.6em; font-weight: bold; color: #8be9fd; }
+        .filter-label { font-size: 0.8em; color: #aaa; margin-top: 4px; }
+        .decay-table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+        .decay-table th, .decay-table td {
+            padding: 8px 14px; text-align: left;
+            border-bottom: 1px solid var(--border-color, #444);
+        }
+        .decay-table th { color: #8be9fd; font-weight: 600; }
+        .section-number { color: #aaa; font-size: 0.85em; float: right; margin-top: 4px; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Library Cleanup Report</h1>
+        <p>Dynamic rating decay model — {% if series_candidates is defined and series_candidates %}movies &amp; series{% else %}movies{% endif %} nobody watches, filtered through {{ protection_stats.total_analyzed | default(0) - protection_stats.final_candidates | default(0) }} protection checks</p>
+    </header>
+
+    <!-- Stats -->
+    <div class="summary">
+        <h2>Summary</h2>
+        <div class="stats-container">
+            <div class="stats-card">
+                <h3>Analysis</h3>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value">{{ protection_stats.total_analyzed }}</div>
+                        <div class="stat-label">Movies Analyzed</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ protection_stats.final_candidates }}</div>
+                        <div class="stat-label">Cleanup Candidates</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ total_size_human }}</div>
+                        <div class="stat-label">Space to Free</div>
+                    </div>
+                </div>
+            </div>
+            <div class="stats-card">
+                <h3>Protection Layers</h3>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value">{{ protection_stats.age_filtered }}</div>
+                        <div class="stat-label">Too Recent</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ protection_stats.play_protected }}</div>
+                        <div class="stat-label">Someone Watched</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ protection_stats.rating_protected }}</div>
+                        <div class="stat-label">Good Rating</div>
+                    </div>
+                </div>
+            </div>
+            <div class="stats-card">
+                <h3>Config</h3>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value">{{ config.min_age_years }}yr</div>
+                        <div class="stat-label">Min Age</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ config.base_rating }}→{{ config.max_rating }}</div>
+                        <div class="stat-label">Rating Range</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ config.top_actors }}</div>
+                        <div class="stat-label">Actors Protected</div>
+                    </div>
+                </div>
+            </div>
+            {% if series_stats is defined and series_stats %}
+            <div class="stats-card">
+                <h3>Series Analysis</h3>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value">{{ series_stats.total_analyzed }}</div>
+                        <div class="stat-label">Series Analyzed</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ series_stats.final_candidates }}</div>
+                        <div class="stat-label">Series Candidates</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ series_total_size_human }}</div>
+                        <div class="stat-label">Series Space to Free</div>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- Filter Funnel -->
+    <div class="summary">
+        <h2>Filter Funnel <span class="section-number">{{ protection_stats.total_analyzed }} in → {{ protection_stats.final_candidates }} out</span></h2>
+        <div class="filter-funnel">
+            <div class="filter-step">
+                <div class="filter-count">{{ protection_stats.age_filtered }}</div>
+                <div class="filter-label">Too recent (&lt; {{ config.min_age_years }}yr)</div>
+            </div>
+            <div class="filter-step">
+                <div class="filter-count">{{ protection_stats.excluded_filtered }}</div>
+                <div class="filter-label">Excluded by ID</div>
+            </div>
+            <div class="filter-step">
+                <div class="filter-count">{{ protection_stats.play_protected }}</div>
+                <div class="filter-label">Played by someone</div>
+            </div>
+            <div class="filter-step">
+                <div class="filter-count">{{ protection_stats.interest_protected }}</div>
+                <div class="filter-label">Favorited / started</div>
+            </div>
+            <div class="filter-step">
+                <div class="filter-count">{{ protection_stats.actor_protected }}</div>
+                <div class="filter-label">Favorite actor</div>
+            </div>
+            <div class="filter-step">
+                <div class="filter-count">{{ protection_stats.franchise_protected }}</div>
+                <div class="filter-label">Franchise</div>
+            </div>
+            <div class="filter-step">
+                <div class="filter-count">{{ protection_stats.path_protected }}</div>
+                <div class="filter-label">Protected path</div>
+            </div>
+            <div class="filter-step">
+                <div class="filter-count">{{ protection_stats.rating_protected }}</div>
+                <div class="filter-label">Rating high enough</div>
+            </div>
+        </div>
+    </div>
+
+    {% if series_stats is defined and series_stats %}
+    <!-- Series Filter Funnel -->
+    <div class="summary">
+        <h2>Series Filter Funnel <span class="section-number">{{ series_stats.total_analyzed }} in → {{ series_stats.final_candidates }} out</span></h2>
+        <div class="filter-funnel">
+            <div class="filter-step">
+                <div class="filter-count">{{ series_stats.stale_filtered }}</div>
+                <div class="filter-label">Too recent (stale &lt; {{ config.min_age_years }}yr)</div>
+            </div>
+            <div class="filter-step">
+                <div class="filter-count">{{ series_stats.excluded_filtered }}</div>
+                <div class="filter-label">Excluded by ID</div>
+            </div>
+            <div class="filter-step">
+                <div class="filter-count">{{ series_stats.play_protected }}</div>
+                <div class="filter-label">Someone watched</div>
+            </div>
+            <div class="filter-step">
+                <div class="filter-count">{{ series_stats.favorite_protected }}</div>
+                <div class="filter-label">Favorited</div>
+            </div>
+            <div class="filter-step">
+                <div class="filter-count">{{ series_stats.path_protected }}</div>
+                <div class="filter-label">Protected path</div>
+            </div>
+            <div class="filter-step">
+                <div class="filter-count">{{ series_stats.rating_protected }}</div>
+                <div class="filter-label">Rating high enough</div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Decay Rules -->
+    <div class="summary">
+        <h2>Rating Decay Rules</h2>
+        <table class="decay-table">
+            <tr><th>Age on Server</th><th>Min Required Rating</th><th>Note</th></tr>
+            <tr><td>{{ config.min_age_years }} yr</td><td>{{ config.base_rating }}</td><td>base threshold</td></tr>
+            <tr><td>{{ config.min_age_years + 1 }} yr</td><td>{{ "%.1f" | format(config.base_rating + config.decay_step) }}</td><td>+{{ config.decay_step }} per year</td></tr>
+            <tr><td>{{ config.min_age_years + 2 }} yr</td><td>{{ "%.1f" | format(config.base_rating + config.decay_step * 2) }}</td><td></td></tr>
+            <tr><td>{{ config.min_age_years + 3 }} yr</td><td>{{ "%.1f" | format([config.base_rating + config.decay_step * 3, config.max_rating] | min) }}</td><td></td></tr>
+            <tr><td>{{ config.min_age_years + 4 }} yr+</td><td>{{ config.max_rating }}</td><td>cap</td></tr>
+        </table>
+    </div>
+
+    <!-- Candidates -->
+    <div class="summary">
+        <h2>Cleanup Candidates <span class="section-number">{{ candidates | length }} movies · {{ total_size_human }}</span></h2>
+        {% if not candidates %}
+        <p>No cleanup candidates found — your library is clean!</p>
+        {% endif %}
+    </div>
+
+    {% for c in candidates %}
+    <div class="cleanup-card">
+        <div class="cleanup-number">{{ loop.index }}</div>
+
+        {% if c.image_url %}
+        <img class="cleanup-poster" src="{{ c.image_url }}" alt="{{ c.name }}"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+        <div class="cleanup-poster-placeholder" style="display:none;">No poster</div>
+        {% else %}
+        <div class="cleanup-poster-placeholder">No poster</div>
+        {% endif %}
+
+        <div class="cleanup-info">
+            <div class="cleanup-title">
+                <a href="{{ base_url }}/web/index.html#!/item?id={{ c.item_id }}&serverId={{ server_id }}" target="_blank">{{ c.name }}</a>
+            </div>
+            {% if c.year %}<div class="cleanup-year">{{ c.year }}</div>{% endif %}
+
+            <div class="cleanup-badges">
+                {% if c.rating is none or c.rating_str == "unrated" %}
+                <span class="badge badge-rating-none">&#9733; Unrated</span>
+                {% else %}
+                <span class="badge badge-rating-ok">&#9733; {{ c.rating_str }}</span>
+                {% endif %}
+
+                <span class="badge badge-required">Required: {{ c.threshold_str }}</span>
+                <span class="badge badge-age">{{ c.age_years }} yr on server</span>
+                <span class="badge badge-size">{{ c.size_human }}</span>
+                <span class="badge badge-lib">{{ c.library }}</span>
+
+                {% if doit and c.deletion_result %}
+                    {% if c.deletion_result.status == "success" %}
+                    <span class="badge badge-deleted">&#10003; Deleted</span>
+                    {% elif c.deletion_result.status == "failed" %}
+                    <span class="badge badge-failed">&#10007; Failed</span>
+                    {% else %}
+                    <span class="badge badge-dryrun">Skipped</span>
+                    {% endif %}
+                {% elif not doit %}
+                <span class="badge badge-dryrun">Dry-run</span>
+                {% endif %}
+            </div>
+
+            <div class="cleanup-path">{{ c.path }}</div>
+
+            <div class="cleanup-links">
+                <a href="{{ base_url }}/web/index.html#!/item?id={{ c.item_id }}&serverId={{ server_id }}" target="_blank" class="url-link">View in Emby</a>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+
+    {% if series_candidates is defined and series_candidates %}
+    <!-- Series Candidates -->
+    <div class="summary">
+        <h2>Series Cleanup Candidates <span class="section-number">{{ series_candidates | length }} series · {{ series_total_size_human }}</span></h2>
+    </div>
+
+    {% for c in series_candidates %}
+    <div class="cleanup-card">
+        <div class="cleanup-number">{{ loop.index }}</div>
+
+        {% if c.image_url %}
+        <img class="cleanup-poster" src="{{ c.image_url }}" alt="{{ c.name }}"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+        <div class="cleanup-poster-placeholder" style="display:none;">No poster</div>
+        {% else %}
+        <div class="cleanup-poster-placeholder">No poster</div>
+        {% endif %}
+
+        <div class="cleanup-info">
+            <div class="cleanup-title">
+                <a href="{{ base_url }}/web/index.html#!/item?id={{ c.item_id }}&serverId={{ server_id }}" target="_blank">{{ c.name }}</a>
+            </div>
+            {% if c.year %}<div class="cleanup-year">{{ c.year }}</div>{% endif %}
+
+            <div class="cleanup-badges">
+                {% if c.rating is none or c.rating_str == "unrated" %}
+                <span class="badge badge-rating-none">&#9733; Unrated</span>
+                {% else %}
+                <span class="badge badge-rating-ok">&#9733; {{ c.rating_str }}</span>
+                {% endif %}
+
+                <span class="badge badge-required">Required: {{ c.threshold_str }}</span>
+                <span class="badge badge-age">{{ c.stale_years }} yr stale</span>
+                <span class="badge badge-episodes">{{ c.episode_count }} episodes</span>
+                <span class="badge badge-size">{{ c.size_human }}</span>
+                <span class="badge badge-lib">{{ c.library }}</span>
+
+                {% if doit and c.deletion_result %}
+                    {% if c.deletion_result.status == "success" %}
+                    <span class="badge badge-deleted">&#10003; Deleted</span>
+                    {% elif c.deletion_result.status == "failed" %}
+                    <span class="badge badge-failed">&#10007; Failed</span>
+                    {% else %}
+                    <span class="badge badge-dryrun">Skipped</span>
+                    {% endif %}
+                {% elif not doit %}
+                <span class="badge badge-dryrun">Dry-run</span>
+                {% endif %}
+            </div>
+
+            {% if c.last_episode_added %}
+            <div class="cleanup-path">Last episode added: {{ c.last_episode_added }}</div>
+            {% else %}
+            <div class="cleanup-path">No episodes</div>
+            {% endif %}
+            <div class="cleanup-path">{{ c.path }}</div>
+
+            <div class="cleanup-links">
+                <a href="{{ base_url }}/web/index.html#!/item?id={{ c.item_id }}&serverId={{ server_id }}" target="_blank" class="url-link">View in Emby</a>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    <footer>
+        <p>Generated {{ generated_at }} by emby-dedupe · {{ candidates | length }} movie candidates · {{ total_size_human }}{% if series_candidates is defined and series_candidates %} · {{ series_candidates | length }} series candidates · {{ series_total_size_human }}{% endif %}</p>
+    </footer>
+</body>
+</html>
