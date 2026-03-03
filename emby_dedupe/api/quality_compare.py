@@ -761,18 +761,58 @@ class ExistingQuality:
         return "unknown"
 
     @staticmethod
+    def _classify_audio_codec(audio_codec: Optional[str]) -> tuple[bool, bool]:
+        """Classify audio codec as lossless or webdl-indicating.
+
+        Args:
+            audio_codec: Audio codec string from Emby stream.
+
+        Returns:
+            Tuple of (is_lossless, is_webdl_audio).
+        """
+        audio_lower = (audio_codec or "").lower()
+        lossless = audio_lower in (
+            "truehd", "dts-hd ma", "dts-hd", "dtshd", "flac", "pcm", "lpcm",
+        )
+        webdl = audio_lower in ("eac3", "aac", "he-aac", "opus")
+        return lossless, webdl
+
+    @staticmethod
+    def _infer_by_resolution(
+        bitrate: int, lossless_audio: bool, webdl_audio: bool,
+        remux_threshold: int, bluray_threshold: int, webdl_threshold: int,
+    ) -> str:
+        """Infer source quality for a given resolution using bitrate thresholds.
+
+        Args:
+            bitrate: Item bitrate in bps.
+            lossless_audio: Whether audio codec indicates lossless source.
+            webdl_audio: Whether audio codec indicates streaming source.
+            remux_threshold: Bitrate above which lossless audio indicates remux.
+            bluray_threshold: Bitrate above which source is bluray.
+            webdl_threshold: Bitrate above which source is webdl.
+
+        Returns:
+            Inferred source quality tier name.
+        """
+        if lossless_audio and bitrate > remux_threshold:
+            return "bluray_remux"
+        if lossless_audio or bitrate > bluray_threshold:
+            return "bluray"
+        if webdl_audio or bitrate > webdl_threshold:
+            return "webdl"
+        return "hdtv"
+
+    @staticmethod
     def _infer_source_quality_from_streams(
         bitrate: int, height: int, audio_codec: Optional[str]
     ) -> Optional[str]:
         """Infer source quality tier from stream metadata when path/name gives no signal.
 
         Uses bitrate ranges per resolution and audio codec as heuristics:
-        - Lossless audio (TrueHD, DTS-HD MA) → bluray_remux or bluray
-        - DDP/EAC3/AAC → webdl (streaming services)
-        - Very high bitrate → bluray_remux
-        - High bitrate → bluray
-        - Medium bitrate → webdl
-        - Low bitrate → hdtv
+        - Lossless audio (TrueHD, DTS-HD MA) indicates BluRay/REMUX
+        - DDP/EAC3/AAC indicates WEB-DL (streaming services)
+        - Bitrate thresholds vary by resolution
 
         Args:
             bitrate: Item bitrate in bps.
@@ -785,45 +825,29 @@ class ExistingQuality:
         if bitrate <= 0 and not audio_codec:
             return None
 
-        audio_lower = (audio_codec or "").lower()
+        lossless_audio, webdl_audio = ExistingQuality._classify_audio_codec(audio_codec)
 
-        # Lossless audio codecs strongly indicate BluRay/REMUX source
-        lossless_audio = audio_lower in (
-            "truehd", "dts-hd ma", "dts-hd", "dtshd", "flac", "pcm", "lpcm",
-        )
-        # DDP/EAC3/AAC strongly indicate WEB-DL source
-        webdl_audio = audio_lower in ("eac3", "aac", "he-aac", "opus")
-
-        # Bitrate thresholds per resolution (bps)
+        # Resolution-specific bitrate thresholds: (remux, bluray, webdl)
         if height >= 2000:  # 4K
-            if lossless_audio and bitrate > 40_000_000:
-                return "bluray_remux"
-            if lossless_audio or bitrate > 25_000_000:
-                return "bluray"
-            if webdl_audio or bitrate > 8_000_000:
-                return "webdl"
-            return "hdtv"
-        elif height >= 1000:  # 1080p
-            if lossless_audio and bitrate > 20_000_000:
-                return "bluray_remux"
-            if lossless_audio or bitrate > 12_000_000:
-                return "bluray"
-            if webdl_audio or bitrate > 3_000_000:
-                return "webdl"
-            return "hdtv"
-        elif height >= 700:  # 720p
+            return ExistingQuality._infer_by_resolution(
+                bitrate, lossless_audio, webdl_audio, 40_000_000, 25_000_000, 8_000_000
+            )
+        if height >= 1000:  # 1080p
+            return ExistingQuality._infer_by_resolution(
+                bitrate, lossless_audio, webdl_audio, 20_000_000, 12_000_000, 3_000_000
+            )
+        if height >= 700:  # 720p — no remux distinction
             if lossless_audio or bitrate > 8_000_000:
                 return "bluray"
             if webdl_audio or bitrate > 2_000_000:
                 return "webdl"
             return "hdtv"
-        else:
-            # SD content — audio codec is best signal
-            if lossless_audio:
-                return "bluray"
-            if webdl_audio:
-                return "webdl"
 
+        # SD content — audio codec is best signal
+        if lossless_audio:
+            return "bluray"
+        if webdl_audio:
+            return "webdl"
         return None
 
     @classmethod

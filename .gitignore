@@ -3,6 +3,11 @@ testing/**
 pr-docs/**
 .emby-mcp/
 .mcp.json
+scripts/run-*-smoke.sh
+scripts/analyze_stale_series.py
+scripts/smoke_test_*.py
+stale_series_analysis.json
+STALE_SERIES_CANDIDATES.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

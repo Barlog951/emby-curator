@@ -30,6 +30,7 @@ app.add_typer(genres_app, name="genres")
 
 # Shared help strings used across multiple genre subcommands
 _LOCK_OPT = "--lock/--no-lock"
+_LOCK_HELP = "Lock genres after update."
 _ALL_LIBS_HELP = "Scan all Emby libraries."
 _ITEM_IDS_HELP = "Comma-separated Emby item IDs to process (skips full library scan)."
 
@@ -344,10 +345,9 @@ def cleanup_cmd(
         help="Comma-separated provider IDs to always protect (IMDB tt*, TMDB IDs)."
     ),
     all_libraries: bool = typer.Option(False, "--all-libraries", help="Scan all libraries (skips -l requirement)."),
-    format: str = typer.Option("console", "--format", help="Output format: console, json."),
+    output_json: bool = typer.Option(False, "--json", help="Output report as JSON instead of console table."),
     html_report: bool = typer.Option(False, "--html-report", envvar="DEDUPE_HTML_REPORT", help="Generate HTML report."),
-    html_only: bool = typer.Option(False, "--html-only", envvar="DEDUPE_HTML_ONLY", help="HTML report only."),
-    no_open: bool = typer.Option(False, "--no-open", help="Don't open HTML report in browser."),
+    html_only: bool = typer.Option(False, "--html-only", envvar="DEDUPE_HTML_ONLY", help="HTML report only (no browser)."),
 ) -> None:
     """Identify dead movies nobody watches for library hygiene (dynamic rating decay model)."""
     from argparse import Namespace
@@ -372,10 +372,10 @@ def cleanup_cmd(
         max_rating=max_rating,
         exclude_ids=exclude_ids,
         all_libraries=all_libraries,
-        format=format,
+        format="json" if output_json else "console",
         html_report=html_report,
         html_only=html_only,
-        no_open=no_open,
+        no_open=html_only,
     )
 
     run_cleanup_command(args)
@@ -420,7 +420,7 @@ def genres_audit(
 def genres_normalize(
     ctx: typer.Context,
     doit: bool = typer.Option(False, "--doit", help="Apply normalization (dry-run by default)."),
-    lock: bool = typer.Option(True, _LOCK_OPT, help="Lock genres after update."),
+    lock: bool = typer.Option(True, _LOCK_OPT, help=_LOCK_HELP),
     repair_dupes: bool = typer.Option(
         False, "--repair-dupes", help="Also fix duplicate genres caused by normalization collisions."
     ),
@@ -443,7 +443,7 @@ def genres_normalize(
 def genres_process(
     ctx: typer.Context,
     doit: bool = typer.Option(False, "--doit", help="Apply changes (dry-run by default)."),
-    lock: bool = typer.Option(True, _LOCK_OPT, help="Lock genres after update."),
+    lock: bool = typer.Option(True, _LOCK_OPT, help=_LOCK_HELP),
     validate: bool = typer.Option(
         False, "--validate", help="Compare existing genres against TMDB/OMDb and add missing ones."
     ),
@@ -472,7 +472,7 @@ def genres_process(
 def genres_fix(
     ctx: typer.Context,
     doit: bool = typer.Option(False, "--doit", help="Apply changes (dry-run by default)."),
-    lock: bool = typer.Option(True, _LOCK_OPT, help="Lock genres after update."),
+    lock: bool = typer.Option(True, _LOCK_OPT, help=_LOCK_HELP),
     gaps_only: bool = typer.Option(False, "--gaps-only", help="Only process items with no genres."),
     validate: bool = typer.Option(
         False, "--validate", help="Compare existing genres against TMDB/OMDb and add missing ones."
