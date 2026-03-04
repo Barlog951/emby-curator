@@ -31,6 +31,7 @@ from emby_dedupe.cli.cleanup import (
     _check_play_and_interest_batch,
     _check_series_play_and_favorites,
     _compute_age_years,
+    _compute_effective_rating,
     _compute_rating_threshold,
     _format_cleanup_report_console,
     _format_cleanup_report_json,
@@ -89,6 +90,7 @@ def _make_movie(
     name="Test Movie",
     date_created=None,
     rating=None,
+    critic_rating=None,
     size=1_000_000,
     path="/Movies/HD/Test Movie.mkv",
     provider_ids=None,
@@ -102,6 +104,7 @@ def _make_movie(
         "Name": name,
         "DateCreated": date_created or _date_years_ago(4),
         "CommunityRating": rating,
+        "CriticRating": critic_rating,
         "Size": size,
         "Path": path,
         "ProviderIds": provider_ids or {},
@@ -200,6 +203,51 @@ class TestComputeRatingThreshold:
         result = _compute_rating_threshold(1.0, default_config)
         # 6.0 + (1.0 - 3.0) * 0.5 = 6.0 - 1.0 = 5.0
         assert result == pytest.approx(5.0)
+
+
+# ---------------------------------------------------------------------------
+# TestComputeEffectiveRating
+# ---------------------------------------------------------------------------
+
+
+class TestComputeEffectiveRating:
+    """Tests for _compute_effective_rating — combines CommunityRating and CriticRating."""
+
+    def test_only_community_rating(self):
+        """Only community rating present → returns it directly."""
+        assert _compute_effective_rating(7.5, None) == pytest.approx(7.5)
+
+    def test_only_critic_rating(self):
+        """Only critic rating present → normalised (80 → 8.0)."""
+        assert _compute_effective_rating(None, 80) == pytest.approx(8.0)
+
+    def test_both_present_averaged(self):
+        """Both present → average of community and normalised critic."""
+        # community=6.0, critic=80 → normalised 8.0 → avg = (6.0 + 8.0) / 2 = 7.0
+        assert _compute_effective_rating(6.0, 80) == pytest.approx(7.0)
+
+    def test_community_higher(self):
+        """Community higher than normalised critic → average still computed."""
+        # community=9.0, critic=60 → normalised 6.0 → avg = (9.0 + 6.0) / 2 = 7.5
+        assert _compute_effective_rating(9.0, 60) == pytest.approx(7.5)
+
+    def test_both_absent_returns_zero(self):
+        """Both None → 0.0 (safe default: always below threshold)."""
+        assert _compute_effective_rating(None, None) == pytest.approx(0.0)
+
+    def test_critic_rating_zero_is_real(self):
+        """CriticRating=0 is a real score (not treated as absent)."""
+        # community=5.0, critic=0 → normalised 0.0 → avg = (5.0 + 0.0) / 2 = 2.5
+        assert _compute_effective_rating(5.0, 0) == pytest.approx(2.5)
+
+    def test_community_zero_with_critic(self):
+        """CommunityRating=0 is a real score → averaged with critic."""
+        # community=0.0, critic=80 → normalised 8.0 → avg = (0.0 + 8.0) / 2 = 4.0
+        assert _compute_effective_rating(0.0, 80) == pytest.approx(4.0)
+
+    def test_only_critic_zero(self):
+        """Only critic=0, no community → returns 0.0."""
+        assert _compute_effective_rating(None, 0) == pytest.approx(0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -615,6 +663,56 @@ class TestRunCleanupPipeline:
         assert stats["actor_protected"] == 1
         assert stats["final_candidates"] == 0
 
+    def test_favorite_actor_protected_at_9_years(self):
+        """9-year-old movie with favorite actor is still protected."""
+        people = [{"Name": "Tom Hanks", "Type": "Actor"}]
+        movie = _make_movie(item_id="actor_9yr", date_created=_date_years_ago(9), people=people, rating=1.0)
+        candidates, stats = self._pipeline([movie], actors={"Tom Hanks"})
+        assert stats["actor_protected"] == 1
+        assert stats["final_candidates"] == 0
+
+    def test_favorite_actor_not_protected_after_10_years(self):
+        """10+ year old movie loses favorite actor protection → becomes candidate."""
+        people = [{"Name": "Tom Hanks", "Type": "Actor"}]
+        movie = _make_movie(item_id="actor_11yr", date_created=_date_years_ago(11), people=people, rating=1.0)
+        candidates, stats = self._pipeline([movie], actors={"Tom Hanks"})
+        assert stats["actor_protected"] == 0
+        assert stats["final_candidates"] == 1
+
+    def test_12yr_masterpiece_protected(self):
+        """12+ year old movie with 9.0+ rating is still protected."""
+        movie = _make_movie(item_id="master", date_created=_date_years_ago(13), rating=9.2)
+        candidates, stats = self._pipeline([movie])
+        assert stats["rating_protected"] == 1
+        assert stats["final_candidates"] == 0
+
+    def test_12yr_non_masterpiece_candidate(self):
+        """12+ year old movie with rating below 9.0 loses all protection."""
+        people = [{"Name": "Tom Hanks", "Type": "Actor"}]
+        movie = _make_movie(
+            item_id="old_good", date_created=_date_years_ago(13),
+            rating=8.5, people=people,
+            provider_ids={"TmdbCollection": "10"},
+            path="/Movies/Dokumenty/Old.mkv",
+        )
+        candidates, stats = self._pipeline([movie], actors={"Tom Hanks"})
+        # franchise, path, actor all bypassed at 12+ years
+        assert stats["actor_protected"] == 0
+        assert stats["franchise_protected"] == 0
+        assert stats["path_protected"] == 0
+        assert stats["final_candidates"] == 1
+        assert candidates[0].threshold == 9.0
+
+    def test_11yr_still_has_normal_protections(self):
+        """11-year-old movie still uses normal protection layers."""
+        movie = _make_movie(
+            item_id="11yr_franchise", date_created=_date_years_ago(11),
+            rating=1.0, provider_ids={"TmdbCollection": "10"},
+        )
+        candidates, stats = self._pipeline([movie])
+        assert stats["franchise_protected"] == 1
+        assert stats["final_candidates"] == 0
+
     def test_franchise_protected(self):
         """Movie with TmdbCollection in ProviderIds is not a candidate."""
         movie = _make_movie(
@@ -680,6 +778,40 @@ class TestRunCleanupPipeline:
         assert stats["final_candidates"] == 1
         assert candidates[0].size_bytes == 0
 
+    def test_critic_rating_protects_low_community(self):
+        """Movie with low community but high critic rating is protected via average."""
+        # 4 years old → threshold = 6.5
+        # community=5.0, critic=80 → normalised 8.0 → avg = (5.0 + 8.0) / 2 = 6.5 → protected
+        movie = _make_movie(
+            item_id="critic_saved", date_created=_date_years_ago(4),
+            rating=5.0, critic_rating=80,
+        )
+        candidates, stats = self._pipeline([movie])
+        assert stats["rating_protected"] == 1
+        assert stats["final_candidates"] == 0
+
+    def test_both_ratings_low_flags_as_candidate(self):
+        """Movie with both community and critic below threshold → candidate."""
+        # 4 years old → threshold = 6.5
+        # community=4.0, critic=55 → normalised 5.5 → avg = (4.0 + 5.5) / 2 = 4.75 < 6.5
+        movie = _make_movie(
+            item_id="both_low", date_created=_date_years_ago(4),
+            rating=4.0, critic_rating=55,
+        )
+        candidates, stats = self._pipeline([movie])
+        assert stats["final_candidates"] == 1
+        assert candidates[0].critic_rating == 55
+
+    def test_candidate_preserves_critic_rating(self):
+        """CleanupCandidate stores the raw critic rating."""
+        movie = _make_movie(
+            item_id="raw_cr", date_created=_date_years_ago(4),
+            rating=3.0, critic_rating=40,
+        )
+        candidates, stats = self._pipeline([movie])
+        assert candidates[0].critic_rating == 40
+        assert candidates[0].rating == 3.0
+
 
 # ---------------------------------------------------------------------------
 # TestFormatReports
@@ -696,6 +828,7 @@ class TestFormatReports:
                 name="Dead Movie",
                 year=2015,
                 rating=3.5,
+                critic_rating=None,
                 threshold=7.0,
                 age_years=5.0,
                 library="HD & 4k",
@@ -769,7 +902,7 @@ class TestFormatReports:
         candidates = [
             CleanupCandidate(
                 item_id="u1", name="Unrated", year=2015, rating=None,
-                threshold=6.5, age_years=4.0, library="Movies",
+                critic_rating=None, threshold=6.5, age_years=4.0, library="Movies",
                 size_bytes=1_000_000, path="/Movies/Unrated.mkv",
             )
         ]
@@ -915,6 +1048,7 @@ def _make_series(
     name="Test Series",
     date_created=None,
     rating=None,
+    critic_rating=None,
     path="/Movies/Serials/Test Series",
     provider_ids=None,
     library_name="SERIALS",
@@ -927,6 +1061,7 @@ def _make_series(
         "Name": name,
         "DateCreated": date_created or _date_years_ago(4),
         "CommunityRating": rating,
+        "CriticRating": critic_rating,
         "Path": path,
         "ProviderIds": provider_ids or {},
         "ProductionYear": production_year,
@@ -951,6 +1086,7 @@ class TestSeriesCleanupCandidate:
             name="Test Series",
             year=2020,
             rating=7.5,
+            critic_rating=None,
             threshold=6.5,
             stale_years=4.0,
             last_episode_added="2022-01-15T00:00:00Z",
@@ -971,7 +1107,7 @@ class TestSeriesCleanupCandidate:
         """deletion_result defaults to None."""
         c = SeriesCleanupCandidate(
             item_id="s2", name="Another", year=None, rating=None,
-            threshold=6.0, stale_years=3.0, last_episode_added=None,
+            critic_rating=None, threshold=6.0, stale_years=3.0, last_episode_added=None,
             episode_count=0, library="SERIALS", size_bytes=0,
             path="/series/path",
         )
@@ -981,7 +1117,7 @@ class TestSeriesCleanupCandidate:
         """None rating is not converted to 0.0."""
         c = SeriesCleanupCandidate(
             item_id="s3", name="Unrated", year=2019, rating=None,
-            threshold=6.5, stale_years=4.0, last_episode_added=None,
+            critic_rating=None, threshold=6.5, stale_years=4.0, last_episode_added=None,
             episode_count=5, library="SERIALS", size_bytes=100,
             path="/series",
         )
@@ -1459,6 +1595,27 @@ class TestRunSeriesCleanupPipeline:
         assert stats["total_analyzed"] == 0
         assert stats["final_candidates"] == 0
 
+    def test_critic_rating_protects_series(self):
+        """Series with low community but high critic rating is protected via average."""
+        # 5 years stale → threshold = 7.0
+        # community=5.0, critic=90 → normalised 9.0 → avg = (5.0 + 9.0) / 2 = 7.0 → protected
+        series = _make_series(item_id="critic_s", rating=5.0, critic_rating=90)
+        episode_map = {"critic_s": _date_years_ago(5)}
+        candidates, stats = self._pipeline([series], episode_map=episode_map)
+        assert stats["rating_protected"] == 1
+        assert stats["final_candidates"] == 0
+
+    def test_series_candidate_preserves_critic_rating(self):
+        """SeriesCleanupCandidate stores raw critic rating."""
+        series = _make_series(item_id="cr_s", rating=2.0, critic_rating=30)
+        episode_map = {"cr_s": _date_years_ago(5)}
+        candidates, stats = self._pipeline(
+            [series], episode_map=episode_map, size_map={"cr_s": 5000}
+        )
+        assert stats["final_candidates"] == 1
+        assert candidates[0].critic_rating == 30
+        assert candidates[0].rating == 2.0
+
 
 # ---------------------------------------------------------------------------
 # TestFormatReportsWithSeries
@@ -1475,6 +1632,7 @@ class TestFormatReportsWithSeries:
                 name="Dead Series",
                 year=2020,
                 rating=4.0,
+                critic_rating=None,
                 threshold=7.0,
                 stale_years=5.0,
                 last_episode_added="2021-03-01T00:00:00Z",

@@ -178,7 +178,7 @@ emby-dedupe [shared options] SUBCOMMAND [subcommand options]
 
 Shared options (env vars): `--host/-H` (`DEDUPE_EMBY_HOST`), `--port/-p` (`DEDUPE_EMBY_PORT`), `--api-key/-a` (`DEDUPE_EMBY_API_KEY`), `--library/-l` (`DEDUPE_EMBY_LIBRARY`, repeatable), `--doit` (`DEDUPE_DOIT`), `--lock/--no-lock` (`DEDUPE_LOCK`), `-v` (verbosity)
 
-Subcommands: `dedupe`, `genres audit`, `genres normalize`, `genres fix`, `genres process`, `check`, `missing-episodes`
+Subcommands: `dedupe`, `cleanup`, `genres audit`, `genres normalize`, `genres fix`, `genres process`, `check`, `missing-episodes`
 
 `dedupe` options (after `dedupe`): `--username` (`DEDUPE_EMBY_USERNAME`), `--password` (`DEDUPE_EMBY_PASSWORD`), `--lang-prio` (`DEDUPE_LANG_PRIO`), `--exclude-ids` (`DEDUPE_EXCLUDE_IDS`), `--html-report`, `--html-only`, `--no-open`
 
@@ -196,6 +196,15 @@ python -m emby_dedupe \
   --username "admin" --password "pass" \
   --lang-prio "slo,cze,eng" --html-report --html-only
 ```
+
+Cleanup commands (library hygiene):
+```bash
+emby-dedupe --host "..." --api-key "..." -l "HD & 4k" cleanup --username Barlog --min-age-years 3
+emby-dedupe --host "..." --api-key "..." --all-libraries cleanup --username Barlog --html-report --no-open
+emby-dedupe --host "..." --api-key "..." -l "HD & 4k" --doit cleanup --username Barlog --password "..." --exclude-ids "tt0000001"
+```
+
+Dynamic rating decay: 3yr→6.0, 4yr→6.5, 5yr→7.0, 6yr→7.5, 7yr+→8.0 cap
 
 Genre commands:
 ```bash

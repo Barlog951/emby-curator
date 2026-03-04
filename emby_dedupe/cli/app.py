@@ -347,7 +347,7 @@ def cleanup_cmd(
     all_libraries: bool = typer.Option(False, "--all-libraries", help="Scan all libraries (skips -l requirement)."),
     output_json: bool = typer.Option(False, "--json", help="Output report as JSON instead of console table."),
     html_report: bool = typer.Option(False, "--html-report", envvar="DEDUPE_HTML_REPORT", help="Generate HTML report."),
-    html_only: bool = typer.Option(False, "--html-only", envvar="DEDUPE_HTML_ONLY", help="HTML report only (no browser)."),
+    html_only: bool = typer.Option(False, "--html-only", envvar="DEDUPE_HTML_ONLY", help="HTML report only, skip console output and don't open browser."),
 ) -> None:
     """Identify dead movies nobody watches for library hygiene (dynamic rating decay model)."""
     from argparse import Namespace
