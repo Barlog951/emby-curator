@@ -453,3 +453,153 @@ footer {
     font-weight: bold;
     color: var(--warning);
 }
+
+/* Cleanup Report Styles */
+.config-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 15px;
+    margin-top: 15px;
+}
+
+.config-item {
+    background-color: rgba(139, 233, 253, 0.1);
+    padding: 12px;
+    border-radius: 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.config-label {
+    font-weight: bold;
+    color: var(--info);
+    margin-right: 10px;
+}
+
+.config-value {
+    color: var(--text-color);
+}
+
+.filter-funnel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 15px;
+}
+
+.filter-step {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 15px;
+    background-color: rgba(139, 233, 253, 0.1);
+    border-left: 4px solid var(--info);
+    border-radius: 4px;
+}
+
+.filter-step.final {
+    background-color: rgba(80, 250, 123, 0.15);
+    border-left-color: var(--success);
+}
+
+.filter-label {
+    font-weight: 500;
+    color: var(--text-color);
+}
+
+.filter-count {
+    background-color: rgba(0, 0, 0, 0.2);
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-weight: bold;
+    color: var(--header-color);
+    min-width: 50px;
+    text-align: center;
+}
+
+.decay-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+}
+
+.decay-table thead {
+    background-color: rgba(139, 233, 253, 0.15);
+}
+
+.decay-table th {
+    padding: 12px;
+    text-align: left;
+    color: var(--info);
+    font-weight: bold;
+    border-bottom: 2px solid var(--info);
+}
+
+.decay-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.decay-table tbody tr:hover {
+    background-color: rgba(139, 233, 253, 0.05);
+}
+
+.candidates-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 15px;
+}
+
+.candidates-table thead {
+    background-color: rgba(139, 233, 253, 0.15);
+}
+
+.candidates-table th {
+    padding: 12px;
+    text-align: left;
+    color: var(--info);
+    font-weight: bold;
+    border-bottom: 2px solid var(--info);
+}
+
+.candidates-table td {
+    padding: 10px 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.candidates-table tbody tr:hover {
+    background-color: rgba(139, 233, 253, 0.05);
+}
+
+.candidates-table a {
+    color: var(--info);
+    text-decoration: none;
+}
+
+.candidates-table a:hover {
+    text-decoration: underline;
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    font-weight: bold;
+}
+
+.status-badge.success {
+    background-color: rgba(80, 250, 123, 0.25);
+    color: var(--success);
+}
+
+.status-badge.error {
+    background-color: rgba(255, 85, 85, 0.25);
+    color: var(--error);
+}
+
+.status-badge.pending {
+    background-color: rgba(255, 184, 108, 0.25);
+    color: var(--warning);
+}

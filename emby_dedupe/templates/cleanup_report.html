@@ -149,7 +149,7 @@
                         <div class="stat-label">Rating Range</div>
                     </div>
                     <div class="stat-item">
-                        <div class="stat-value">{{ config.top_actors }}</div>
+                        <div class="stat-value">{{ protection_stats.actor_protected }}</div>
                         <div class="stat-label">Actors Protected</div>
                     </div>
                 </div>
@@ -293,6 +293,9 @@
                 {% else %}
                 <span class="badge badge-rating-ok">&#9733; {{ c.rating_str }}</span>
                 {% endif %}
+                {% if c.critic_rating_str %}
+                <span class="badge badge-rating-none" title="Rotten Tomatoes critic score">&#127829; {{ c.critic_rating_str }}</span>
+                {% endif %}
 
                 <span class="badge badge-required">Required: {{ c.threshold_str }}</span>
                 <span class="badge badge-age">{{ c.age_years }} yr on server</span>
@@ -350,6 +353,9 @@
                 <span class="badge badge-rating-none">&#9733; Unrated</span>
                 {% else %}
                 <span class="badge badge-rating-ok">&#9733; {{ c.rating_str }}</span>
+                {% endif %}
+                {% if c.critic_rating_str %}
+                <span class="badge badge-rating-none" title="Rotten Tomatoes critic score">&#127829; {{ c.critic_rating_str }}</span>
                 {% endif %}
 
                 <span class="badge badge-required">Required: {{ c.threshold_str }}</span>

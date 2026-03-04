@@ -50,6 +50,7 @@ from emby_dedupe.utils.logging import logger
 # ---------------------------------------------------------------------------
 
 _DEFAULT_PROTECT_PATH = "/Dokumenty/"
+_CRITIC_RATING_DIVISOR: float = 10.0  # CriticRating is 0-100 (RT %); divide to get 0-10
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -75,6 +76,9 @@ class CleanupConfig:
     base_rating: float = 6.0
     decay_step: float = 0.5
     max_rating: float = 8.0
+    no_actor_protection_after_years: int = 10
+    masterpiece_only_after_years: int = 12
+    masterpiece_rating: float = 9.0
     excluded_provider_ids: set[str] = field(default_factory=set)
 
 
@@ -87,6 +91,7 @@ class CleanupCandidate:
         name: Movie title.
         year: Production year (None if unknown).
         rating: CommunityRating from Emby (None = unrated, distinct from 0.0).
+        critic_rating: CriticRating from Emby on 0-100 scale (None if absent).
         threshold: Computed age-decay rating threshold.
         age_years: Age in years since DateCreated.
         library: Library name.
@@ -99,6 +104,7 @@ class CleanupCandidate:
     name: str
     year: Optional[int]
     rating: Optional[float]
+    critic_rating: Optional[float]
     threshold: float
     age_years: float
     library: str
@@ -118,6 +124,7 @@ class SeriesCleanupCandidate:
         name: Series title.
         year: Production year (None if unknown).
         rating: CommunityRating from Emby (None = unrated).
+        critic_rating: CriticRating from Emby on 0-100 scale (None if absent).
         threshold: Computed staleness-decay rating threshold.
         stale_years: Years since the last episode was added to Emby.
         last_episode_added: ISO date string of the most recently added episode.
@@ -132,6 +139,7 @@ class SeriesCleanupCandidate:
     name: str
     year: Optional[int]
     rating: Optional[float]
+    critic_rating: Optional[float]
     threshold: float
     stale_years: float
     last_episode_added: Optional[str]
@@ -185,6 +193,34 @@ def _compute_rating_threshold(age_years: float, config: CleanupConfig) -> float:
     """
     raw = config.base_rating + ((age_years - config.min_age_years) * config.decay_step)
     return min(raw, config.max_rating)
+
+
+def _compute_effective_rating(
+    community_rating: Optional[float],
+    critic_rating: Optional[float],
+) -> float:
+    """Compute effective rating from CommunityRating and CriticRating.
+
+    CriticRating is on a 0-100 scale (Rotten Tomatoes); normalised to 0-10.
+    When both are available, returns their average. When only one is available,
+    returns that source alone (no penalty for missing data).
+
+    Args:
+        community_rating: Emby CommunityRating (0-10 scale). None if absent.
+        critic_rating: Emby CriticRating (0-100 scale). None if absent.
+
+    Returns:
+        Effective rating on 0-10 scale for threshold comparison.
+    """
+    has_community = community_rating is not None
+    has_critic = critic_rating is not None
+    if has_community and has_critic:
+        return (community_rating + critic_rating / _CRITIC_RATING_DIVISOR) / 2.0
+    if has_community:
+        return community_rating
+    if has_critic:
+        return critic_rating / _CRITIC_RATING_DIVISOR
+    return 0.0
 
 
 def _is_franchise_protected(provider_ids: dict) -> bool:
@@ -445,7 +481,7 @@ def _fetch_all_library_movies(
         {
             "Recursive": "true",
             "IncludeItemTypes": "Movie",
-            "Fields": "Path,ProviderIds,DateCreated,ProductionYear,CommunityRating,People,Size,Overview",
+            "Fields": "Path,ProviderIds,DateCreated,ProductionYear,CommunityRating,CriticRating,People,Size,Overview",
             "Limit": str(PAGE_SIZE),
         },
         library_ids,
@@ -770,7 +806,7 @@ def _fetch_all_library_series(
         {
             "Recursive": "true",
             "IncludeItemTypes": "Series",
-            "Fields": "DateCreated,ProviderIds,Path,CommunityRating,ProductionYear,RecursiveItemCount",
+            "Fields": "DateCreated,ProviderIds,Path,CommunityRating,CriticRating,ProductionYear,RecursiveItemCount",
             "Limit": str(PAGE_SIZE),
         },
         library_ids,
@@ -1145,6 +1181,39 @@ def _validate_cleanup_args(
 # ---------------------------------------------------------------------------
 
 
+def _classify_movie_protection(
+    movie: dict,
+    age: float,
+    effective_rating: float,
+    threshold: float,
+    played_ids: set[str],
+    interested_ids: set[str],
+    favorite_actors: set[str],
+    config: CleanupConfig,
+) -> Optional[str]:
+    """Determine which protection layer (if any) shields a movie from cleanup.
+
+    Returns the stats key to increment (e.g. "play_protected"), or None if the
+    movie is a cleanup candidate.
+    """
+    item_id = movie.get("Id", "")
+    if item_id in played_ids:
+        return "play_protected"
+    if item_id in interested_ids:
+        return "interest_protected"
+    if age >= config.masterpiece_only_after_years:
+        return "rating_protected" if effective_rating >= config.masterpiece_rating else None
+    if age < config.no_actor_protection_after_years and _get_movie_actor_names(movie.get("People", [])) & favorite_actors:
+        return "actor_protected"
+    if _is_franchise_protected(movie.get("ProviderIds", {})):
+        return "franchise_protected"
+    if _is_path_protected(movie.get("Path", ""), config.protect_paths):
+        return "path_protected"
+    if effective_rating >= threshold:
+        return "rating_protected"
+    return None
+
+
 def _apply_movie_filters(
     movies: list[dict],
     played_ids: set[str],
@@ -1155,8 +1224,8 @@ def _apply_movie_filters(
 ) -> list[CleanupCandidate]:
     """Apply per-movie protection filters and build CleanupCandidate objects.
 
-    Filter layers applied: play, interest, actor, franchise, path, rating decay.
-    Updates stats counters in place.
+    Filter layers applied: play, interest, masterpiece, actor, franchise, path,
+    rating decay.  Updates stats counters in place.
 
     Args:
         movies: Movie dicts that passed age and exclusion filters (with _age_years set).
@@ -1172,38 +1241,38 @@ def _apply_movie_filters(
     candidates: list[CleanupCandidate] = []
 
     for movie in movies:
-        item_id = movie.get("Id", "")
         age = movie["_age_years"]
         threshold = _compute_rating_threshold(age, config)
-        rating = movie.get("CommunityRating")
-        effective_rating = rating if rating is not None else 0.0
+        community_rating = movie.get("CommunityRating")
+        critic_rating = movie.get("CriticRating")
+        effective_rating = _compute_effective_rating(community_rating, critic_rating)
 
-        if item_id in played_ids:
-            stats["play_protected"] += 1
-        elif item_id in interested_ids:
-            stats["interest_protected"] += 1
-        elif _get_movie_actor_names(movie.get("People", [])) & favorite_actors:
-            stats["actor_protected"] += 1
-        elif _is_franchise_protected(movie.get("ProviderIds", {})):
-            stats["franchise_protected"] += 1
-        elif _is_path_protected(movie.get("Path", ""), config.protect_paths):
-            stats["path_protected"] += 1
-        elif effective_rating >= threshold:
-            stats["rating_protected"] += 1
-        else:
-            candidates.append(
-                CleanupCandidate(
-                    item_id=item_id,
-                    name=movie.get("Name", "Unknown"),
-                    year=movie.get("ProductionYear"),
-                    rating=rating,
-                    threshold=threshold,
-                    age_years=age,
-                    library=movie.get("_library_name", "Unknown"),
-                    size_bytes=movie.get("Size") or 0,
-                    path=movie.get("Path", ""),
-                )
+        protection = _classify_movie_protection(
+            movie, age, effective_rating, threshold,
+            played_ids, interested_ids, favorite_actors, config,
+        )
+        if protection:
+            stats[protection] += 1
+            continue
+
+        # 12+ year masterpiece path overrides the normal decay threshold
+        if age >= config.masterpiece_only_after_years:
+            threshold = config.masterpiece_rating
+
+        candidates.append(
+            CleanupCandidate(
+                item_id=movie.get("Id", ""),
+                name=movie.get("Name", "Unknown"),
+                year=movie.get("ProductionYear"),
+                rating=community_rating,
+                critic_rating=critic_rating,
+                threshold=threshold,
+                age_years=age,
+                library=movie.get("_library_name", "Unknown"),
+                size_bytes=movie.get("Size") or 0,
+                path=movie.get("Path", ""),
             )
+        )
 
     candidates.sort(key=lambda c: c.age_years, reverse=True)
     return candidates
@@ -1334,8 +1403,9 @@ def _apply_series_filters(
         path = series.get("Path", "")
         stale_years = series["_stale_years"]
         threshold = _compute_rating_threshold(stale_years, config)
-        rating = series.get("CommunityRating")
-        effective_rating = rating if rating is not None else 0.0
+        community_rating = series.get("CommunityRating")
+        critic_rating = series.get("CriticRating")
+        effective_rating = _compute_effective_rating(community_rating, critic_rating)
 
         if item_id in played_ids:
             stats["play_protected"] += 1
@@ -1378,6 +1448,7 @@ def _build_series_candidates(
                 name=series.get("Name", "Unknown"),
                 year=series.get("ProductionYear"),
                 rating=series.get("CommunityRating"),
+                critic_rating=series.get("CriticRating"),
                 threshold=threshold,
                 stale_years=stale_years,
                 last_episode_added=series.get("_last_episode_added"),
@@ -1526,6 +1597,30 @@ def _print_movie_stats(protection_stats: dict, config: CleanupConfig) -> None:
     print(f"Final candidates:    {protection_stats.get('final_candidates', 0)}")
 
 
+def _format_rating_str(
+    community_rating: Optional[float],
+    critic_rating: Optional[float],
+) -> str:
+    """Format a combined rating string for console display.
+
+    Shows community/critic when both present, single source alone otherwise.
+
+    Args:
+        community_rating: CommunityRating (0-10). None if absent.
+        critic_rating: CriticRating (0-100). None if absent.
+
+    Returns:
+        Formatted string like "5.0/8.0", "5.0", "RT:8.0", or "none".
+    """
+    if community_rating is not None and critic_rating is not None:
+        return f"{community_rating:.1f}/{critic_rating / _CRITIC_RATING_DIVISOR:.1f}"
+    if community_rating is not None:
+        return f"{community_rating:.1f}"
+    if critic_rating is not None:
+        return f"RT:{critic_rating / _CRITIC_RATING_DIVISOR:.1f}"
+    return "none"
+
+
 def _print_movie_table(candidates: list[CleanupCandidate]) -> None:
     """Print the movie candidates table to stdout.
 
@@ -1550,7 +1645,7 @@ def _print_movie_table(candidates: list[CleanupCandidate]) -> None:
     print("-" * len(header))
 
     for i, c in enumerate(candidates, 1):
-        rating_str = f"{c.rating:.1f}" if c.rating is not None else "none"
+        rating_str = _format_rating_str(c.rating, c.critic_rating)
         name_trunc = c.name[:col_widths[1]] if len(c.name) > col_widths[1] else c.name
         print(
             f"{i:<{col_widths[0]}} "
@@ -1606,7 +1701,7 @@ def _print_series_report(
     print("-" * len(header))
 
     for i, c in enumerate(series_candidates, 1):
-        rating_str = f"{c.rating:.1f}" if c.rating is not None else "none"
+        rating_str = _format_rating_str(c.rating, c.critic_rating)
         name_trunc = c.name[:col_widths[1]] if len(c.name) > col_widths[1] else c.name
         print(
             f"{i:<{col_widths[0]}} "
@@ -1685,6 +1780,7 @@ def _format_cleanup_report_json(
                 "name": c.name,
                 "year": c.year,
                 "rating": c.rating,
+                "critic_rating": c.critic_rating,
                 "threshold": c.threshold,
                 "age_years": round(c.age_years, 2),
                 "library": c.library,
@@ -1707,6 +1803,7 @@ def _format_cleanup_report_json(
                 "name": c.name,
                 "year": c.year,
                 "rating": c.rating,
+                "critic_rating": c.critic_rating,
                 "threshold": c.threshold,
                 "stale_years": round(c.stale_years, 2),
                 "last_episode_added": c.last_episode_added,
@@ -1771,6 +1868,11 @@ def _generate_cleanup_html_report(
             "year": c.year,
             "rating": c.rating,
             "rating_str": f"{c.rating:.1f}" if c.rating is not None else "unrated",
+            "critic_rating": c.critic_rating,
+            "critic_rating_str": (
+                f"{c.critic_rating:.0f}%"
+                if c.critic_rating is not None else None
+            ),
             "threshold": c.threshold,
             "threshold_str": f"{c.threshold:.1f}",
             "age_years": round(c.age_years, 1),
@@ -1801,6 +1903,11 @@ def _generate_cleanup_html_report(
                 "year": c.year,
                 "rating": c.rating,
                 "rating_str": f"{c.rating:.1f}" if c.rating is not None else "unrated",
+                "critic_rating": c.critic_rating,
+                "critic_rating_str": (
+                    f"{c.critic_rating:.0f}%"
+                    if c.critic_rating is not None else None
+                ),
                 "threshold": c.threshold,
                 "threshold_str": f"{c.threshold:.1f}",
                 "stale_years": round(c.stale_years, 1),
