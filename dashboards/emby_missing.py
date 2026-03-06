@@ -69,8 +69,9 @@ def config(mo, refresh_btn):
     mo.hstack([mo.md("# Emby Missing Content Dashboard"), refresh_btn], justify="space-between")
     EMBY_HOST = "https://emby.in.fukiyato.com"
     EMBY_API_KEY = "***EMBY_KEY_REDACTED***"
+    EMBY_SERVER_ID = "ea8f5299fd0649a6867beb6368c873a1"
     TMDB_TOKEN = "***TMDB_TOKEN_REDACTED***"
-    return EMBY_API_KEY, EMBY_HOST, TMDB_TOKEN
+    return EMBY_API_KEY, EMBY_HOST, EMBY_SERVER_ID, TMDB_TOKEN
 
 
 @app.cell
@@ -153,11 +154,11 @@ def load_emby_data(cache_load, cache_save, emby_fetch_all, mo, pd, refresh_btn):
 def analyze_missing_episodes(EMBY_API_KEY, EMBY_HOST, ThreadPoolExecutor, cache_load, cache_save, emby_get, httpx, mo, pd, raw_episodes, raw_series, refresh_btn, threading):
     """Uses Emby's native /Shows/Missing endpoint — the proper way."""
     # Count existing episodes per series + track last added date
-    _ep_count = {}
+    ep_count_by_series = {}
     _last_added = {}
     for _ep in raw_episodes:
         _sid = _ep.get("SeriesId", "")
-        _ep_count[_sid] = _ep_count.get(_sid, 0) + 1
+        ep_count_by_series[_sid] = ep_count_by_series.get(_sid, 0) + 1
         _dc = (_ep.get("DateCreated") or "")[:10]
         if _dc and (_sid not in _last_added or _dc > _last_added[_sid]):
             _last_added[_sid] = _dc
@@ -214,7 +215,7 @@ def analyze_missing_episodes(EMBY_API_KEY, EMBY_HOST, ThreadPoolExecutor, cache_
         if _tmdb_id in _rows:
             continue
 
-        _n_have = _ep_count.get(_sid, 0)
+        _n_have = ep_count_by_series.get(_sid, 0)
         _n_total = _n_have + _n_missing
         _pct = round(_n_have / _n_total * 100, 1) if _n_total > 0 else 0
 
@@ -239,6 +240,7 @@ def analyze_missing_episodes(EMBY_API_KEY, EMBY_HOST, ThreadPoolExecutor, cache_
             "Last Added": _last,
             "Missing Seasons": "",
             "Gaps": "; ".join(f"S{sn}: {cnt} missing" for sn, cnt in sorted(_season_miss.items())[:5]),
+            "Emby ID": _sid,
         }
 
     df_missing_episodes = pd.DataFrame(list(_rows.values())).sort_values(
@@ -248,7 +250,7 @@ def analyze_missing_episodes(EMBY_API_KEY, EMBY_HOST, ThreadPoolExecutor, cache_
     # Keep raw results for export cell
     missing_raw_results = _results
 
-    return df_missing_episodes, missing_raw_results, _ep_count
+    return df_missing_episodes, missing_raw_results, ep_count_by_series
 
 
 @app.cell
@@ -326,6 +328,7 @@ def analyze_missing_franchise(
         if _missing and _have:
             _franchise_gaps.append({
                 "Collection": _coll_data.get("name", "?"),
+                "TMDB Collection ID": _coll_data.get("id", ""),
                 "Total Parts": len(_parts),
                 "Have": len(_have),
                 "Missing": len(_missing),
@@ -474,7 +477,7 @@ def tab_episodes_filters(mo):
 
 
 @app.cell
-def tab_episodes(active_direction, active_period, datetime, df_missing_episodes, go, missing_range, mo, timedelta):
+def tab_episodes(EMBY_HOST, EMBY_SERVER_ID, active_direction, active_period, datetime, df_missing_episodes, go, missing_range, mo, timedelta):
     if df_missing_episodes.empty:
         episodes_tab = mo.callout("No series with missing episodes found.", kind="info")
     else:
@@ -507,8 +510,20 @@ def tab_episodes(active_direction, active_period, datetime, df_missing_episodes,
         _fig2.update_layout(title="Series Completeness Distribution", xaxis_title="% Complete",
                             yaxis_title="Number of Series", height=300, template="plotly_white")
 
-        _display = _filtered[["Name", "Year", "Have Episodes", "Missing Episodes",
-                               "Total Episodes", "% Complete", "Last Added", "Gaps"]].copy()
+        _records = []
+        for _, _r in _filtered.iterrows():
+            _eid = _r.get("Emby ID", "")
+            _link = f"{EMBY_HOST}/web/index.html#!/item?id={_eid}&serverId={EMBY_SERVER_ID}"
+            _records.append({
+                "Name": mo.Html(f'<a href="{_link}" target="_blank" style="position:relative;z-index:10">{_r["Name"]}</a>'),
+                "Year": _r["Year"],
+                "Have": _r["Have Episodes"],
+                "Missing": _r["Missing Episodes"],
+                "Total": _r["Total Episodes"],
+                "% Complete": _r["% Complete"],
+                "Last Added": _r["Last Added"],
+                "Gaps": _r["Gaps"],
+            })
         _total_miss = int(_filtered["Missing Episodes"].sum())
         episodes_tab = mo.vstack([
             mo.md("## Missing Episodes"),
@@ -516,7 +531,7 @@ def tab_episodes(active_direction, active_period, datetime, df_missing_episodes,
             mo.callout(f"{len(_filtered)} series with {_min}-{_max} missing — "
                        f"{_total_miss:,} total missing episodes", kind="warn"),
             _fig, _fig2,
-            mo.ui.table(_display.to_dict("records"), pagination=True, page_size=25, label="Series Gaps"),
+            mo.ui.table(_records, pagination=True, page_size=25, label="Series Gaps"),
         ])
     return (episodes_tab,)
 
@@ -536,14 +551,19 @@ def tab_franchises(df_franchise_gaps, go, mo):
                            xaxis_title="Movies in Collection", height=max(400, len(_top) * 30),
                            template="plotly_white", yaxis={"autorange": "reversed"})
 
-        _display = df_franchise_gaps[["Collection", "Total Parts", "Have", "Missing",
-                                       "% Complete", "Missing Titles"]].copy()
+        _records = [
+            {"Collection": mo.Html(f'<a href="https://www.themoviedb.org/collection/{r["TMDB Collection ID"]}" target="_blank" style="position:relative;z-index:10">{r["Collection"]}</a>'),
+             "Total Parts": r["Total Parts"], "Have": r["Have"], "Missing": r["Missing"],
+             "% Complete": r["% Complete"], "Missing Titles": r["Missing Titles"]}
+            for r in df_franchise_gaps[["Collection", "TMDB Collection ID", "Total Parts", "Have", "Missing",
+                                        "% Complete", "Missing Titles"]].to_dict("records")
+        ]
         franchise_tab = mo.vstack([
             mo.md("## Incomplete Franchises"),
             mo.callout(f"{len(df_franchise_gaps)} incomplete collections — "
                        f"{int(df_franchise_gaps['Missing'].sum())} movies missing", kind="warn"),
             _fig,
-            mo.ui.table(_display.to_dict("records"), pagination=True, page_size=25, label="Franchise Gaps"),
+            mo.ui.table(_records, pagination=True, page_size=25, label="Franchise Gaps"),
         ])
     return (franchise_tab,)
 
@@ -609,19 +629,25 @@ def tab_popular(df_pop_movies, df_pop_series, go, mo, pd, rating_slider, source_
         ], justify="start", gap="2rem"),
         mo.md("### Movies"),
         _fig_m if not _movies.empty else mo.callout("No missing movies matching filters", kind="info"),
-        mo.ui.table(_movies[["Title", "Year", "Rating", "Votes", "Source"]].to_dict("records"),
-                    pagination=True, page_size=25, label="Missing Popular Movies") if not _movies.empty else mo.md(""),
+        mo.ui.table(
+            [{"Title": mo.Html(f'<a href="https://www.themoviedb.org/movie/{r["TMDB ID"]}" target="_blank" style="position:relative;z-index:10">{r["Title"]}</a>'),
+              "Year": r["Year"], "Rating": r["Rating"], "Votes": r["Votes"], "Source": r["Source"]}
+             for r in _movies[["Title", "Year", "Rating", "Votes", "Source", "TMDB ID"]].to_dict("records")],
+            pagination=True, page_size=25, label="Missing Popular Movies") if not _movies.empty else mo.md(""),
         mo.md("### TV Series"),
         _fig_s if not _series.empty else mo.callout("No missing series matching filters", kind="info"),
-        mo.ui.table(_series[["Title", "Year", "Rating", "Votes", "Source"]].to_dict("records"),
-                    pagination=True, page_size=25, label="Missing Popular Series") if not _series.empty else mo.md(""),
+        mo.ui.table(
+            [{"Title": mo.Html(f'<a href="https://www.themoviedb.org/tv/{r["TMDB ID"]}" target="_blank" style="position:relative;z-index:10">{r["Title"]}</a>'),
+              "Year": r["Year"], "Rating": r["Rating"], "Votes": r["Votes"], "Source": r["Source"]}
+             for r in _series[["Title", "Year", "Rating", "Votes", "Source", "TMDB ID"]].to_dict("records")],
+            pagination=True, page_size=25, label="Missing Popular Series") if not _series.empty else mo.md(""),
     ])
     return (popular_tab,)
 
 
 @app.cell
 def export_filters(mo):
-    export_max_shows = mo.ui.slider(start=1, stop=30, value=10, step=1, label="Max shows to export")
+    export_max_shows = mo.ui.slider(start=0, stop=500, value=0, step=5, label="Max shows to export (0 = all)")
     export_missing_range = mo.ui.range_slider(start=1, stop=100, value=[1, 20], step=1, label="Missing episodes range")
     export_min_complete = mo.ui.slider(start=0, stop=100, value=50, step=5, label="Min % complete")
     export_btn = mo.ui.run_button(label="Export for Czech Tracker Scraper")
@@ -681,19 +707,23 @@ def tab_export_data(
         _exported_tmdb.add(_tmdb_id)
 
     _export_data.sort(key=lambda e: len(e["episodes"]))
-    export_data_ready = _export_data[:export_max_shows.value]
+    _max = export_max_shows.value
+    export_data_ready = _export_data if _max == 0 else _export_data[:_max]
     return (export_data_ready,)
 
 
 @app.cell
-def tab_export_preview(export_data_ready, export_max_shows, export_min_complete, export_missing_range, export_btn, mo):
+def tab_export_preview(EMBY_HOST, EMBY_SERVER_ID, export_data_ready, export_max_shows, export_min_complete, export_missing_range, export_btn, mo):
     """Show preview table and filters — always visible."""
     _preview_rows = []
     for _e in export_data_ready:
+        _eid = _e.get("emby_id", "")
+        _link = f"{EMBY_HOST}/web/index.html#!/item?id={_eid}&serverId={EMBY_SERVER_ID}"
+        _imdb = _e.get("imdb_id", "")
         _preview_rows.append({
-            "Show": _e["show"],
+            "Show": mo.Html(f'<a href="{_link}" target="_blank" style="position:relative;z-index:10">{_e["show"]}</a>'),
             "Year": _e.get("year", ""),
-            "IMDB": _e.get("imdb_id", ""),
+            "IMDB": mo.Html(f'<a href="https://www.imdb.com/title/{_imdb}" target="_blank" style="position:relative;z-index:10">{_imdb}</a>') if _imdb else "",
             "Missing Eps": len(_e["episodes"]),
             "Episodes": ", ".join(f"S{ep['season']:02d}E{ep['episode']:02d}" for ep in _e["episodes"][:10]),
         })
@@ -702,7 +732,7 @@ def tab_export_preview(export_data_ready, export_max_shows, export_min_complete,
         mo.md("## Export Missing Episodes for Czech Tracker"),
         mo.callout(
             "Filter shows, preview what will be exported, then click Export. "
-            "Output: `dashboards/exports/missing_episodes.json`",
+            "Output: `/Users/dodko/DEV/torrents/data/missing_episodes.json` (symlink to latest)",
             kind="info",
         ),
         mo.hstack([export_missing_range, export_min_complete, export_max_shows], gap="1rem"),
@@ -717,13 +747,15 @@ def tab_export_preview(export_data_ready, export_max_shows, export_min_complete,
 
 
 @app.cell
-def tab_export_do(Path, datetime, export_btn, export_data_ready, export_preview, jsonlib, mo):
+def tab_export_do(Path, datetime, export_btn, export_data_ready, export_preview, jsonlib, mo, os):
     """Execute export when run_button is clicked."""
     if export_btn.value and export_data_ready:
         _now = datetime.now()
         _ts = int(_now.timestamp())
-        _out_path = Path(f"/Users/dodko/DEV/emby-dedupe/dashboards/exports/missing_episodes_{_ts}.json")
-        _out_path.parent.mkdir(parents=True, exist_ok=True)
+        _export_dir = Path("/Users/dodko/DEV/torrents/data")
+        _export_dir.mkdir(parents=True, exist_ok=True)
+        _out_path = _export_dir / f"missing_episodes_{_ts}.json"
+        _link_path = _export_dir / "missing_episodes.json"
         _total_eps = sum(len(e["episodes"]) for e in export_data_ready)
         _export_wrapper = {
             "exported_at": _now.isoformat(),
@@ -733,10 +765,15 @@ def tab_export_do(Path, datetime, export_btn, export_data_ready, export_preview,
             "shows": export_data_ready,
         }
         _out_path.write_text(jsonlib.dumps(_export_wrapper, indent=2, ensure_ascii=False))
+        # Symlink missing_episodes.json -> latest timestamped file
+        if _link_path.is_symlink() or _link_path.exists():
+            _link_path.unlink()
+        os.symlink(_out_path.name, _link_path)
         export_tab = mo.vstack([
             export_preview,
             mo.callout(
-                f"Exported {len(export_data_ready)} shows ({_total_eps} episodes) to {_out_path}",
+                f"Exported {len(export_data_ready)} shows ({_total_eps} episodes) to {_out_path}\n"
+                f"Symlink: {_link_path} → {_out_path.name}",
                 kind="success",
             ),
         ])
