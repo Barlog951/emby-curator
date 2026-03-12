@@ -425,6 +425,82 @@ class EmbyChecker:
 
         return None
 
+    def _find_validated_series(
+        self, client: httpx.Client, host: str, pid: str, ptype: str,
+    ) -> Optional[dict]:
+        """Search Emby for a series matching the given provider ID.
+
+        Emby may ignore the AnyXxxId filter for Series items and return
+        ALL series. This method validates that the returned series actually
+        has the expected provider ID.
+
+        Returns:
+            Matching series dict, or None if not found.
+        """
+        url = f"{host}/Items"
+        params = {
+            f"Any{ptype}Id": pid,
+            "IncludeItemTypes": "Series",
+            "Recursive": "true",
+            "Fields": "ProviderIds",
+        }
+
+        response = make_http_request(client, "GET", url, params=params)
+        series_items = response.json().get("Items", [])
+
+        for candidate in series_items:
+            candidate_pids = candidate.get("ProviderIds", {})
+            if candidate_pids.get(ptype, "").lower() == pid.lower():
+                return candidate
+
+        if series_items:
+            logger.debug(
+                f"No series with {ptype} ID {pid} found "
+                f"(API returned {len(series_items)} unrelated series)"
+            )
+        return None
+
+    def _fetch_episode_from_series(
+        self, client: httpx.Client, host: str, series: dict,
+        season: int, episode: int, ptype: str,
+    ) -> list[dict]:
+        """Fetch a specific episode from a known series.
+
+        Returns:
+            List of matching episodes (may be empty).
+        """
+        series_id = series["Id"]
+        series_name = series.get("Name", "Unknown")
+
+        url = f"{host}/Items"
+        ep_params = {
+            "ParentId": series_id,
+            "IncludeItemTypes": "Episode",
+            "Recursive": "true",
+            "Fields": SEARCH_FIELDS,
+        }
+
+        response = make_http_request(client, "GET", url, params=ep_params)
+        episodes = response.json().get("Items", [])
+
+        matching = [
+            ep for ep in episodes
+            if ep.get("ParentIndexNumber") == season
+            and ep.get("IndexNumber") == episode
+        ]
+
+        for ep in matching:
+            if not ep.get("SeriesName"):
+                ep["SeriesName"] = series_name
+
+        label = f"S{season:02d}E{episode:02d}"
+        if matching:
+            logger.debug(f"Found {label} in series '{series_name}' via {ptype} provider ID fallback")
+        else:
+            logger.debug(f"{label} not found in series '{series_name}'")
+
+        return matching
+
     def _lookup_episode_via_series(
         self,
         imdb: Optional[str],
@@ -462,76 +538,19 @@ class EmbyChecker:
             logger.debug(f"Series fallback: searching for series via {ptype} ID: {pid}")
 
             try:
-                url = f"{host}/Items"
-                params = {
-                    f"Any{ptype}Id": pid,
-                    "IncludeItemTypes": "Series",
-                    "Recursive": "true",
-                    "Fields": "ProviderIds",
-                }
-
-                response = make_http_request(client, "GET", url, params=params)
-                series_items = response.json().get("Items", [])
-
-                if not series_items:
-                    continue
-
-                # Validate: Emby may ignore the AnyXxxId filter for Series items
-                # and return ALL series. Pick only a series whose ProviderIds
-                # actually contain the expected ID.
-                series = None
-                for candidate in series_items:
-                    candidate_pids = candidate.get("ProviderIds", {})
-                    if candidate_pids.get(ptype, "").lower() == pid.lower():
-                        series = candidate
-                        break
-
+                series = self._find_validated_series(client, host, pid, ptype)
                 if series is None:
-                    logger.debug(
-                        f"No series with {ptype} ID {pid} found "
-                        f"(API returned {len(series_items)} unrelated series)"
-                    )
                     continue
 
-                series_id = series["Id"]
-                series_name = series.get("Name", "Unknown")
                 logger.debug(
-                    f"Found series '{series_name}' (ID: {series_id}) via {ptype} ID"
+                    f"Found series '{series.get('Name', 'Unknown')}' "
+                    f"(ID: {series['Id']}) via {ptype} ID"
                 )
 
-                # Fetch episodes within this series
-                ep_params = {
-                    "ParentId": series_id,
-                    "IncludeItemTypes": "Episode",
-                    "Recursive": "true",
-                    "Fields": SEARCH_FIELDS,
-                }
-
-                response = make_http_request(client, "GET", url, params=ep_params)
-                episodes = response.json().get("Items", [])
-
-                matching = [
-                    ep for ep in episodes
-                    if ep.get("ParentIndexNumber") == season
-                    and ep.get("IndexNumber") == episode
-                ]
-
-                for ep in matching:
-                    if not ep.get("SeriesName"):
-                        ep["SeriesName"] = series_name
-
-                if matching:
-                    logger.debug(
-                        f"Found S{season:02d}E{episode:02d} in series "
-                        f"'{series_name}' via {ptype} provider ID fallback"
-                    )
-                else:
-                    logger.debug(
-                        f"S{season:02d}E{episode:02d} not found in series '{series_name}'"
-                    )
-
                 # Series was found — return result even if empty (episode doesn't exist)
-                return matching
+                return self._fetch_episode_from_series(
+                    client, host, series, season, episode, ptype
+                )
 
             except Exception as e:
                 logger.debug(f"Series provider ID lookup failed ({ptype}): {e}")
