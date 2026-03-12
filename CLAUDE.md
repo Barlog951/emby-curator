@@ -204,7 +204,7 @@ emby-dedupe --host "..." --api-key "..." --all-libraries cleanup --username Barl
 emby-dedupe --host "..." --api-key "..." -l "HD & 4k" --doit cleanup --username Barlog --password "..." --exclude-ids "tt0000001"
 ```
 
-Dynamic rating decay: 3yr→6.0, 4yr→6.5, 5yr→7.0, 6yr→7.5, 7yr+→8.0 cap
+Dynamic rating decay: 3yr→6.0, 4yr→6.5, 5yr→7.0, 6yr→7.5, 7yr→8.0 cap, 10yr+→no actor protection, 12yr+→only 9.0+ rating protects
 
 Genre commands:
 ```bash
@@ -261,8 +261,8 @@ emby-dedupe --host "..." --api-key "..." genres process --doit --validate --item
 - **Marimo gotcha**: All cell variables must be unique — use `_` prefix for cell-local vars
 
 ## Testing
-- Comprehensive test suite with 669 tests covering all key functionality
-- Current test coverage: 70%+
+- Comprehensive test suite with 806 tests covering all key functionality
+- Current test coverage: 84%+
 - Run via Makefile: `make lint`, `make mypy`, `make test`, `make coverage`, `make allfx`
 - CI/CD with GitHub Actions workflows for testing, security scanning, and Docker builds
 - Tests are organized in the same structure as the main package
