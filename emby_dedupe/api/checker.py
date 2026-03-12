@@ -43,7 +43,8 @@ from emby_dedupe.api.quality_compare import (
     ProposedQuality,
     compare_quality,
 )
-from emby_dedupe.api.search import search_media
+from emby_dedupe.api.search import SEARCH_FIELDS, search_media
+from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.config import Config, ensure_cache_dir
 from emby_dedupe.utils.logging import logger
 
@@ -424,6 +425,120 @@ class EmbyChecker:
 
         return None
 
+    def _lookup_episode_via_series(
+        self,
+        imdb: Optional[str],
+        tmdb: Optional[str],
+        tvdb: Optional[str],
+        season: int,
+        episode: int,
+    ) -> Optional[list[dict]]:
+        """Find episode by searching for the parent series via provider ID.
+
+        The cached provider tables only index non-folder items (episodes).
+        Individual episodes often don't carry the series-level IMDB ID in their
+        own ProviderIds — that ID lives on the Series item. This method queries
+        the Emby API directly to find the series, then looks up the episode.
+
+        Args:
+            imdb: IMDB ID (series-level).
+            tmdb: TMDB ID (series-level).
+            tvdb: TVDB ID (series-level).
+            season: Season number.
+            episode: Episode number.
+
+        Returns:
+            List of matching episodes if series found (may be empty if episode
+            doesn't exist in that series). None if no series found via any
+            provider ID.
+        """
+        client = self._get_client()
+        host, _ = self._ensure_config()
+
+        for pid, ptype in [(imdb, "Imdb"), (tmdb, "Tmdb"), (tvdb, "Tvdb")]:
+            if not pid:
+                continue
+
+            logger.debug(f"Series fallback: searching for series via {ptype} ID: {pid}")
+
+            try:
+                url = f"{host}/Items"
+                params = {
+                    f"Any{ptype}Id": pid,
+                    "IncludeItemTypes": "Series",
+                    "Recursive": "true",
+                    "Fields": "ProviderIds",
+                }
+
+                response = make_http_request(client, "GET", url, params=params)
+                series_items = response.json().get("Items", [])
+
+                if not series_items:
+                    continue
+
+                # Validate: Emby may ignore the AnyXxxId filter for Series items
+                # and return ALL series. Pick only a series whose ProviderIds
+                # actually contain the expected ID.
+                series = None
+                for candidate in series_items:
+                    candidate_pids = candidate.get("ProviderIds", {})
+                    if candidate_pids.get(ptype, "").lower() == pid.lower():
+                        series = candidate
+                        break
+
+                if series is None:
+                    logger.debug(
+                        f"No series with {ptype} ID {pid} found "
+                        f"(API returned {len(series_items)} unrelated series)"
+                    )
+                    continue
+
+                series_id = series["Id"]
+                series_name = series.get("Name", "Unknown")
+                logger.debug(
+                    f"Found series '{series_name}' (ID: {series_id}) via {ptype} ID"
+                )
+
+                # Fetch episodes within this series
+                ep_params = {
+                    "ParentId": series_id,
+                    "IncludeItemTypes": "Episode",
+                    "Recursive": "true",
+                    "Fields": SEARCH_FIELDS,
+                }
+
+                response = make_http_request(client, "GET", url, params=ep_params)
+                episodes = response.json().get("Items", [])
+
+                matching = [
+                    ep for ep in episodes
+                    if ep.get("ParentIndexNumber") == season
+                    and ep.get("IndexNumber") == episode
+                ]
+
+                for ep in matching:
+                    if not ep.get("SeriesName"):
+                        ep["SeriesName"] = series_name
+
+                if matching:
+                    logger.debug(
+                        f"Found S{season:02d}E{episode:02d} in series "
+                        f"'{series_name}' via {ptype} provider ID fallback"
+                    )
+                else:
+                    logger.debug(
+                        f"S{season:02d}E{episode:02d} not found in series '{series_name}'"
+                    )
+
+                # Series was found — return result even if empty (episode doesn't exist)
+                return matching
+
+            except Exception as e:
+                logger.debug(f"Series provider ID lookup failed ({ptype}): {e}")
+                continue
+
+        return None  # No series found via any provider ID
+
     def _search_by_name(self, name: str, year: Optional[int], season: Optional[int], episode: Optional[int]) -> list:
         """Search for existing media by name with caching."""
         logger.debug(f"Provider ID not found or not provided, searching by name: {name}")
@@ -537,10 +652,20 @@ class EmbyChecker:
         # Try provider ID lookup first (instant with cached tables)
         existing_items = self._lookup_by_any_provider_id(imdb, tmdb, tvdb)
 
-        # If provider ID lookup didn't find anything, try name search
-        if not existing_items and name:
+        # Fallback for TV episodes: cached tables only index episodes (IsFolder=False),
+        # so series-level provider IDs (e.g., IMDB on the Series item) won't be found.
+        # Search the Emby API directly for the series by provider ID, then find the episode.
+        if not existing_items and season is not None and episode is not None:
+            series_result = self._lookup_episode_via_series(
+                imdb, tmdb, tvdb, season, episode
+            )
+            if series_result is not None:
+                existing_items = series_result
+
+        # Fall back to name search only if no provider-based result found
+        if existing_items is None and name:
             existing_items = self._search_by_name(name, year, season, episode)
-        elif not existing_items:
+        if not existing_items:
             existing_items = []
 
         # Compare quality

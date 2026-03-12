@@ -653,3 +653,292 @@ class TestEmbyChecker:
         # Connection failure should propagate
         with pytest.raises(httpx.ConnectError):
             checker._get_client().request("GET", "http://emby.local/test")
+
+    # ========== Series Provider ID Fallback Tests ==========
+
+    @patch('emby_dedupe.api.checker.make_http_request')
+    def test_lookup_episode_via_series_found(self, mock_request):
+        """Test finding episode via series IMDB ID when episode-level lookup fails.
+
+        Reproduces the Doctor Who / Pán času bug: series has IMDB tt0436992 but
+        individual episodes don't carry it in their ProviderIds. The fallback
+        should find the series by IMDB, then locate the episode within it.
+        """
+        checker = EmbyChecker(
+            host="http://emby.local",
+            api_key="test-key",
+        )
+        checker._client = Mock()
+
+        # First call: search for Series by IMDB ID
+        series_response = Mock()
+        series_response.json.return_value = {
+            "Items": [{"Id": "series-123", "Name": "Pán času", "ProviderIds": {"Imdb": "tt0436992"}}]
+        }
+
+        # Second call: fetch episodes within the series
+        episodes_response = Mock()
+        episodes_response.json.return_value = {
+            "Items": [
+                {"Id": "ep1", "Name": "New Earth", "ParentIndexNumber": 2, "IndexNumber": 1,
+                 "MediaStreams": [], "Path": "/Series/Pan Casu/S02/S02E01.mkv"},
+                {"Id": "ep2", "Name": "Tooth and Claw", "ParentIndexNumber": 2, "IndexNumber": 2,
+                 "MediaStreams": [], "Path": "/Series/Pan Casu/S02/S02E02.mkv"},
+            ]
+        }
+
+        mock_request.side_effect = [series_response, episodes_response]
+
+        result = checker._lookup_episode_via_series("tt0436992", None, None, season=2, episode=1)
+
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["Id"] == "ep1"
+        assert result[0]["Name"] == "New Earth"
+        assert result[0]["SeriesName"] == "Pán času"
+
+    @patch('emby_dedupe.api.checker.make_http_request')
+    def test_lookup_episode_via_series_episode_not_in_series(self, mock_request):
+        """Test when series is found but specific episode doesn't exist."""
+        checker = EmbyChecker(
+            host="http://emby.local",
+            api_key="test-key",
+        )
+        checker._client = Mock()
+
+        series_response = Mock()
+        series_response.json.return_value = {
+            "Items": [{"Id": "series-123", "Name": "Pán času", "ProviderIds": {"Imdb": "tt0436992"}}]
+        }
+
+        episodes_response = Mock()
+        episodes_response.json.return_value = {
+            "Items": [
+                {"Id": "ep1", "ParentIndexNumber": 2, "IndexNumber": 1},
+            ]
+        }
+
+        mock_request.side_effect = [series_response, episodes_response]
+
+        # Looking for S02E99 which doesn't exist
+        result = checker._lookup_episode_via_series("tt0436992", None, None, season=2, episode=99)
+
+        # Should return empty list (not None) — series was found, episode doesn't exist
+        assert result is not None
+        assert result == []
+
+    @patch('emby_dedupe.api.checker.make_http_request')
+    def test_lookup_episode_via_series_no_series_found(self, mock_request):
+        """Test when no series matches the provider ID."""
+        checker = EmbyChecker(
+            host="http://emby.local",
+            api_key="test-key",
+        )
+        checker._client = Mock()
+
+        # No series found for IMDB ID
+        series_response = Mock()
+        series_response.json.return_value = {"Items": []}
+
+        mock_request.return_value = series_response
+
+        result = checker._lookup_episode_via_series("tt9999999", None, None, season=1, episode=1)
+
+        # Should return None — no series found, caller should try name search
+        assert result is None
+
+    @patch('emby_dedupe.api.checker.make_http_request')
+    def test_lookup_episode_via_series_tmdb_fallback(self, mock_request):
+        """Test that TMDB ID is tried when IMDB lookup returns no series."""
+        checker = EmbyChecker(
+            host="http://emby.local",
+            api_key="test-key",
+        )
+        checker._client = Mock()
+
+        # IMDB search returns nothing
+        imdb_response = Mock()
+        imdb_response.json.return_value = {"Items": []}
+
+        # TMDB search finds the series
+        tmdb_series_response = Mock()
+        tmdb_series_response.json.return_value = {
+            "Items": [{"Id": "series-456", "Name": "Doctor Who", "ProviderIds": {"Tmdb": "57243"}}]
+        }
+
+        # Episode fetch
+        episodes_response = Mock()
+        episodes_response.json.return_value = {
+            "Items": [
+                {"Id": "ep5", "ParentIndexNumber": 2, "IndexNumber": 5, "SeriesName": "Doctor Who"},
+            ]
+        }
+
+        mock_request.side_effect = [imdb_response, tmdb_series_response, episodes_response]
+
+        result = checker._lookup_episode_via_series("tt9999999", "57243", None, season=2, episode=5)
+
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["Id"] == "ep5"
+
+    @patch('emby_dedupe.api.checker.compare_quality')
+    @patch('emby_dedupe.api.checker.make_http_request')
+    def test_check_uses_series_fallback_for_tv_episodes(self, mock_request, mock_compare):
+        """Test that check() uses series fallback when provider table misses for TV episodes.
+
+        End-to-end test: IMDB ID is on the series (not in episode-level provider tables),
+        and the series has a different name than expected. The fallback finds the episode.
+        """
+        checker = EmbyChecker(
+            host="http://emby.local",
+            api_key="test-key",
+            use_cache=False,
+        )
+
+        # Provider tables have no entry for the series IMDB ID
+        checker._provider_tables = {"imdb": {}, "tmdb": {}, "tvdb": {}}
+        checker._client = Mock()
+
+        # Series search by IMDB
+        series_response = Mock()
+        series_response.json.return_value = {
+            "Items": [{"Id": "series-123", "Name": "Pán času", "ProviderIds": {"Imdb": "tt0436992"}}]
+        }
+
+        # Episode fetch
+        episodes_response = Mock()
+        episodes_response.json.return_value = {
+            "Items": [
+                {"Id": "ep1", "Name": "New Earth", "ParentIndexNumber": 2, "IndexNumber": 1,
+                 "MediaStreams": [{"Type": "Video", "Codec": "h264", "Width": 1280}]},
+            ]
+        }
+
+        mock_request.side_effect = [series_response, episodes_response]
+        mock_compare.return_value = ComparisonResult(
+            recommendation="skip",
+            reason="existing_same",
+            status="existing_same",
+        )
+
+        result = checker.check(
+            name="Doctor Who",
+            imdb="tt0436992",
+            season=2,
+            episode=1,
+            resolution="1080p",
+        )
+
+        # Should have found the episode via series fallback, not via name search
+        assert result.recommendation == "skip"
+        mock_compare.assert_called_once()
+        # The existing items passed to compare_quality should contain the episode
+        call_args = mock_compare.call_args
+        existing_items = call_args[0][1]
+        assert len(existing_items) == 1
+        assert existing_items[0]["Id"] == "ep1"
+
+    @patch('emby_dedupe.api.checker.compare_quality')
+    @patch('emby_dedupe.api.checker.search_media')
+    @patch('emby_dedupe.api.checker.make_http_request')
+    def test_check_skips_name_search_when_series_found(self, mock_request, mock_search, mock_compare):
+        """Test that name search is skipped when series was found via provider ID (even if episode missing)."""
+        checker = EmbyChecker(
+            host="http://emby.local",
+            api_key="test-key",
+            use_cache=False,
+        )
+
+        checker._provider_tables = {"imdb": {}, "tmdb": {}, "tvdb": {}}
+        checker._client = Mock()
+
+        # Series found but episode doesn't exist
+        series_response = Mock()
+        series_response.json.return_value = {
+            "Items": [{"Id": "series-123", "Name": "Pán času", "ProviderIds": {"Imdb": "tt0436992"}}]
+        }
+        episodes_response = Mock()
+        episodes_response.json.return_value = {"Items": []}
+
+        mock_request.side_effect = [series_response, episodes_response]
+        mock_compare.return_value = ComparisonResult(
+            recommendation="download",
+            reason="not_found",
+            status="not_found",
+        )
+
+        result = checker.check(
+            name="Doctor Who",
+            imdb="tt0436992",
+            season=2,
+            episode=99,
+            resolution="1080p",
+        )
+
+        # Name search should NOT have been called — series was positively identified
+        mock_search.assert_not_called()
+        assert result.recommendation == "download"
+
+    @patch('emby_dedupe.api.checker.make_http_request')
+    def test_lookup_episode_via_series_ignores_unrelated_series(self, mock_request):
+        """Regression: Emby may ignore AnyImdbId filter and return ALL series.
+
+        When searching for 'Memory of a Killer' (tt35707374), the API returned
+        '2 Broke Girls' (first alphabetically). The code must validate that the
+        returned series actually has the expected provider ID.
+        """
+        checker = EmbyChecker(
+            host="http://emby.local",
+            api_key="test-key",
+        )
+        checker._client = Mock()
+
+        # Emby returns unrelated series (ignoring AnyImdbId filter)
+        series_response = Mock()
+        series_response.json.return_value = {
+            "Items": [
+                {"Id": "wrong-1", "Name": "2 Broke Girls", "ProviderIds": {"Imdb": "tt2069997"}},
+                {"Id": "wrong-2", "Name": "Another Show", "ProviderIds": {"Imdb": "tt1111111"}},
+            ]
+        }
+
+        mock_request.return_value = series_response
+
+        result = checker._lookup_episode_via_series("tt35707374", None, None, season=1, episode=6)
+
+        # Should return None — none of the returned series match tt35707374
+        assert result is None
+
+    @patch('emby_dedupe.api.checker.make_http_request')
+    def test_lookup_episode_via_series_picks_correct_from_multiple(self, mock_request):
+        """When API returns multiple series, pick the one with matching provider ID."""
+        checker = EmbyChecker(
+            host="http://emby.local",
+            api_key="test-key",
+        )
+        checker._client = Mock()
+
+        # API returns multiple series, only one matches
+        series_response = Mock()
+        series_response.json.return_value = {
+            "Items": [
+                {"Id": "wrong-1", "Name": "2 Broke Girls", "ProviderIds": {"Imdb": "tt2069997"}},
+                {"Id": "correct", "Name": "Memory of a Killer", "ProviderIds": {"Imdb": "tt35707374"}},
+            ]
+        }
+
+        episodes_response = Mock()
+        episodes_response.json.return_value = {
+            "Items": [
+                {"Id": "ep1", "Name": "Episode 6", "ParentIndexNumber": 1, "IndexNumber": 6},
+            ]
+        }
+
+        mock_request.side_effect = [series_response, episodes_response]
+
+        result = checker._lookup_episode_via_series("tt35707374", None, None, season=1, episode=6)
+
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["Id"] == "ep1"
