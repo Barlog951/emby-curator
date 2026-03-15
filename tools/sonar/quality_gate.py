@@ -25,7 +25,7 @@ METRIC_NAMES = {
 def _get_task_url():
     """Read task URL from report file."""
     try:
-        with open('.sonar/report-task.txt', 'r') as f:
+        with open('.scannerwork/report-task.txt', 'r') as f:
             for line in f:
                 if line.startswith('ceTaskUrl='):
                     return line.strip().split('=', 1)[1]
