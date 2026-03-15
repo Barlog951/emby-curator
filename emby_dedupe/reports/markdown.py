@@ -199,7 +199,7 @@ def _build_table_row(decision: Dict[str, Any], base_url: str) -> Dict[str, str]:
         "ID": f"[{keep['id']}]({base_url}/web/index.html#!/item?id={keep['id']}&serverId={keep['serverid']})",
         "Title": title,
         "Codec": keep["quality_description"].get("video", {}).get("codec", "unknown"),
-        "Size": str(keep["quality_description"]["size"]),
+        "Size": str(keep["quality_description"].get("size", 0)),
         "ITEMS_TO_DELETE_HEADER": "<br>".join(
             format_individual_item(item, base_url, decision)
             for item in decision["delete"]

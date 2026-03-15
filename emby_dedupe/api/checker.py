@@ -224,7 +224,7 @@ class EmbyChecker:
 
     def _merge_provider_tables(self, all_tables: dict, tables: dict) -> None:
         """Merge library tables into all_tables (in-place)."""
-        for provider in ["imdb", "tvdb", "tmdb"]:
+        for provider in ["imdb", "tvdb", "tmdb", "series_episode"]:
             for pid, items in tables[provider].items():
                 if pid not in all_tables[provider]:
                     all_tables[provider][pid] = []
@@ -240,7 +240,7 @@ class EmbyChecker:
 
         client = self._get_client()
         host, _ = self._ensure_config()
-        all_tables: dict[str, dict] = {"imdb": {}, "tvdb": {}, "tmdb": {}}
+        all_tables: dict[str, dict] = {"imdb": {}, "tvdb": {}, "tmdb": {}, "series_episode": {}}
 
         library_names = self._get_library_names(client)
 
@@ -264,7 +264,8 @@ class EmbyChecker:
         total_imdb = len(all_tables["imdb"])
         total_tmdb = len(all_tables["tmdb"])
         total_tvdb = len(all_tables["tvdb"])
-        logger.info(f"Provider ID index built: {total_imdb} IMDB, {total_tmdb} TMDB, {total_tvdb} TVDB")
+        total_se = len(all_tables["series_episode"])
+        logger.info(f"Provider ID index built: {total_imdb} IMDB, {total_tmdb} TMDB, {total_tvdb} TVDB, {total_se} series-episode groups")
 
         return all_tables
 

@@ -32,7 +32,7 @@ class TestClient:
     
     def test_build_provider_id_tables(self):
         """Test building provider ID tables from media items."""
-        provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "library_name": "Test Library"}
+        provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "series_episode": {}, "library_name": "Test Library"}
         
         # Create test media items
         media_items = [
@@ -84,7 +84,7 @@ class TestClient:
     
     def test_build_provider_id_tables_with_ignored_imdb(self):
         """Test that ignored IMDB IDs are skipped."""
-        provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "library_name": "Test Library"}
+        provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "series_episode": {}, "library_name": "Test Library"}
         media_items = [
             {
                 "Id": "12345",
@@ -110,7 +110,7 @@ class TestClient:
     
     def test_build_provider_id_tables_skips_folders(self):
         """Test that folders are skipped when building provider ID tables."""
-        provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "library_name": "Test Library"}
+        provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "series_episode": {}, "library_name": "Test Library"}
         media_items = [
             {
                 "Id": "12345",
@@ -138,7 +138,7 @@ class TestClient:
 
         This test ensures both variants are handled correctly.
         """
-        provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "library_name": "Test Library"}
+        provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "series_episode": {}, "library_name": "Test Library"}
 
         # Create test media items with different casing for provider ID keys
         media_items = [
@@ -197,6 +197,66 @@ class TestClient:
         tmdb_items = provider_tables["tmdb"]["1234"]
         assert len(tmdb_items) == 3
     
+    def test_build_provider_id_tables_series_episode_grouping(self):
+        """Test that episodes are grouped by SeriesName+Season+Episode even without provider IDs."""
+        provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "series_episode": {}, "library_name": "Test Library"}
+
+        media_items = [
+            {
+                "Id": "aaa",
+                "Name": "Doctor Who S01E03 720p",
+                "IsFolder": False,
+                "SeriesName": "Doctor Who",
+                "ParentIndexNumber": 1,
+                "IndexNumber": 3,
+                "ProviderIds": {},  # No provider IDs at all
+            },
+            {
+                "Id": "bbb",
+                "Name": "Doctor Who S01E03 1080p",
+                "IsFolder": False,
+                "SeriesName": "Doctor Who",
+                "ParentIndexNumber": 1,
+                "IndexNumber": 3,
+                "ProviderIds": {"Tvdb": "295296", "Imdb": "tt0563001"},
+            },
+        ]
+
+        build_provider_id_tables(media_items, provider_tables)
+
+        # Item "aaa" has no provider IDs → NOT in imdb/tvdb/tmdb
+        assert "aaa" not in [i["id"] for t in ["imdb", "tvdb", "tmdb"] for i in sum(provider_tables[t].values(), [])]
+
+        # Both items grouped in series_episode
+        se_key = "Doctor Who|S1E3"
+        assert se_key in provider_tables["series_episode"]
+        se_items = provider_tables["series_episode"][se_key]
+        assert len(se_items) == 2
+        assert {i["id"] for i in se_items} == {"aaa", "bbb"}
+
+    def test_build_provider_id_tables_series_episode_no_duplicates(self):
+        """Test that series_episode doesn't add the same item twice."""
+        provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "series_episode": {}, "library_name": "Test Library"}
+
+        media_items = [
+            {
+                "Id": "xyz",
+                "Name": "Show S02E05",
+                "IsFolder": False,
+                "SeriesName": "Show",
+                "ParentIndexNumber": 2,
+                "IndexNumber": 5,
+                "ProviderIds": {"Tvdb": "999"},
+            },
+        ]
+
+        build_provider_id_tables(media_items, provider_tables)
+
+        # Single item → series_episode has 1 entry, not a duplicate
+        se_key = "Show|S2E5"
+        assert se_key in provider_tables["series_episode"]
+        assert len(provider_tables["series_episode"][se_key]) == 1
+
     @patch('emby_dedupe.api.client.make_http_request')
     def test_fetch_and_process_media_items(self, mock_make_http_request):
         """Test fetching and processing media items."""

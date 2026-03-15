@@ -348,6 +348,7 @@ def cleanup_cmd(
     output_json: bool = typer.Option(False, "--json", help="Output report as JSON instead of console table."),
     html_report: bool = typer.Option(False, "--html-report", envvar="DEDUPE_HTML_REPORT", help="Generate HTML report."),
     html_only: bool = typer.Option(False, "--html-only", envvar="DEDUPE_HTML_ONLY", help="HTML report only, skip console output and don't open browser."),
+    near_miss: int = typer.Option(5, "--near-miss", help="Show N next candidates for removal with countdown (0 to disable)."),
 ) -> None:
     """Identify dead movies nobody watches for library hygiene (dynamic rating decay model)."""
     from argparse import Namespace
@@ -376,6 +377,7 @@ def cleanup_cmd(
         html_report=html_report,
         html_only=html_only,
         no_open=html_only,
+        near_miss_count=near_miss,
     )
 
     run_cleanup_command(args)

@@ -65,6 +65,16 @@ def cache_on_refresh(cache_clear, refresh_btn):
 
 
 @app.cell
+def current_year_filter(datetime, mo):
+    _year = datetime.now().year
+    hide_current_year = mo.ui.switch(
+        value=True,
+        label=f"Hide {_year} releases (potentially not arrived yet)"
+    )
+    return (hide_current_year,)
+
+
+@app.cell
 def config(mo, refresh_btn):
     mo.hstack([mo.md("# Emby Missing Content Dashboard"), refresh_btn], justify="space-between")
     EMBY_HOST = "https://emby.in.fukiyato.com"
@@ -255,7 +265,7 @@ def analyze_missing_episodes(EMBY_API_KEY, EMBY_HOST, ThreadPoolExecutor, cache_
 
 @app.cell
 def analyze_missing_franchise(
-    TMDB_TOKEN, ThreadPoolExecutor, cache_load, cache_save, emby_tmdb_movie_ids,
+    TMDB_TOKEN, ThreadPoolExecutor, cache_load, cache_save, datetime, emby_tmdb_movie_ids,
     httpx, mo, movie_by_tmdb, pd, refresh_btn, threading,
 ):
     _tmdb_ids = list(emby_tmdb_movie_ids)
@@ -308,44 +318,71 @@ def analyze_missing_franchise(
         cache_save("franchise_coll_results", _coll_results)
         mo.callout("Fetched fresh franchise data", kind="success")
 
-    _franchise_gaps = []
-    for _coll_data in _coll_results:
-        if not _coll_data:
-            continue
-        _parts = _coll_data.get("parts", [])
-        if len(_parts) <= 1:
-            continue
+    _current_year = str(datetime.now().year)
 
-        _have, _missing = [], []
-        for _p in sorted(_parts, key=lambda x: x.get("release_date", "") or "9999"):
-            if str(_p["id"]) in emby_tmdb_movie_ids:
-                _have.append(_p)
-            else:
-                _yr = (_p.get("release_date") or "")[:4]
-                if _yr and _yr.isdigit() and int(_yr) <= 2026:
-                    _missing.append(_p)
+    def _build_franchise_data(exclude_year=None):
+        """Build franchise gaps list, optionally excluding a specific release year."""
+        _gaps = []
+        _export = []
+        for _coll_data in _coll_results:
+            if not _coll_data:
+                continue
+            _parts = _coll_data.get("parts", [])
+            if len(_parts) <= 1:
+                continue
 
-        if _missing and _have:
-            _franchise_gaps.append({
-                "Collection": _coll_data.get("name", "?"),
-                "TMDB Collection ID": _coll_data.get("id", ""),
-                "Total Parts": len(_parts),
-                "Have": len(_have),
-                "Missing": len(_missing),
-                "% Complete": round(len(_have) / len(_parts) * 100),
-                "Missing Titles": ", ".join(
-                    f"{p['title']} ({(p.get('release_date') or '?')[:4]})" for p in _missing[:5]
-                ),
-                "Have Titles": ", ".join(
-                    movie_by_tmdb.get(str(p["id"]), p["title"]) for p in _have[:5]
-                ),
-            })
+            _have, _missing = [], []
+            for _p in sorted(_parts, key=lambda x: x.get("release_date", "") or "9999"):
+                if str(_p["id"]) in emby_tmdb_movie_ids:
+                    _have.append(_p)
+                else:
+                    _yr = (_p.get("release_date") or "")[:4]
+                    if _yr and _yr.isdigit() and int(_yr) <= 2026:
+                        if exclude_year and _yr == exclude_year:
+                            continue
+                        _missing.append(_p)
+
+            if _missing and _have:
+                _gaps.append({
+                    "Collection": _coll_data.get("name", "?"),
+                    "TMDB Collection ID": _coll_data.get("id", ""),
+                    "Total Parts": len(_parts),
+                    "Have": len(_have),
+                    "Missing": len(_missing),
+                    "% Complete": round(len(_have) / len(_parts) * 100),
+                    "Missing Titles": ", ".join(
+                        f"{p['title']} ({(p.get('release_date') or '?')[:4]})" for p in _missing[:5]
+                    ),
+                    "Have Titles": ", ".join(
+                        movie_by_tmdb.get(str(p["id"]), p["title"]) for p in _have[:5]
+                    ),
+                })
+                _export.append({
+                    "collection": _coll_data.get("name", "?"),
+                    "tmdb_collection_id": _coll_data.get("id", ""),
+                    "total_parts": len(_parts),
+                    "have": len(_have),
+                    "missing_movies": [
+                        {"title": _p["title"], "year": (_p.get("release_date") or "")[:4], "tmdb_id": _p["id"]}
+                        for _p in _missing
+                    ],
+                })
+        return _gaps, _export
+
+    _franchise_gaps, _franchise_export = _build_franchise_data()
+    _franchise_gaps_no_current, _ = _build_franchise_data(exclude_year=_current_year)
 
     df_franchise_gaps = pd.DataFrame(_franchise_gaps).sort_values(
         "Missing", ascending=False
     ) if _franchise_gaps else pd.DataFrame()
 
-    return (df_franchise_gaps,)
+    df_franchise_gaps_filtered = pd.DataFrame(_franchise_gaps_no_current).sort_values(
+        "Missing", ascending=False
+    ) if _franchise_gaps_no_current else pd.DataFrame()
+
+    franchise_export_raw = _franchise_export
+
+    return df_franchise_gaps, df_franchise_gaps_filtered, franchise_export_raw
 
 
 @app.cell
@@ -406,11 +443,12 @@ def analyze_popular_missing(cache_load, cache_save, emby_tmdb_movie_ids, emby_tm
 
 
 @app.cell
-def tab_overview_missing(df_franchise_gaps, df_missing_episodes, df_pop_movies, df_pop_series, go, mo, raw_movies, raw_series):
+def tab_overview_missing(df_franchise_gaps, df_franchise_gaps_filtered, df_missing_episodes, df_pop_movies, df_pop_series, go, hide_current_year, mo, raw_movies, raw_series):
+    _fran_df = df_franchise_gaps_filtered if hide_current_year.value else df_franchise_gaps
     _n_miss_eps = int(df_missing_episodes["Missing Episodes"].sum()) if not df_missing_episodes.empty else 0
     _n_series_gaps = len(df_missing_episodes) if not df_missing_episodes.empty else 0
-    _n_fran_gaps = len(df_franchise_gaps) if not df_franchise_gaps.empty else 0
-    _n_fran_miss = int(df_franchise_gaps["Missing"].sum()) if not df_franchise_gaps.empty else 0
+    _n_fran_gaps = len(_fran_df) if not _fran_df.empty else 0
+    _n_fran_miss = int(_fran_df["Missing"].sum()) if not _fran_df.empty else 0
 
     _stats = mo.hstack([
         mo.stat(value=f"{len(raw_movies):,}", label="Movies in Library"),
@@ -429,9 +467,9 @@ def tab_overview_missing(df_franchise_gaps, df_missing_episodes, df_pop_movies, 
                               values=[int(df_missing_episodes["Have Episodes"].sum()), _n_miss_eps],
                               name="Episodes", domain={"x": [0, 0.3]},
                               marker_colors=["#2ecc71", "#e74c3c"], hole=0.5))
-    if not df_franchise_gaps.empty:
+    if not _fran_df.empty:
         _fig.add_trace(go.Pie(labels=["Have", "Missing"],
-                              values=[int(df_franchise_gaps["Have"].sum()), _n_fran_miss],
+                              values=[int(_fran_df["Have"].sum()), _n_fran_miss],
                               name="Franchises", domain={"x": [0.35, 0.65]},
                               marker_colors=["#3498db", "#e67e22"], hole=0.5))
     _fig.add_trace(go.Pie(labels=["In Library", "Missing"],
@@ -537,11 +575,12 @@ def tab_episodes(EMBY_HOST, EMBY_SERVER_ID, active_direction, active_period, dat
 
 
 @app.cell
-def tab_franchises(df_franchise_gaps, go, mo):
-    if df_franchise_gaps.empty:
-        franchise_tab = mo.callout("No franchise gaps found.", kind="info")
+def tab_franchises(df_franchise_gaps, df_franchise_gaps_filtered, go, hide_current_year, mo):
+    _df = df_franchise_gaps_filtered if hide_current_year.value else df_franchise_gaps
+    if _df.empty:
+        franchise_tab = mo.callout("No franchise gaps found." + (" (current year hidden)" if hide_current_year.value else ""), kind="info")
     else:
-        _top = df_franchise_gaps.head(25)
+        _top = _df.head(25)
         _fig = go.Figure()
         _fig.add_trace(go.Bar(y=_top["Collection"], x=_top["Have"], name="Have",
                               orientation="h", marker_color="#2ecc71"))
@@ -555,13 +594,15 @@ def tab_franchises(df_franchise_gaps, go, mo):
             {"Collection": mo.Html(f'<a href="https://www.themoviedb.org/collection/{r["TMDB Collection ID"]}" target="_blank" style="position:relative;z-index:10">{r["Collection"]}</a>'),
              "Total Parts": r["Total Parts"], "Have": r["Have"], "Missing": r["Missing"],
              "% Complete": r["% Complete"], "Missing Titles": r["Missing Titles"]}
-            for r in df_franchise_gaps[["Collection", "TMDB Collection ID", "Total Parts", "Have", "Missing",
-                                        "% Complete", "Missing Titles"]].to_dict("records")
+            for r in _df[["Collection", "TMDB Collection ID", "Total Parts", "Have", "Missing",
+                          "% Complete", "Missing Titles"]].to_dict("records")
         ]
         franchise_tab = mo.vstack([
             mo.md("## Incomplete Franchises"),
-            mo.callout(f"{len(df_franchise_gaps)} incomplete collections — "
-                       f"{int(df_franchise_gaps['Missing'].sum())} movies missing", kind="warn"),
+            mo.callout(f"{len(_df)} incomplete collections — "
+                       f"{int(_df['Missing'].sum())} movies missing"
+                       + (f" ({len(df_franchise_gaps) - len(_df)} hidden — current year)" if hide_current_year.value and len(df_franchise_gaps) > len(_df) else ""),
+                       kind="warn"),
             _fig,
             mo.ui.table(_records, pagination=True, page_size=25, label="Franchise Gaps"),
         ])
@@ -579,13 +620,15 @@ def tab_popular_filters(mo):
 
 
 @app.cell
-def tab_popular(df_pop_movies, df_pop_series, go, mo, pd, rating_slider, source_dropdown, year_slider):
+def tab_popular(datetime, df_pop_movies, df_pop_series, go, hide_current_year, mo, pd, rating_slider, source_dropdown, year_slider):
     _movies = df_pop_movies.copy() if not df_pop_movies.empty else pd.DataFrame()
     if not _movies.empty:
         _movies["_yr"] = pd.to_numeric(_movies["Year"], errors="coerce").fillna(0).astype(int)
         _movies = _movies[(_movies["Rating"] >= rating_slider.value) & (_movies["_yr"] >= year_slider.value)]
         if source_dropdown.value != "All":
             _movies = _movies[_movies["Source"] == source_dropdown.value]
+        if hide_current_year.value:
+            _movies = _movies[_movies["_yr"] != datetime.now().year]
         _movies = _movies.drop(columns=["_yr"])
 
     _series = df_pop_series.copy() if not df_pop_series.empty else pd.DataFrame()
@@ -594,6 +637,8 @@ def tab_popular(df_pop_movies, df_pop_series, go, mo, pd, rating_slider, source_
         _series = _series[(_series["Rating"] >= rating_slider.value) & (_series["_yr"] >= year_slider.value)]
         if source_dropdown.value != "All":
             _series = _series[_series["Source"] == source_dropdown.value]
+        if hide_current_year.value:
+            _series = _series[_series["_yr"] != datetime.now().year]
         _series = _series.drop(columns=["_yr"])
 
     _fig_m = go.Figure()
@@ -646,9 +691,10 @@ def tab_popular(df_pop_movies, df_pop_series, go, mo, pd, rating_slider, source_
 
 
 @app.cell
-def export_filters(mo):
+def export_filters(df_missing_episodes, mo):
+    _max_missing = int(df_missing_episodes["Missing Episodes"].max()) if not df_missing_episodes.empty else 100
     export_max_shows = mo.ui.slider(start=0, stop=500, value=0, step=5, label="Max shows to export (0 = all)")
-    export_missing_range = mo.ui.range_slider(start=1, stop=100, value=[1, 20], step=1, label="Missing episodes range")
+    export_missing_range = mo.ui.range_slider(start=1, stop=_max_missing, value=[1, min(20, _max_missing)], step=1, label="Missing episodes range")
     export_min_complete = mo.ui.slider(start=0, stop=100, value=50, step=5, label="Min % complete")
     export_btn = mo.ui.run_button(label="Export for Czech Tracker Scraper")
     return export_btn, export_max_shows, export_min_complete, export_missing_range
@@ -783,15 +829,125 @@ def tab_export_do(Path, datetime, export_btn, export_data_ready, export_preview,
 
 
 @app.cell
-def dashboard_missing(episodes_tab, export_tab, franchise_tab, mo, overview_missing_tab, popular_tab):
+def franchise_export_filters(franchise_export_raw, mo):
+    _max_missing = max((len(c["missing_movies"]) for c in franchise_export_raw), default=10)
+    fran_export_btn = mo.ui.run_button(label="Export Missing Franchise Movies")
+    fran_export_min_pct = mo.ui.slider(start=0, stop=100, value=30, step=5, label="Min % complete")
+    fran_export_missing_range = mo.ui.range_slider(start=1, stop=_max_missing, value=[1, _max_missing], step=1, label="Missing movies range")
+    return fran_export_btn, fran_export_min_pct, fran_export_missing_range
+
+
+@app.cell
+def franchise_export_data_cell(datetime, franchise_export_raw, fran_export_min_pct, fran_export_missing_range, hide_current_year):
+    """Build filtered franchise export data."""
+    _min_miss, _max_miss = fran_export_missing_range.value
+    _current_yr = str(datetime.now().year)
+    _filtered = []
+    for _c in franchise_export_raw:
+        # Filter out current year movies if toggle is on
+        if hide_current_year.value:
+            _movies = [m for m in _c["missing_movies"] if m.get("year") != _current_yr]
+        else:
+            _movies = _c["missing_movies"]
+        _n_missing = len(_movies)
+        if _n_missing < _min_miss or _n_missing > _max_miss:
+            continue
+        if _n_missing == 0:
+            continue
+        _pct = round(_c["have"] / _c["total_parts"] * 100) if _c["total_parts"] > 0 else 0
+        if _pct >= fran_export_min_pct.value:
+            _entry = dict(_c)
+            _entry["missing_movies"] = _movies
+            _filtered.append(_entry)
+    _filtered.sort(key=lambda c: len(c["missing_movies"]), reverse=True)
+    fran_export_data_ready = _filtered
+    return (fran_export_data_ready,)
+
+
+@app.cell
+def franchise_export_preview_cell(fran_export_data_ready, fran_export_min_pct, fran_export_missing_range, fran_export_btn, mo):
+    """Show franchise export preview."""
+    _preview_rows = []
+    for _c in fran_export_data_ready:
+        _pct = round(_c["have"] / _c["total_parts"] * 100) if _c["total_parts"] > 0 else 0
+        _preview_rows.append({
+            "Collection": mo.Html(f'<a href="https://www.themoviedb.org/collection/{_c["tmdb_collection_id"]}" target="_blank" style="position:relative;z-index:10">{_c["collection"]}</a>'),
+            "Total": _c["total_parts"],
+            "Have": _c["have"],
+            "Missing": len(_c["missing_movies"]),
+            "% Complete": _pct,
+            "Missing Movies": ", ".join(f"{m['title']} ({m['year']})" for m in _c["missing_movies"][:5]),
+        })
+
+    _total_movies = sum(len(c["missing_movies"]) for c in fran_export_data_ready)
+
+    franchise_export_preview = mo.vstack([
+        mo.md("## Export Missing Franchise Movies"),
+        mo.callout(
+            "Export incomplete franchise/collection movies. "
+            "Output: `/Users/dodko/DEV/torrents/data/missing_franchise_movies.json`",
+            kind="info",
+        ),
+        mo.hstack([fran_export_missing_range, fran_export_min_pct], gap="1rem"),
+        mo.hstack([
+            mo.stat(value=f"{len(fran_export_data_ready)}", label="Collections"),
+            mo.stat(value=f"{_total_movies}", label="Missing Movies"),
+        ], justify="start", gap="2rem"),
+        mo.ui.table(_preview_rows, pagination=True, page_size=15, label="Franchise Export Preview") if _preview_rows else mo.md("No collections match filters"),
+        fran_export_btn,
+    ])
+    return (franchise_export_preview,)
+
+
+@app.cell
+def franchise_export_do_cell(Path, datetime, fran_export_btn, fran_export_data_ready, franchise_export_preview, jsonlib, mo, os):
+    """Execute franchise export."""
+    if fran_export_btn.value and fran_export_data_ready:
+        _now = datetime.now()
+        _ts = int(_now.timestamp())
+        _export_dir = Path("/Users/dodko/DEV/torrents/data")
+        _export_dir.mkdir(parents=True, exist_ok=True)
+        _out_path = _export_dir / f"missing_franchise_movies_{_ts}.json"
+        _link_path = _export_dir / "missing_franchise_movies.json"
+        _total_movies = sum(len(c["missing_movies"]) for c in fran_export_data_ready)
+        _export_wrapper = {
+            "exported_at": _now.isoformat(),
+            "exported_at_unix": _ts,
+            "total_collections": len(fran_export_data_ready),
+            "total_missing_movies": _total_movies,
+            "collections": fran_export_data_ready,
+        }
+        _out_path.write_text(jsonlib.dumps(_export_wrapper, indent=2, ensure_ascii=False))
+        if _link_path.is_symlink() or _link_path.exists():
+            _link_path.unlink()
+        os.symlink(_out_path.name, _link_path)
+        franchise_export_tab = mo.vstack([
+            franchise_export_preview,
+            mo.callout(
+                f"Exported {len(fran_export_data_ready)} collections ({_total_movies} movies) to {_out_path}\n"
+                f"Symlink: {_link_path} → {_out_path.name}",
+                kind="success",
+            ),
+        ])
+    else:
+        franchise_export_tab = franchise_export_preview
+    return (franchise_export_tab,)
+
+
+@app.cell
+def dashboard_missing(episodes_tab, export_tab, franchise_export_tab, franchise_tab, hide_current_year, mo, overview_missing_tab, popular_tab):
     tabs = mo.ui.tabs({
         "Overview": overview_missing_tab,
         "Missing Episodes": episodes_tab,
         "Incomplete Franchises": franchise_tab,
         "Popular Missing": popular_tab,
-        "Export for Scraper": export_tab,
+        "Export Episodes": export_tab,
+        "Export Franchises": franchise_export_tab,
     })
-    tabs
+    mo.vstack([
+        mo.hstack([hide_current_year], justify="end"),
+        tabs,
+    ])
     return (tabs,)
 
 

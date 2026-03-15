@@ -242,7 +242,7 @@ def _connect_and_fetch_libraries(client, base_url, library):
         logger.error(f"Unable to connect to the Emby server at {base_url}.")
         sys.exit(1)
 
-    all_provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}}
+    all_provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "series_episode": {}}
 
     # Process each library
     for library_name in library:
@@ -255,7 +255,7 @@ def _connect_and_fetch_libraries(client, base_url, library):
 
         provider_tables = fetch_and_process_media_items(client, base_url, library_id, library_name)
 
-        for provider in ["imdb", "tvdb", "tmdb"]:
+        for provider in ["imdb", "tvdb", "tmdb", "series_episode"]:
             for provider_id, items in provider_tables[provider].items():
                 if provider_id not in all_provider_tables[provider]:
                     all_provider_tables[provider][provider_id] = []
