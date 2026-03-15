@@ -624,7 +624,7 @@ class TestRunCleanupPipeline:
     def test_age_filter_removes_too_young(self):
         """Movies newer than min_age_years are filtered at stage 1."""
         young_movie = _make_movie(item_id="young", date_created=_date_years_ago(1))
-        candidates, stats = self._pipeline([young_movie])
+        candidates, stats, *_ = self._pipeline([young_movie])
         assert stats["age_filtered"] == 1
         assert stats["final_candidates"] == 0
         assert len(candidates) == 0
@@ -637,21 +637,21 @@ class TestRunCleanupPipeline:
             rating=1.0,  # low enough to be a candidate otherwise
         )
         config = CleanupConfig(excluded_provider_ids={"tt0120737"})
-        candidates, stats = self._pipeline([excluded_movie], config=config)
+        candidates, stats, *_ = self._pipeline([excluded_movie], config=config)
         assert stats["excluded_filtered"] == 1
         assert stats["final_candidates"] == 0
 
     def test_played_by_any_user_protected(self):
         """Movie played by any user is removed from candidates."""
         movie = _make_movie(item_id="played_m", rating=1.0)
-        candidates, stats = self._pipeline([movie], played_ids={"played_m"})
+        candidates, stats, *_ = self._pipeline([movie], played_ids={"played_m"})
         assert stats["play_protected"] == 1
         assert stats["final_candidates"] == 0
 
     def test_interested_user_protected(self):
         """Movie with IsFavorite/in-progress from any user is protected."""
         movie = _make_movie(item_id="fav_m", rating=1.0)
-        candidates, stats = self._pipeline([movie], interested_ids={"fav_m"})
+        candidates, stats, *_ = self._pipeline([movie], interested_ids={"fav_m"})
         assert stats["interest_protected"] == 1
         assert stats["final_candidates"] == 0
 
@@ -659,7 +659,7 @@ class TestRunCleanupPipeline:
         """Movie starring a favorite actor is not a candidate."""
         people = [{"Name": "Tom Hanks", "Type": "Actor"}]
         movie = _make_movie(item_id="actor_m", people=people, rating=1.0)
-        candidates, stats = self._pipeline([movie], actors={"Tom Hanks"})
+        candidates, stats, *_ = self._pipeline([movie], actors={"Tom Hanks"})
         assert stats["actor_protected"] == 1
         assert stats["final_candidates"] == 0
 
@@ -667,7 +667,7 @@ class TestRunCleanupPipeline:
         """9-year-old movie with favorite actor is still protected."""
         people = [{"Name": "Tom Hanks", "Type": "Actor"}]
         movie = _make_movie(item_id="actor_9yr", date_created=_date_years_ago(9), people=people, rating=1.0)
-        candidates, stats = self._pipeline([movie], actors={"Tom Hanks"})
+        candidates, stats, *_ = self._pipeline([movie], actors={"Tom Hanks"})
         assert stats["actor_protected"] == 1
         assert stats["final_candidates"] == 0
 
@@ -675,14 +675,14 @@ class TestRunCleanupPipeline:
         """10+ year old movie loses favorite actor protection → becomes candidate."""
         people = [{"Name": "Tom Hanks", "Type": "Actor"}]
         movie = _make_movie(item_id="actor_11yr", date_created=_date_years_ago(11), people=people, rating=1.0)
-        candidates, stats = self._pipeline([movie], actors={"Tom Hanks"})
+        candidates, stats, *_ = self._pipeline([movie], actors={"Tom Hanks"})
         assert stats["actor_protected"] == 0
         assert stats["final_candidates"] == 1
 
     def test_12yr_masterpiece_protected(self):
         """12+ year old movie with 9.0+ rating is still protected."""
         movie = _make_movie(item_id="master", date_created=_date_years_ago(13), rating=9.2)
-        candidates, stats = self._pipeline([movie])
+        candidates, stats, *_ = self._pipeline([movie])
         assert stats["rating_protected"] == 1
         assert stats["final_candidates"] == 0
 
@@ -695,7 +695,7 @@ class TestRunCleanupPipeline:
             provider_ids={"TmdbCollection": "10"},
             path="/Movies/Dokumenty/Old.mkv",
         )
-        candidates, stats = self._pipeline([movie], actors={"Tom Hanks"})
+        candidates, stats, *_ = self._pipeline([movie], actors={"Tom Hanks"})
         # franchise, path, actor all bypassed at 12+ years
         assert stats["actor_protected"] == 0
         assert stats["franchise_protected"] == 0
@@ -709,7 +709,7 @@ class TestRunCleanupPipeline:
             item_id="11yr_franchise", date_created=_date_years_ago(11),
             rating=1.0, provider_ids={"TmdbCollection": "10"},
         )
-        candidates, stats = self._pipeline([movie])
+        candidates, stats, *_ = self._pipeline([movie])
         assert stats["franchise_protected"] == 1
         assert stats["final_candidates"] == 0
 
@@ -720,7 +720,7 @@ class TestRunCleanupPipeline:
             provider_ids={"TmdbCollection": "10"},
             rating=1.0,
         )
-        candidates, stats = self._pipeline([movie])
+        candidates, stats, *_ = self._pipeline([movie])
         assert stats["franchise_protected"] == 1
         assert stats["final_candidates"] == 0
 
@@ -731,7 +731,7 @@ class TestRunCleanupPipeline:
             path="/Movies/Dokumenty/film.mkv",
             rating=1.0,
         )
-        candidates, stats = self._pipeline([movie])
+        candidates, stats, *_ = self._pipeline([movie])
         assert stats["path_protected"] == 1
         assert stats["final_candidates"] == 0
 
@@ -739,22 +739,54 @@ class TestRunCleanupPipeline:
         """Movie with CommunityRating >= threshold is not a candidate."""
         # 4 years old → threshold = 6.5; rating 7.0 is above threshold
         movie = _make_movie(item_id="good_m", date_created=_date_years_ago(4), rating=7.0)
-        candidates, stats = self._pipeline([movie])
+        candidates, stats, *_ = self._pipeline([movie])
         assert stats["rating_protected"] == 1
         assert stats["final_candidates"] == 0
+
+    def test_rating_protected_movie_in_near_miss(self):
+        """Movie protected only by rating appears in near-miss list."""
+        # 4 years old → threshold = 6.5; rating 7.0 is above → rating_protected + near_miss
+        movie = _make_movie(item_id="near_m", date_created=_date_years_ago(4), rating=7.0, size=5_000_000_000)
+        candidates, stats, near_miss = self._pipeline([movie])
+        assert stats["rating_protected"] == 1
+        assert stats["final_candidates"] == 0
+        assert len(near_miss) == 1
+        assert near_miss[0].item_id == "near_m"
+        assert near_miss[0].rating == 7.0
+        assert near_miss[0].threshold == 6.5
+
+    def test_near_miss_sorted_by_margin(self):
+        """Near-miss movies sorted by margin (rating - threshold), smallest first."""
+        movies = [
+            _make_movie(item_id="big_margin", date_created=_date_years_ago(4), rating=8.5),  # margin=2.0
+            _make_movie(item_id="small_margin", date_created=_date_years_ago(4), rating=6.6),  # margin=0.1
+            _make_movie(item_id="mid_margin", date_created=_date_years_ago(4), rating=7.0),  # margin=0.5
+        ]
+        candidates, stats, near_miss = self._pipeline(movies)
+        assert len(near_miss) == 3
+        assert near_miss[0].item_id == "small_margin"
+        assert near_miss[1].item_id == "mid_margin"
+        assert near_miss[2].item_id == "big_margin"
+
+    def test_played_movie_not_in_near_miss(self):
+        """Movie protected by play status should NOT appear in near-miss."""
+        movie = _make_movie(item_id="played_nm", date_created=_date_years_ago(4), rating=7.0)
+        candidates, stats, near_miss = self._pipeline([movie], played_ids={"played_nm"})
+        assert stats["play_protected"] == 1
+        assert len(near_miss) == 0
 
     def test_low_rating_flagged_as_candidate(self):
         """Movie with rating below threshold becomes a candidate."""
         # 4 years old → threshold = 6.5; rating 4.0 is below threshold
         movie = _make_movie(item_id="bad_m", date_created=_date_years_ago(4), rating=4.0)
-        candidates, stats = self._pipeline([movie])
+        candidates, stats, *_ = self._pipeline([movie])
         assert stats["final_candidates"] == 1
         assert candidates[0].item_id == "bad_m"
 
     def test_unrated_treated_as_zero(self):
         """CommunityRating=None is treated as 0.0 — always below threshold (DA fix #6)."""
         movie = _make_movie(item_id="unrated_m", date_created=_date_years_ago(4), rating=None)
-        candidates, stats = self._pipeline([movie])
+        candidates, stats, *_ = self._pipeline([movie])
         assert stats["final_candidates"] == 1
         assert candidates[0].rating is None  # None preserved, not converted to 0.0
 
@@ -765,7 +797,7 @@ class TestRunCleanupPipeline:
             _make_movie(item_id="old", date_created=_date_years_ago(8), rating=1.0, size=500_000_000),
             _make_movie(item_id="mid", date_created=_date_years_ago(6), rating=1.0, size=500_000_000),
         ]
-        candidates, stats = self._pipeline(movies)
+        candidates, stats, *_ = self._pipeline(movies)
         assert stats["final_candidates"] == 3
         assert candidates[0].item_id == "old"
         assert candidates[1].item_id == "mid"
@@ -774,7 +806,7 @@ class TestRunCleanupPipeline:
     def test_size_none_treated_as_zero(self):
         """Size=None in Emby response → size_bytes=0 (DA fix #15)."""
         movie = _make_movie(item_id="nosize", date_created=_date_years_ago(4), rating=1.0, size=None)
-        candidates, stats = self._pipeline([movie])
+        candidates, stats, *_ = self._pipeline([movie])
         assert stats["final_candidates"] == 1
         assert candidates[0].size_bytes == 0
 
@@ -786,7 +818,7 @@ class TestRunCleanupPipeline:
             item_id="critic_saved", date_created=_date_years_ago(4),
             rating=5.0, critic_rating=80,
         )
-        candidates, stats = self._pipeline([movie])
+        candidates, stats, *_ = self._pipeline([movie])
         assert stats["rating_protected"] == 1
         assert stats["final_candidates"] == 0
 
@@ -798,7 +830,7 @@ class TestRunCleanupPipeline:
             item_id="both_low", date_created=_date_years_ago(4),
             rating=4.0, critic_rating=55,
         )
-        candidates, stats = self._pipeline([movie])
+        candidates, stats, *_ = self._pipeline([movie])
         assert stats["final_candidates"] == 1
         assert candidates[0].critic_rating == 55
 
@@ -808,7 +840,7 @@ class TestRunCleanupPipeline:
             item_id="raw_cr", date_created=_date_years_ago(4),
             rating=3.0, critic_rating=40,
         )
-        candidates, stats = self._pipeline([movie])
+        candidates, stats, *_ = self._pipeline([movie])
         assert candidates[0].critic_rating == 40
         assert candidates[0].rating == 3.0
 
@@ -1439,7 +1471,7 @@ class TestRunSeriesCleanupPipeline:
         series = _make_series(item_id="recent")
         # Episode added 1 year ago → not stale enough
         episode_map = {"recent": _date_years_ago(1)}
-        candidates, stats = self._pipeline([series], episode_map=episode_map)
+        candidates, stats, *_ = self._pipeline([series], episode_map=episode_map)
         assert stats["stale_filtered"] == 1
         assert stats["final_candidates"] == 0
 
@@ -1447,7 +1479,7 @@ class TestRunSeriesCleanupPipeline:
         """Series with stale episodes (>= min_age_years) passes staleness filter."""
         series = _make_series(item_id="old", rating=1.0)
         episode_map = {"old": _date_years_ago(5)}
-        candidates, stats = self._pipeline(
+        candidates, stats, *_ = self._pipeline(
             [series], episode_map=episode_map, size_map={"old": 1000}
         )
         assert stats["stale_filtered"] == 0
@@ -1456,7 +1488,7 @@ class TestRunSeriesCleanupPipeline:
     def test_series_without_episodes_filtered_as_recent(self):
         """Series not in episode map → stale_years=0.0 → filtered as recent."""
         series = _make_series(item_id="no_eps")
-        candidates, stats = self._pipeline([series], episode_map={})
+        candidates, stats, *_ = self._pipeline([series], episode_map={})
         assert stats["stale_filtered"] == 1
 
     def test_exclusion_filter(self):
@@ -1464,7 +1496,7 @@ class TestRunSeriesCleanupPipeline:
         series = _make_series(item_id="exc", provider_ids={"Imdb": "tt1111111"}, rating=1.0)
         episode_map = {"exc": _date_years_ago(5)}
         config = CleanupConfig(excluded_provider_ids={"tt1111111"})
-        candidates, stats = self._pipeline([series], episode_map=episode_map, config=config)
+        candidates, stats, *_ = self._pipeline([series], episode_map=episode_map, config=config)
         assert stats["excluded_filtered"] == 1
         assert stats["final_candidates"] == 0
 
@@ -1472,7 +1504,7 @@ class TestRunSeriesCleanupPipeline:
         """Series watched by any user is protected."""
         series = _make_series(item_id="watched", rating=1.0)
         episode_map = {"watched": _date_years_ago(5)}
-        candidates, stats = self._pipeline(
+        candidates, stats, *_ = self._pipeline(
             [series], episode_map=episode_map, played_ids={"watched"}
         )
         assert stats["play_protected"] == 1
@@ -1482,7 +1514,7 @@ class TestRunSeriesCleanupPipeline:
         """Series favorited by any user is protected."""
         series = _make_series(item_id="fav", rating=1.0)
         episode_map = {"fav": _date_years_ago(5)}
-        candidates, stats = self._pipeline(
+        candidates, stats, *_ = self._pipeline(
             [series], episode_map=episode_map, favorited_ids={"fav"}
         )
         assert stats["favorite_protected"] == 1
@@ -1492,7 +1524,7 @@ class TestRunSeriesCleanupPipeline:
         """Series in a protected path is not a candidate."""
         series = _make_series(item_id="doc", path="/Movies/Dokumenty/Doc Series", rating=1.0)
         episode_map = {"doc": _date_years_ago(5)}
-        candidates, stats = self._pipeline([series], episode_map=episode_map)
+        candidates, stats, *_ = self._pipeline([series], episode_map=episode_map)
         assert stats["path_protected"] == 1
         assert stats["final_candidates"] == 0
 
@@ -1501,16 +1533,30 @@ class TestRunSeriesCleanupPipeline:
         # 5 years stale → threshold = 7.0; rating 8.0 is above
         series = _make_series(item_id="good", rating=8.0)
         episode_map = {"good": _date_years_ago(5)}
-        candidates, stats = self._pipeline([series], episode_map=episode_map)
+        candidates, stats, *_ = self._pipeline([series], episode_map=episode_map)
         assert stats["rating_protected"] == 1
         assert stats["final_candidates"] == 0
+
+    def test_rating_protected_series_in_near_miss(self):
+        """Series protected only by rating appears in near-miss list."""
+        # 5 years stale → threshold = 7.0; rating 8.0 is above → near-miss
+        series = _make_series(item_id="near_s", rating=8.0)
+        episode_map = {"near_s": _date_years_ago(5)}
+        candidates, stats, near_miss = self._pipeline(
+            [series], episode_map=episode_map, size_map={"near_s": 10000}
+        )
+        assert stats["rating_protected"] == 1
+        assert stats["final_candidates"] == 0
+        assert len(near_miss) == 1
+        assert near_miss[0].item_id == "near_s"
+        assert near_miss[0].rating == 8.0
 
     def test_low_rating_flagged(self):
         """Series with rating below threshold becomes a candidate."""
         # 5 years stale → threshold = 7.0; rating 4.0 is below
         series = _make_series(item_id="bad", rating=4.0)
         episode_map = {"bad": _date_years_ago(5)}
-        candidates, stats = self._pipeline(
+        candidates, stats, *_ = self._pipeline(
             [series], episode_map=episode_map, size_map={"bad": 5000}
         )
         assert stats["final_candidates"] == 1
@@ -1521,7 +1567,7 @@ class TestRunSeriesCleanupPipeline:
         """Series with CommunityRating=None treated as 0.0 — always below threshold."""
         series = _make_series(item_id="unrated", rating=None)
         episode_map = {"unrated": _date_years_ago(5)}
-        candidates, stats = self._pipeline(
+        candidates, stats, *_ = self._pipeline(
             [series], episode_map=episode_map, size_map={"unrated": 100}
         )
         assert stats["final_candidates"] == 1
@@ -1538,7 +1584,7 @@ class TestRunSeriesCleanupPipeline:
             "mid_s": _date_years_ago(6),
         }
         size_map = {"young_s": 100, "old_s": 200, "mid_s": 300}
-        candidates, stats = self._pipeline(
+        candidates, stats, *_ = self._pipeline(
             [s1, s2, s3], episode_map=episode_map, size_map=size_map
         )
         assert stats["final_candidates"] == 3
@@ -1569,7 +1615,7 @@ class TestRunSeriesCleanupPipeline:
         config = CleanupConfig(excluded_provider_ids={"tt999"})
         size_map = {"candidate_s": 10_000}
 
-        candidates, stats = self._pipeline(
+        candidates, stats, *_ = self._pipeline(
             series_list,
             episode_map=episode_map,
             config=config,
@@ -1590,7 +1636,7 @@ class TestRunSeriesCleanupPipeline:
 
     def test_empty_series_list(self):
         """Empty series list returns empty candidates and zero stats."""
-        candidates, stats = self._pipeline([])
+        candidates, stats, *_ = self._pipeline([])
         assert candidates == []
         assert stats["total_analyzed"] == 0
         assert stats["final_candidates"] == 0
@@ -1601,7 +1647,7 @@ class TestRunSeriesCleanupPipeline:
         # community=5.0, critic=90 → normalised 9.0 → avg = (5.0 + 9.0) / 2 = 7.0 → protected
         series = _make_series(item_id="critic_s", rating=5.0, critic_rating=90)
         episode_map = {"critic_s": _date_years_ago(5)}
-        candidates, stats = self._pipeline([series], episode_map=episode_map)
+        candidates, stats, *_ = self._pipeline([series], episode_map=episode_map)
         assert stats["rating_protected"] == 1
         assert stats["final_candidates"] == 0
 
@@ -1609,7 +1655,7 @@ class TestRunSeriesCleanupPipeline:
         """SeriesCleanupCandidate stores raw critic rating."""
         series = _make_series(item_id="cr_s", rating=2.0, critic_rating=30)
         episode_map = {"cr_s": _date_years_ago(5)}
-        candidates, stats = self._pipeline(
+        candidates, stats, *_ = self._pipeline(
             [series], episode_map=episode_map, size_map={"cr_s": 5000}
         )
         assert stats["final_candidates"] == 1
@@ -1769,7 +1815,7 @@ class TestRunCleanupCommandWithSeries:
             "total_analyzed": 0, "stale_filtered": 0, "excluded_filtered": 0,
             "play_protected": 0, "favorite_protected": 0, "path_protected": 0,
             "rating_protected": 0, "final_candidates": 0,
-        })
+        }, [])
 
         args = self._minimal_args()
         run_cleanup_command(args)
@@ -1799,12 +1845,12 @@ class TestRunCleanupCommandWithSeries:
             "play_protected": 0, "interest_protected": 0, "actor_protected": 0,
             "franchise_protected": 0, "path_protected": 0, "rating_protected": 0,
             "final_candidates": 0,
-        })
+        }, [])
         mock_series_pipeline.return_value = ([], {
             "total_analyzed": 0, "stale_filtered": 0, "excluded_filtered": 0,
             "play_protected": 0, "favorite_protected": 0, "path_protected": 0,
             "rating_protected": 0, "final_candidates": 0,
-        })
+        }, [])
 
         args = self._minimal_args(library=["Mixed"])
         run_cleanup_command(args)
@@ -1834,7 +1880,7 @@ class TestRunCleanupCommandWithSeries:
             "play_protected": 0, "interest_protected": 0, "actor_protected": 0,
             "franchise_protected": 0, "path_protected": 0, "rating_protected": 0,
             "final_candidates": 0,
-        })
+        }, [])
 
         args = self._minimal_args(library=["Movies"])
         run_cleanup_command(args)

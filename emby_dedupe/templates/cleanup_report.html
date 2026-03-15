@@ -91,6 +91,8 @@
         }
         .decay-table th { color: #8be9fd; font-weight: 600; }
         .section-number { color: #aaa; font-size: 0.85em; float: right; margin-top: 4px; }
+        .badge-margin    { background: rgba(255,121,198,0.15); color: #ff79c6; border: 1px solid #ff79c6; }
+        .near-miss-section h2 { color: #ffb86c; }
     </style>
 </head>
 <body>
@@ -392,8 +394,118 @@
     {% endfor %}
     {% endif %}
 
+    {% if movie_near_miss is defined and movie_near_miss %}
+    <!-- Movie Near Miss -->
+    <div class="summary near-miss-section">
+        <h2>Next {{ movie_near_miss | length }} Movies to Be Removed <span class="section-number">{{ movie_near_miss_size_human }}</span></h2>
+        <p style="color:#aaa;font-size:0.85em;">Protected only by rating — sorted by soonest removal.</p>
+    </div>
+
+    {% for c in movie_near_miss %}
+    <div class="cleanup-card">
+        <div class="cleanup-number">{{ loop.index }}</div>
+
+        {% if c.image_url %}
+        <img class="cleanup-poster" src="{{ c.image_url }}" alt="{{ c.name }}"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+        <div class="cleanup-poster-placeholder" style="display:none;">No poster</div>
+        {% else %}
+        <div class="cleanup-poster-placeholder">No poster</div>
+        {% endif %}
+
+        <div class="cleanup-info">
+            <div class="cleanup-title">
+                <a href="{{ base_url }}/web/index.html#!/item?id={{ c.item_id }}&serverId={{ server_id }}" target="_blank">{{ c.name }}</a>
+            </div>
+            {% if c.year %}<div class="cleanup-year">{{ c.year }}</div>{% endif %}
+
+            <div class="cleanup-badges">
+                {% if c.rating is none or c.rating_str == "unrated" %}
+                <span class="badge badge-rating-none">&#9733; Unrated</span>
+                {% else %}
+                <span class="badge badge-rating-ok">&#9733; {{ c.rating_str }}</span>
+                {% endif %}
+                {% if c.critic_rating_str %}
+                <span class="badge badge-rating-none" title="Rotten Tomatoes critic score">&#127829; {{ c.critic_rating_str }}</span>
+                {% endif %}
+
+                <span class="badge badge-required">Required: {{ c.threshold_str }}</span>
+                <span class="badge badge-margin">{{ c.days_left_str }} left</span>
+                <span class="badge badge-age">{{ c.age_years }} yr on server</span>
+                <span class="badge badge-size">{{ c.size_human }}</span>
+                <span class="badge badge-lib">{{ c.library }}</span>
+            </div>
+
+            <div class="cleanup-path">{{ c.path }}</div>
+
+            <div class="cleanup-links">
+                <a href="{{ base_url }}/web/index.html#!/item?id={{ c.item_id }}&serverId={{ server_id }}" target="_blank" class="url-link">View in Emby</a>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+    {% endif %}
+
+    {% if series_near_miss is defined and series_near_miss %}
+    <!-- Series Near Miss -->
+    <div class="summary near-miss-section">
+        <h2>Next {{ series_near_miss | length }} Series to Be Removed <span class="section-number">{{ series_near_miss_size_human }}</span></h2>
+        <p style="color:#aaa;font-size:0.85em;">Protected only by rating — sorted by soonest removal.</p>
+    </div>
+
+    {% for c in series_near_miss %}
+    <div class="cleanup-card">
+        <div class="cleanup-number">{{ loop.index }}</div>
+
+        {% if c.image_url %}
+        <img class="cleanup-poster" src="{{ c.image_url }}" alt="{{ c.name }}"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+        <div class="cleanup-poster-placeholder" style="display:none;">No poster</div>
+        {% else %}
+        <div class="cleanup-poster-placeholder">No poster</div>
+        {% endif %}
+
+        <div class="cleanup-info">
+            <div class="cleanup-title">
+                <a href="{{ base_url }}/web/index.html#!/item?id={{ c.item_id }}&serverId={{ server_id }}" target="_blank">{{ c.name }}</a>
+            </div>
+            {% if c.year %}<div class="cleanup-year">{{ c.year }}</div>{% endif %}
+
+            <div class="cleanup-badges">
+                {% if c.rating is none or c.rating_str == "unrated" %}
+                <span class="badge badge-rating-none">&#9733; Unrated</span>
+                {% else %}
+                <span class="badge badge-rating-ok">&#9733; {{ c.rating_str }}</span>
+                {% endif %}
+                {% if c.critic_rating_str %}
+                <span class="badge badge-rating-none" title="Rotten Tomatoes critic score">&#127829; {{ c.critic_rating_str }}</span>
+                {% endif %}
+
+                <span class="badge badge-required">Required: {{ c.threshold_str }}</span>
+                <span class="badge badge-margin">{{ c.days_left_str }} left</span>
+                <span class="badge badge-age">{{ c.stale_years }} yr stale</span>
+                <span class="badge badge-episodes">{{ c.episode_count }} episodes</span>
+                <span class="badge badge-size">{{ c.size_human }}</span>
+                <span class="badge badge-lib">{{ c.library }}</span>
+            </div>
+
+            {% if c.last_episode_added %}
+            <div class="cleanup-path">Last episode added: {{ c.last_episode_added }}</div>
+            {% else %}
+            <div class="cleanup-path">No episodes</div>
+            {% endif %}
+            <div class="cleanup-path">{{ c.path }}</div>
+
+            <div class="cleanup-links">
+                <a href="{{ base_url }}/web/index.html#!/item?id={{ c.item_id }}&serverId={{ server_id }}" target="_blank" class="url-link">View in Emby</a>
+            </div>
+        </div>
+    </div>
+    {% endfor %}
+    {% endif %}
+
     <footer>
-        <p>Generated {{ generated_at }} by emby-dedupe · {{ candidates | length }} movie candidates · {{ total_size_human }}{% if series_candidates is defined and series_candidates %} · {{ series_candidates | length }} series candidates · {{ series_total_size_human }}{% endif %}</p>
+        <p>Generated {{ generated_at }} by emby-dedupe · {{ candidates | length }} movie candidates · {{ total_size_human }}{% if series_candidates is defined and series_candidates %} · {{ series_candidates | length }} series candidates · {{ series_total_size_human }}{% endif %}{% if movie_near_miss is defined and movie_near_miss %} · {{ movie_near_miss | length }} near-miss movies{% endif %}{% if series_near_miss is defined and series_near_miss %} · {{ series_near_miss | length }} near-miss series{% endif %}</p>
     </footer>
 </body>
 </html>

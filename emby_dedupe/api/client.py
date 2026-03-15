@@ -499,7 +499,7 @@ def fetch_and_process_media_items(
     Returns:
         dict: A dictionary with keys 'imdb', 'tvdb', 'tmdb', and 'library_name' containing provider ID mappings.
     """
-    provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "library_name": library_name}
+    provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "series_episode": {}, "library_name": library_name}
 
     # Fetch total item count
     total_items = _fetch_total_item_count(client, base_url, library_id)
@@ -593,3 +593,18 @@ def build_provider_id_tables(media_items: list, provider_tables: dict):
         ]:
             id_value = provider_ids_lower.get(provider)
             _process_provider_id(provider, table_name, id_value, provider_tables, item, library_name, IGNORED_IMDB_ID)
+
+        # Also index episodes by SeriesName + Season + Episode for fallback grouping.
+        # This catches duplicates where one copy has no provider IDs at all.
+        series_name = item.get("SeriesName")
+        season = item.get("ParentIndexNumber")
+        episode_num = item.get("IndexNumber")
+        if series_name and season is not None and episode_num is not None:
+            se_key = f"{series_name}|S{season}E{episode_num}"
+            if se_key not in provider_tables["series_episode"]:
+                provider_tables["series_episode"][se_key] = []
+            # Avoid adding the same item twice (already indexed via provider ID)
+            existing_ids = {i["id"] for i in provider_tables["series_episode"][se_key]}
+            if item["Id"] not in existing_ids:
+                item_info = _create_item_info(item, library_name, se_key)
+                provider_tables["series_episode"][se_key].append(item_info)

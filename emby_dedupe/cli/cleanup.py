@@ -80,6 +80,7 @@ class CleanupConfig:
     masterpiece_only_after_years: int = 12
     masterpiece_rating: float = 9.0
     excluded_provider_ids: set[str] = field(default_factory=set)
+    near_miss_count: int = 5
 
 
 @dataclass
@@ -111,6 +112,7 @@ class CleanupCandidate:
     size_bytes: int
     path: str
     deletion_result: Optional[dict] = None
+    days_left: Optional[int] = None
 
 
 @dataclass
@@ -148,6 +150,7 @@ class SeriesCleanupCandidate:
     size_bytes: int
     path: str
     deletion_result: Optional[dict] = None
+    days_left: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +224,46 @@ def _compute_effective_rating(
     if has_critic:
         return critic_rating / _CRITIC_RATING_DIVISOR
     return 0.0
+
+
+def _compute_days_until_candidate(
+    effective_rating: float,
+    current_age_years: float,
+    config: CleanupConfig,
+) -> Optional[int]:
+    """Compute how many days until a near-miss item becomes a cleanup candidate.
+
+    Considers two thresholds:
+      1. Normal decay: threshold rises with age until it exceeds effective_rating.
+      2. Masterpiece gate: at masterpiece_only_after_years (12yr), only 9.0+ survives.
+
+    Args:
+        effective_rating: Combined rating on 0-10 scale.
+        current_age_years: Current age/staleness in years.
+        config: Cleanup configuration with decay parameters.
+
+    Returns:
+        Days until the item becomes a candidate, or None if it will never become one
+        (effective_rating >= masterpiece_rating).
+    """
+    if effective_rating >= config.masterpiece_rating:
+        return None  # Protected forever
+
+    # Age at which normal decay threshold crosses effective_rating
+    if effective_rating <= config.max_rating:
+        crossing_age = (
+            (effective_rating - config.base_rating) / config.decay_step
+            + config.min_age_years
+        )
+    else:
+        crossing_age = float("inf")  # Threshold caps at max_rating
+
+    # Age at which masterpiece gate applies (if rating < 9.0)
+    masterpiece_age = config.masterpiece_only_after_years
+
+    target_age = min(crossing_age, masterpiece_age)
+    days_left = (target_age - current_age_years) * 365.25
+    return max(0, int(days_left))
 
 
 def _is_franchise_protected(provider_ids: dict) -> bool:
@@ -1221,11 +1264,14 @@ def _apply_movie_filters(
     favorite_actors: set[str],
     config: CleanupConfig,
     stats: dict,
-) -> list[CleanupCandidate]:
+) -> tuple[list[CleanupCandidate], list[CleanupCandidate]]:
     """Apply per-movie protection filters and build CleanupCandidate objects.
 
     Filter layers applied: play, interest, masterpiece, actor, franchise, path,
     rating decay.  Updates stats counters in place.
+
+    Also collects "near miss" movies — those protected only by rating (the last
+    filter layer). These are the closest to becoming cleanup candidates.
 
     Args:
         movies: Movie dicts that passed age and exclusion filters (with _age_years set).
@@ -1236,9 +1282,10 @@ def _apply_movie_filters(
         stats: Stats dict with filter counters (updated in place).
 
     Returns:
-        List of CleanupCandidate objects sorted by age descending.
+        Tuple of (candidates, near_miss) both sorted by age descending.
     """
     candidates: list[CleanupCandidate] = []
+    near_miss: list[CleanupCandidate] = []
 
     for movie in movies:
         age = movie["_age_years"]
@@ -1253,6 +1300,22 @@ def _apply_movie_filters(
         )
         if protection:
             stats[protection] += 1
+            # Collect near-miss: protected ONLY by rating (last filter layer)
+            if protection == "rating_protected":
+                near_miss.append(
+                    CleanupCandidate(
+                        item_id=movie.get("Id", ""),
+                        name=movie.get("Name", "Unknown"),
+                        year=movie.get("ProductionYear"),
+                        rating=community_rating,
+                        critic_rating=critic_rating,
+                        threshold=threshold,
+                        age_years=age,
+                        library=movie.get("_library_name", "Unknown"),
+                        size_bytes=movie.get("Size") or 0,
+                        path=movie.get("Path", ""),
+                    )
+                )
             continue
 
         # 12+ year masterpiece path overrides the normal decay threshold
@@ -1275,7 +1338,14 @@ def _apply_movie_filters(
         )
 
     candidates.sort(key=lambda c: c.age_years, reverse=True)
-    return candidates
+    # Sort near-miss by days_left (soonest removal first), then slice to configured limit
+    for nm in near_miss:
+        eff = _compute_effective_rating(nm.rating, nm.critic_rating)
+        nm.days_left = _compute_days_until_candidate(eff, nm.age_years, config)
+    near_miss.sort(key=lambda c: c.days_left if c.days_left is not None else float("inf"))
+    if config.near_miss_count > 0:
+        near_miss = near_miss[:config.near_miss_count]
+    return candidates, near_miss
 
 
 def _run_cleanup_pipeline(
@@ -1285,7 +1355,7 @@ def _run_cleanup_pipeline(
     library_ids: list[str],
     primary_user_id: str,
     lib_id_to_name: Optional[dict[str, str]] = None,
-) -> tuple[list[CleanupCandidate], dict]:
+) -> tuple[list[CleanupCandidate], dict, list[CleanupCandidate]]:
     """Orchestrate the 7-layer filter pipeline.
 
     Filter order:
@@ -1306,8 +1376,8 @@ def _run_cleanup_pipeline(
         lib_id_to_name: Optional mapping of library ID -> display name (Bug fix #1).
 
     Returns:
-        Tuple of (candidates, protection_stats) where protection_stats is a
-        dict with counts at each filter stage.
+        Tuple of (candidates, protection_stats, near_miss) where near_miss
+        contains movies protected only by rating.
     """
     stats: dict = {
         "total_analyzed": 0,
@@ -1367,13 +1437,13 @@ def _run_cleanup_pipeline(
     )
 
     # 6. Apply per-movie filters (play, interest, actor, franchise, path, rating)
-    candidates = _apply_movie_filters(
+    candidates, near_miss = _apply_movie_filters(
         not_excluded, played_ids, interested_ids, favorite_actors, config, stats
     )
     stats["final_candidates"] = len(candidates)
 
-    logger.info(f"Cleanup candidates: {len(candidates)}")
-    return candidates, stats
+    logger.info(f"Cleanup candidates: {len(candidates)}, near-miss: {len(near_miss)}")
+    return candidates, stats, near_miss
 
 
 def _apply_series_filters(
@@ -1382,10 +1452,11 @@ def _apply_series_filters(
     favorited_ids: set[str],
     config: CleanupConfig,
     stats: dict,
-) -> list[dict]:
+) -> tuple[list[dict], list[dict]]:
     """Apply per-series protection filters (play, favorite, path, rating).
 
-    Returns the series that survived all filters. Updates stats counters in place.
+    Returns the series that survived all filters and near-miss series (protected
+    only by rating). Updates stats counters in place.
 
     Args:
         series_list: Series dicts with _stale_years already set.
@@ -1395,9 +1466,10 @@ def _apply_series_filters(
         stats: Stats dict with filter counters (updated in place).
 
     Returns:
-        List of series dicts that passed all filters.
+        Tuple of (survivors, rating_protected) dicts.
     """
     survivors: list[dict] = []
+    rating_protected: list[dict] = []
     for series in series_list:
         item_id = series.get("Id", "")
         path = series.get("Path", "")
@@ -1415,10 +1487,11 @@ def _apply_series_filters(
             stats["path_protected"] += 1
         elif effective_rating >= threshold:
             stats["rating_protected"] += 1
+            rating_protected.append(series)
         else:
             survivors.append(series)
 
-    return survivors
+    return survivors, rating_protected
 
 
 def _build_series_candidates(
@@ -1470,7 +1543,7 @@ def _run_series_cleanup_pipeline(
     library_ids: list[str],
     primary_user_id: str,
     lib_id_to_name: Optional[dict[str, str]] = None,
-) -> tuple[list[SeriesCleanupCandidate], dict]:
+) -> tuple[list[SeriesCleanupCandidate], dict, list[SeriesCleanupCandidate]]:
     """Orchestrate the series cleanup filter pipeline.
 
     Filter order:
@@ -1489,7 +1562,8 @@ def _run_series_cleanup_pipeline(
         lib_id_to_name: Optional mapping of library ID to display name.
 
     Returns:
-        Tuple of (candidates, stats) where stats tracks each filter stage.
+        Tuple of (candidates, stats, near_miss) where near_miss contains
+        series protected only by rating.
     """
     stats: dict = {
         "total_analyzed": 0,
@@ -1553,24 +1627,33 @@ def _run_series_cleanup_pipeline(
     )
 
     # 6. Apply per-series filters (play, favorite, path, rating)
-    pre_size_candidates = _apply_series_filters(
+    pre_size_candidates, pre_near_miss = _apply_series_filters(
         not_excluded, played_ids, favorited_ids, config, stats
     )
 
-    # 7. Calculate sizes for remaining candidates
+    # 7. Calculate sizes for remaining candidates + near-miss
+    all_need_sizes = pre_size_candidates + pre_near_miss
     size_map: dict[str, int] = {}
-    if pre_size_candidates:
-        print(f"Calculating sizes for {len(pre_size_candidates)} series candidates...")
+    if all_need_sizes:
+        print(f"Calculating sizes for {len(all_need_sizes)} series (candidates + near-miss)...")
         size_map = _calculate_series_sizes(
-            client, base_url, [s["Id"] for s in pre_size_candidates]
+            client, base_url, [s["Id"] for s in all_need_sizes]
         )
 
     # 8. Build final candidate objects
     candidates = _build_series_candidates(pre_size_candidates, size_map, config)
+    near_miss = _build_series_candidates(pre_near_miss, size_map, config)
+    # Sort near-miss by days_left (soonest removal first), then slice
+    for nm in near_miss:
+        eff = _compute_effective_rating(nm.rating, nm.critic_rating)
+        nm.days_left = _compute_days_until_candidate(eff, nm.stale_years, config)
+    near_miss.sort(key=lambda c: c.days_left if c.days_left is not None else float("inf"))
+    if config.near_miss_count > 0:
+        near_miss = near_miss[:config.near_miss_count]
     stats["final_candidates"] = len(candidates)
 
-    logger.info(f"Series cleanup candidates: {len(candidates)}")
-    return candidates, stats
+    logger.info(f"Series cleanup candidates: {len(candidates)}, near-miss: {len(near_miss)}")
+    return candidates, stats, near_miss
 
 
 # ---------------------------------------------------------------------------
@@ -1659,31 +1742,14 @@ def _print_movie_table(candidates: list[CleanupCandidate]) -> None:
         )
 
 
-def _print_series_report(
-    series_candidates: list[SeriesCleanupCandidate],
-    series_stats: dict,
-    config: CleanupConfig,
-) -> None:
-    """Print the series cleanup report section to stdout.
+def _print_series_table(series_candidates: list[SeriesCleanupCandidate]) -> None:
+    """Print a series table to stdout.
 
     Args:
         series_candidates: List of SeriesCleanupCandidate objects.
-        series_stats: Dict with filter stage counts for series.
-        config: CleanupConfig used for this run.
     """
-    print("\n=== Series Cleanup Report ===\n")
-
-    print(f"Total analyzed:      {series_stats.get('total_analyzed', 0)}")
-    print(f"Stale filtered:      {series_stats.get('stale_filtered', 0)} (< {config.min_age_years}yr)")
-    print(f"Excluded by ID:      {series_stats.get('excluded_filtered', 0)}")
-    print(f"Play protected:      {series_stats.get('play_protected', 0)}")
-    print(f"Favorite protected:  {series_stats.get('favorite_protected', 0)}")
-    print(f"Path protected:      {series_stats.get('path_protected', 0)}")
-    print(f"Rating protected:    {series_stats.get('rating_protected', 0)}")
-    print(f"Final candidates:    {series_stats.get('final_candidates', 0)}")
-
-    series_total_size = sum(c.size_bytes for c in series_candidates)
-    print(f"\nTotal series space to free: {format_size(series_total_size)}\n")
+    total_size = sum(c.size_bytes for c in series_candidates)
+    print(f"Total: {format_size(total_size)}\n")
 
     col_widths = (4, 40, 6, 8, 10, 8, 6, 20, 10)
     header = (
@@ -1716,12 +1782,124 @@ def _print_series_report(
         )
 
 
+def _format_days_left(days: Optional[int]) -> str:
+    """Format days_left as a human-readable string."""
+    if days is None:
+        return "never"
+    if days == 0:
+        return "now"
+    if days < 30:
+        return f"{days}d"
+    if days < 365:
+        return f"{days // 30}mo"
+    return f"{days / 365.25:.1f}yr"
+
+
+def _print_near_miss_movie_table(near_miss: list[CleanupCandidate]) -> None:
+    """Print near-miss movie table with days_left column."""
+    col_widths = (4, 40, 6, 8, 10, 10, 6, 20, 10)
+    header = (
+        f"{'#':<{col_widths[0]}} "
+        f"{'Name':<{col_widths[1]}} "
+        f"{'Year':<{col_widths[2]}} "
+        f"{'Rating':<{col_widths[3]}} "
+        f"{'Required':<{col_widths[4]}} "
+        f"{'Days Left':<{col_widths[5]}} "
+        f"{'Age':<{col_widths[6]}} "
+        f"{'Library':<{col_widths[7]}} "
+        f"{'Size':<{col_widths[8]}}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for i, c in enumerate(near_miss, 1):
+        rating_str = _format_rating_str(c.rating, c.critic_rating)
+        name_trunc = c.name[:col_widths[1]] if len(c.name) > col_widths[1] else c.name
+        print(
+            f"{i:<{col_widths[0]}} "
+            f"{name_trunc:<{col_widths[1]}} "
+            f"{str(c.year or ''):<{col_widths[2]}} "
+            f"{rating_str:<{col_widths[3]}} "
+            f"{c.threshold:<{col_widths[4]}.1f} "
+            f"{_format_days_left(c.days_left):<{col_widths[5]}} "
+            f"{c.age_years:<{col_widths[6]}.1f} "
+            f"{c.library[:col_widths[7]]:<{col_widths[7]}} "
+            f"{format_size(c.size_bytes):<{col_widths[8]}}"
+        )
+
+
+def _print_near_miss_series_table(near_miss: list[SeriesCleanupCandidate]) -> None:
+    """Print near-miss series table with days_left column."""
+    col_widths = (4, 40, 6, 8, 10, 10, 8, 6, 20, 10)
+    header = (
+        f"{'#':<{col_widths[0]}} "
+        f"{'Name':<{col_widths[1]}} "
+        f"{'Year':<{col_widths[2]}} "
+        f"{'Rating':<{col_widths[3]}} "
+        f"{'Required':<{col_widths[4]}} "
+        f"{'Days Left':<{col_widths[5]}} "
+        f"{'Stale':<{col_widths[6]}} "
+        f"{'Eps':<{col_widths[7]}} "
+        f"{'Library':<{col_widths[8]}} "
+        f"{'Size':<{col_widths[9]}}"
+    )
+    print(header)
+    print("-" * len(header))
+
+    for i, c in enumerate(near_miss, 1):
+        rating_str = _format_rating_str(c.rating, c.critic_rating)
+        name_trunc = c.name[:col_widths[1]] if len(c.name) > col_widths[1] else c.name
+        print(
+            f"{i:<{col_widths[0]}} "
+            f"{name_trunc:<{col_widths[1]}} "
+            f"{str(c.year or ''):<{col_widths[2]}} "
+            f"{rating_str:<{col_widths[3]}} "
+            f"{c.threshold:<{col_widths[4]}.1f} "
+            f"{_format_days_left(c.days_left):<{col_widths[5]}} "
+            f"{c.stale_years:<{col_widths[6]}.1f} "
+            f"{c.episode_count:<{col_widths[7]}} "
+            f"{c.library[:col_widths[8]]:<{col_widths[8]}} "
+            f"{format_size(c.size_bytes):<{col_widths[9]}}"
+        )
+
+
+def _print_series_report(
+    series_candidates: list[SeriesCleanupCandidate],
+    series_stats: dict,
+    config: CleanupConfig,
+) -> None:
+    """Print the series cleanup report section to stdout.
+
+    Args:
+        series_candidates: List of SeriesCleanupCandidate objects.
+        series_stats: Dict with filter stage counts for series.
+        config: CleanupConfig used for this run.
+    """
+    print("\n=== Series Cleanup Report ===\n")
+
+    print(f"Total analyzed:      {series_stats.get('total_analyzed', 0)}")
+    print(f"Stale filtered:      {series_stats.get('stale_filtered', 0)} (< {config.min_age_years}yr)")
+    print(f"Excluded by ID:      {series_stats.get('excluded_filtered', 0)}")
+    print(f"Play protected:      {series_stats.get('play_protected', 0)}")
+    print(f"Favorite protected:  {series_stats.get('favorite_protected', 0)}")
+    print(f"Path protected:      {series_stats.get('path_protected', 0)}")
+    print(f"Rating protected:    {series_stats.get('rating_protected', 0)}")
+    print(f"Final candidates:    {series_stats.get('final_candidates', 0)}")
+
+    series_total_size = sum(c.size_bytes for c in series_candidates)
+    print(f"\nTotal series space to free: {format_size(series_total_size)}\n")
+
+    _print_series_table(series_candidates)
+
+
 def _format_cleanup_report_console(
     candidates: list[CleanupCandidate],
     protection_stats: dict,
     config: CleanupConfig,
     series_candidates: Optional[list[SeriesCleanupCandidate]] = None,
     series_stats: Optional[dict] = None,
+    movie_near_miss: Optional[list[CleanupCandidate]] = None,
+    series_near_miss: Optional[list[SeriesCleanupCandidate]] = None,
 ) -> None:
     """Print a formatted cleanup report to stdout.
 
@@ -1731,6 +1909,8 @@ def _format_cleanup_report_console(
         config: CleanupConfig used for this run.
         series_candidates: Optional list of SeriesCleanupCandidate objects.
         series_stats: Optional dict with filter stage counts for series.
+        movie_near_miss: Movies protected only by rating (closest to removal).
+        series_near_miss: Series protected only by rating (closest to removal).
     """
     print("\n=== Cleanup Report ===\n")
     _print_movie_stats(protection_stats, config)
@@ -1740,8 +1920,20 @@ def _format_cleanup_report_console(
     else:
         _print_movie_table(candidates)
 
+    if movie_near_miss:
+        total_size = sum(c.size_bytes for c in movie_near_miss)
+        print(f"\n=== Next {len(movie_near_miss)} Movie Candidates (protected only by rating) ===\n")
+        print(f"Total: {format_size(total_size)}\n")
+        _print_near_miss_movie_table(movie_near_miss)
+
     if series_candidates and series_stats:
         _print_series_report(series_candidates, series_stats, config)
+
+    if series_near_miss:
+        total_size = sum(c.size_bytes for c in series_near_miss)
+        print(f"\n=== Next {len(series_near_miss)} Series Candidates (protected only by rating) ===\n")
+        print(f"Total: {format_size(total_size)}\n")
+        _print_near_miss_series_table(series_near_miss)
 
 
 def _format_cleanup_report_json(
@@ -1823,6 +2015,66 @@ def _format_cleanup_report_json(
     return result
 
 
+def _movie_candidate_to_dict(c: CleanupCandidate, base_url: str, api_key: str) -> dict:
+    """Convert a CleanupCandidate to a template-friendly dict."""
+    return {
+        "item_id": c.item_id,
+        "name": c.name,
+        "year": c.year,
+        "rating": c.rating,
+        "rating_str": f"{c.rating:.1f}" if c.rating is not None else "unrated",
+        "critic_rating": c.critic_rating,
+        "critic_rating_str": (
+            f"{c.critic_rating:.0f}%"
+            if c.critic_rating is not None else None
+        ),
+        "threshold": c.threshold,
+        "threshold_str": f"{c.threshold:.1f}",
+        "age_years": round(c.age_years, 1),
+        "library": c.library,
+        "size_bytes": c.size_bytes,
+        "size_human": format_size(c.size_bytes),
+        "path": c.path,
+        "deletion_result": c.deletion_result,
+        "image_url": (
+            f"{base_url}/Items/{c.item_id}/Images/Primary"
+            f"?maxWidth=200&api_key={api_key}"
+            if api_key else ""
+        ),
+    }
+
+
+def _series_candidate_to_dict(c: SeriesCleanupCandidate, base_url: str, api_key: str) -> dict:
+    """Convert a SeriesCleanupCandidate to a template-friendly dict."""
+    return {
+        "item_id": c.item_id,
+        "name": c.name,
+        "year": c.year,
+        "rating": c.rating,
+        "rating_str": f"{c.rating:.1f}" if c.rating is not None else "unrated",
+        "critic_rating": c.critic_rating,
+        "critic_rating_str": (
+            f"{c.critic_rating:.0f}%"
+            if c.critic_rating is not None else None
+        ),
+        "threshold": c.threshold,
+        "threshold_str": f"{c.threshold:.1f}",
+        "stale_years": round(c.stale_years, 1),
+        "last_episode_added": c.last_episode_added,
+        "episode_count": c.episode_count,
+        "library": c.library,
+        "size_bytes": c.size_bytes,
+        "size_human": format_size(c.size_bytes),
+        "path": c.path,
+        "deletion_result": c.deletion_result,
+        "image_url": (
+            f"{base_url}/Items/{c.item_id}/Images/Primary"
+            f"?maxWidth=200&api_key={api_key}"
+            if api_key else ""
+        ),
+    }
+
+
 def _generate_cleanup_html_report(
     base_url: str,
     candidates: list[CleanupCandidate],
@@ -1833,11 +2085,10 @@ def _generate_cleanup_html_report(
     api_key: str = "",
     series_candidates: Optional[list[SeriesCleanupCandidate]] = None,
     series_stats: Optional[dict] = None,
+    movie_near_miss: Optional[list[CleanupCandidate]] = None,
+    series_near_miss: Optional[list[SeriesCleanupCandidate]] = None,
 ) -> str:
     """Render the cleanup report as an HTML string using Jinja2.
-
-    Template path is resolved two dirname levels up from cli/ to the package
-    root, then into templates/ (DA fix #9).
 
     Args:
         base_url: Emby server base URL (used for external links).
@@ -1849,6 +2100,8 @@ def _generate_cleanup_html_report(
         api_key: Emby API key for image URLs.
         series_candidates: Optional list of SeriesCleanupCandidate objects.
         series_stats: Optional dict with filter stage counts for series.
+        movie_near_miss: Movies protected only by rating (closest to removal).
+        series_near_miss: Series protected only by rating (closest to removal).
 
     Returns:
         Rendered HTML string.
@@ -1861,72 +2114,31 @@ def _generate_cleanup_html_report(
     env = Environment(loader=FileSystemLoader(templates_dir), autoescape=True)
     template = env.get_template("cleanup_report.html")
 
-    candidates_dicts = [
-        {
-            "item_id": c.item_id,
-            "name": c.name,
-            "year": c.year,
-            "rating": c.rating,
-            "rating_str": f"{c.rating:.1f}" if c.rating is not None else "unrated",
-            "critic_rating": c.critic_rating,
-            "critic_rating_str": (
-                f"{c.critic_rating:.0f}%"
-                if c.critic_rating is not None else None
-            ),
-            "threshold": c.threshold,
-            "threshold_str": f"{c.threshold:.1f}",
-            "age_years": round(c.age_years, 1),
-            "library": c.library,
-            "size_bytes": c.size_bytes,
-            "size_human": format_size(c.size_bytes),
-            "path": c.path,
-            "deletion_result": c.deletion_result,
-            "image_url": (
-                f"{base_url}/Items/{c.item_id}/Images/Primary"
-                f"?maxWidth=200&api_key={api_key}"
-                if api_key else ""
-            ),
-        }
-        for c in candidates
-    ]
-
+    candidates_dicts = [_movie_candidate_to_dict(c, base_url, api_key) for c in candidates]
     total_size = sum(c.size_bytes for c in candidates)
 
     # Build series dicts for template
     series_dicts = []
     series_total_size = 0
     if series_candidates:
-        series_dicts = [
-            {
-                "item_id": c.item_id,
-                "name": c.name,
-                "year": c.year,
-                "rating": c.rating,
-                "rating_str": f"{c.rating:.1f}" if c.rating is not None else "unrated",
-                "critic_rating": c.critic_rating,
-                "critic_rating_str": (
-                    f"{c.critic_rating:.0f}%"
-                    if c.critic_rating is not None else None
-                ),
-                "threshold": c.threshold,
-                "threshold_str": f"{c.threshold:.1f}",
-                "stale_years": round(c.stale_years, 1),
-                "last_episode_added": c.last_episode_added,
-                "episode_count": c.episode_count,
-                "library": c.library,
-                "size_bytes": c.size_bytes,
-                "size_human": format_size(c.size_bytes),
-                "path": c.path,
-                "deletion_result": c.deletion_result,
-                "image_url": (
-                    f"{base_url}/Items/{c.item_id}/Images/Primary"
-                    f"?maxWidth=200&api_key={api_key}"
-                    if api_key else ""
-                ),
-            }
-            for c in series_candidates
-        ]
+        series_dicts = [_series_candidate_to_dict(c, base_url, api_key) for c in series_candidates]
         series_total_size = sum(c.size_bytes for c in series_candidates)
+
+    # Build near-miss dicts (with days_left)
+    movie_near_miss_dicts = []
+    for c in (movie_near_miss or []):
+        d = _movie_candidate_to_dict(c, base_url, api_key)
+        d["days_left"] = c.days_left
+        d["days_left_str"] = _format_days_left(c.days_left)
+        movie_near_miss_dicts.append(d)
+    series_near_miss_dicts = []
+    for c in (series_near_miss or []):
+        d = _series_candidate_to_dict(c, base_url, api_key)
+        d["days_left"] = c.days_left
+        d["days_left_str"] = _format_days_left(c.days_left)
+        series_near_miss_dicts.append(d)
+    movie_near_miss_size = sum(c.size_bytes for c in (movie_near_miss or []))
+    series_near_miss_size = sum(c.size_bytes for c in (series_near_miss or []))
 
     return template.render(
         base_url=base_url,
@@ -1939,7 +2151,6 @@ def _generate_cleanup_html_report(
             "base_rating": config.base_rating,
             "decay_step": config.decay_step,
             "max_rating": config.max_rating,
-
         },
         doit=doit,
         generated_at=time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1948,6 +2159,10 @@ def _generate_cleanup_html_report(
         series_candidates=series_dicts,
         series_stats=series_stats or {},
         series_total_size_human=format_size(series_total_size),
+        movie_near_miss=movie_near_miss_dicts,
+        movie_near_miss_size_human=format_size(movie_near_miss_size),
+        series_near_miss=series_near_miss_dicts,
+        series_near_miss_size_human=format_size(series_near_miss_size),
     )
 
 
@@ -2133,6 +2348,8 @@ def _output_report(
     config: CleanupConfig,
     series_candidates: Optional[list[SeriesCleanupCandidate]],
     series_stats: Optional[dict],
+    movie_near_miss: Optional[list[CleanupCandidate]] = None,
+    series_near_miss: Optional[list[SeriesCleanupCandidate]] = None,
 ) -> None:
     """Output cleanup report in the requested format (console or JSON).
 
@@ -2143,6 +2360,8 @@ def _output_report(
         config: Cleanup configuration.
         series_candidates: Series candidates (None if no series scanned).
         series_stats: Series filter stage counts.
+        movie_near_miss: Movies protected only by rating.
+        series_near_miss: Series protected only by rating.
     """
     series_for_report = series_candidates if series_stats else None
     if output_format == "json":
@@ -2155,6 +2374,7 @@ def _output_report(
         _format_cleanup_report_console(
             candidates, protection_stats, config,
             series_candidates=series_for_report, series_stats=series_stats,
+            movie_near_miss=movie_near_miss, series_near_miss=series_near_miss,
         )
 
 
@@ -2209,17 +2429,21 @@ def _execute_cleanup(
     )
 
     # Run pipelines
-    candidates, protection_stats = _run_cleanup_pipeline(
+    candidates, protection_stats, movie_near_miss = _run_cleanup_pipeline(
         client, base_url, config, movie_lib_ids, primary_user_id,
         lib_id_to_name=lib_id_to_name,
-    ) if movie_lib_ids else ([], dict(_EMPTY_MOVIE_STATS))
+    ) if movie_lib_ids else ([], dict(_EMPTY_MOVIE_STATS), [])
 
-    series_candidates, series_stats = _run_series_cleanup_pipeline(
+    series_candidates, series_stats, series_near_miss = _run_series_cleanup_pipeline(
         client, base_url, config, series_lib_ids, primary_user_id,
         lib_id_to_name=lib_id_to_name,
-    ) if series_lib_ids else ([], None)
+    ) if series_lib_ids else ([], None, [])
 
-    _output_report(output_format, candidates, protection_stats, config, series_candidates, series_stats)
+    _output_report(
+        output_format, candidates, protection_stats, config,
+        series_candidates, series_stats,
+        movie_near_miss=movie_near_miss, series_near_miss=series_near_miss,
+    )
 
     if doit and candidates:
         _perform_deletions(client, base_url, candidates, username, password, api_key, "movies")
@@ -2232,6 +2456,7 @@ def _execute_cleanup(
             base_url, candidates, protection_stats, config, doit,
             server_id=server_id, api_key=api_key,
             series_candidates=series_for_report, series_stats=series_stats,
+            movie_near_miss=movie_near_miss, series_near_miss=series_near_miss,
         )
         report_path = _save_cleanup_html_report(html_content, no_open=no_open)
         print(f"\nHTML report: {report_path}")
@@ -2273,6 +2498,7 @@ def run_cleanup_command(args) -> None:
         decay_step=getattr(args, "decay_step", 0.5),
         max_rating=getattr(args, "max_rating", 8.0),
         excluded_provider_ids=excluded_provider_ids,
+        near_miss_count=getattr(args, "near_miss_count", 5),
     )
 
     client = httpx.Client(headers={"X-Emby-Token": api_key}, timeout=120)
