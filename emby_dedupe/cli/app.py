@@ -346,9 +346,8 @@ def cleanup_cmd(
     ),
     all_libraries: bool = typer.Option(False, "--all-libraries", help="Scan all libraries (skips -l requirement)."),
     output_json: bool = typer.Option(False, "--json", help="Output report as JSON instead of console table."),
-    html_report: bool = typer.Option(False, "--html-report", envvar="DEDUPE_HTML_REPORT", help="Generate HTML report."),
+    html_report: bool = typer.Option(False, "--html-report", envvar="DEDUPE_HTML_REPORT", help="Generate HTML report (use --html-only for no browser)."),
     html_only: bool = typer.Option(False, "--html-only", envvar="DEDUPE_HTML_ONLY", help="HTML report only, skip console output and don't open browser."),
-    near_miss: int = typer.Option(5, "--near-miss", help="Show N next candidates for removal with countdown (0 to disable)."),
 ) -> None:
     """Identify dead movies nobody watches for library hygiene (dynamic rating decay model)."""
     from argparse import Namespace
@@ -377,7 +376,7 @@ def cleanup_cmd(
         html_report=html_report,
         html_only=html_only,
         no_open=html_only,
-        near_miss_count=near_miss,
+        near_miss_count=5,
     )
 
     run_cleanup_command(args)
