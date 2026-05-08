@@ -470,28 +470,10 @@ def get_series_seasons(client: httpx.Client, base_url: str, series_id: str) -> L
         return []
 
 
-def analyze_missing_episodes(missing_episodes: List[Dict]) -> Dict:
-    """
-    Analyzes missing episodes data to provide statistics and groupings.
-
-    Args:
-        missing_episodes (List[Dict]): List of missing episodes from Emby.
-
-    Returns:
-        Dict: Analysis results with statistics and grouped data.
-    """
-    if not missing_episodes:
-        return {
-            "total_missing": 0,
-            "series_count": 0,
-            "by_series": {},
-            "by_season": {},
-            "statistics": {}
-        }
-
-    # Deduplicate episodes first to avoid showing duplicates in report
+def _deduplicate_episodes(episodes: List[Dict]) -> List[Dict]:
+    """Deduplicate missing episodes based on series, season, and episode number."""
     unique_episodes = {}
-    for episode in missing_episodes:
+    for episode in episodes:
         series_name = episode.get("SeriesName", UNKNOWN_SERIES_NAME)
         season_number = episode.get("ParentIndexNumber", 0)
         episode_number = episode.get("IndexNumber", 0)
@@ -503,29 +485,19 @@ def analyze_missing_episodes(missing_episodes: List[Dict]) -> Dict:
         if unique_key not in unique_episodes:
             unique_episodes[unique_key] = episode
 
-    deduplicated_episodes = list(unique_episodes.values())
+    result = list(unique_episodes.values())
+    if len(episodes) != len(result):
+        logger.info(f"Deduplicated {len(episodes)} episodes down to {len(result)} unique episodes")
+    return result
 
-    # Log deduplication results
-    if len(missing_episodes) != len(deduplicated_episodes):
-        logger.info(f"Deduplicated {len(missing_episodes)} episodes down to {len(deduplicated_episodes)} unique episodes")
 
-    # Debug: Log NCIS missing episodes specifically
-    ncis_episodes = [ep for ep in deduplicated_episodes if ep.get("SeriesName") == "NCIS"]
-    if ncis_episodes:
-        logger.info(f"Found {len(ncis_episodes)} missing NCIS episodes")
-        season_counts: dict[int, int] = {}
-        for ep in ncis_episodes:
-            season = ep.get("ParentIndexNumber", 0)
-            season_counts[season] = season_counts.get(season, 0) + 1
-        logger.info(f"NCIS missing episodes by season: {dict(sorted(season_counts.items()))}")
-
+def _group_missing_episodes(episodes: List[Dict]) -> tuple[Dict, Dict]:
+    """Group episodes by series and season."""
     by_series = {}
     by_season = {}
 
-    logger.info(f"Analyzing {len(deduplicated_episodes)} missing episodes")
-
-    with tqdm(total=len(deduplicated_episodes), desc="Analyzing missing episodes", unit="episode") as progress:
-        for episode in deduplicated_episodes:
+    with tqdm(total=len(episodes), desc="Analyzing missing episodes", unit="episode") as progress:
+        for episode in episodes:
             series_name = episode.get("SeriesName", UNKNOWN_SERIES_NAME)
             series_id = episode.get("SeriesId", "")
             season_number = episode.get("ParentIndexNumber", 0)
@@ -569,14 +541,47 @@ def analyze_missing_episodes(missing_episodes: List[Dict]) -> Dict:
 
             progress.update(1)
 
-    # Calculate statistics using deduplicated count
-    statistics = {
-        "total_missing_episodes": len(deduplicated_episodes),
+    return by_series, by_season
+
+
+def _calculate_missing_statistics(episodes: List[Dict], by_series: Dict, by_season: Dict) -> Dict:
+    """Calculate summary statistics for missing episodes."""
+    return {
+        "total_missing_episodes": len(episodes),
         "total_series_affected": len(by_series),
         "total_seasons_affected": len(by_season),
         "most_missing_series": max(by_series.items(), key=lambda x: x[1]["total_missing"])[0] if by_series else "None",
-        "average_missing_per_series": len(deduplicated_episodes) / len(by_series) if by_series else 0
+        "average_missing_per_series": len(episodes) / len(by_series) if by_series else 0
     }
+
+
+def analyze_missing_episodes(missing_episodes: List[Dict]) -> Dict:
+    """
+    Analyzes missing episodes data to provide statistics and groupings.
+
+    Args:
+        missing_episodes (List[Dict]): List of missing episodes from Emby.
+
+    Returns:
+        Dict: Analysis results with statistics and grouped data.
+    """
+    if not missing_episodes:
+        return {
+            "total_missing": 0,
+            "series_count": 0,
+            "by_series": {},
+            "by_season": {},
+            "statistics": {}
+        }
+
+    # Deduplicate episodes first to avoid showing duplicates in report
+    deduplicated_episodes = _deduplicate_episodes(missing_episodes)
+
+    # Group episodes by series and season
+    by_series, by_season = _group_missing_episodes(deduplicated_episodes)
+
+    # Calculate statistics using deduplicated count
+    statistics = _calculate_missing_statistics(deduplicated_episodes, by_series, by_season)
 
     return {
         "total_missing": len(deduplicated_episodes),

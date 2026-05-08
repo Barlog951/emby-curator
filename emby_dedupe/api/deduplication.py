@@ -1504,8 +1504,8 @@ def process_deletion_and_generate_report(
         total=total_deletions, desc="Deleting items", unit="item", dynamic_ncols=True
     )
 
-    for decision in decisions:
-        for item in decision.get("delete", []):
+    for dec in decisions:
+        for item in dec.get("delete", []):
             deletion_progress_bar.set_description(f"Deleting ID: {item['id']}")
 
             # Store the original item data before deletion

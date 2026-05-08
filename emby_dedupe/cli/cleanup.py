@@ -2075,6 +2075,29 @@ def _series_candidate_to_dict(c: SeriesCleanupCandidate, base_url: str, api_key:
     }
 
 
+def _process_near_miss_candidates(
+    near_miss: Optional[list],
+    is_series: bool,
+    base_url: str,
+    api_key: str,
+) -> tuple[list[dict], int]:
+    """Process near-miss candidates into template-friendly dicts."""
+    dicts = []
+    total_size = 0
+    for c in (near_miss or []):
+        if is_series and isinstance(c, SeriesCleanupCandidate):
+            d = _series_candidate_to_dict(c, base_url, api_key)
+        elif not is_series and isinstance(c, CleanupCandidate):
+            d = _movie_candidate_to_dict(c, base_url, api_key)
+        else:
+            continue
+        d["days_left"] = c.days_left
+        d["days_left_str"] = _format_days_left(c.days_left)
+        dicts.append(d)
+        total_size += c.size_bytes
+    return dicts, total_size
+
+
 def _generate_cleanup_html_report(
     base_url: str,
     candidates: list[CleanupCandidate],
@@ -2088,24 +2111,7 @@ def _generate_cleanup_html_report(
     movie_near_miss: Optional[list[CleanupCandidate]] = None,
     series_near_miss: Optional[list[SeriesCleanupCandidate]] = None,
 ) -> str:
-    """Render the cleanup report as an HTML string using Jinja2.
-
-    Args:
-        base_url: Emby server base URL (used for external links).
-        candidates: List of CleanupCandidate objects (movies).
-        protection_stats: Dict with filter stage counts for movies.
-        config: CleanupConfig used for this run.
-        doit: Whether deletions were performed.
-        server_id: Emby server ID for deep links.
-        api_key: Emby API key for image URLs.
-        series_candidates: Optional list of SeriesCleanupCandidate objects.
-        series_stats: Optional dict with filter stage counts for series.
-        movie_near_miss: Movies protected only by rating (closest to removal).
-        series_near_miss: Series protected only by rating (closest to removal).
-
-    Returns:
-        Rendered HTML string.
-    """
+    """Render the cleanup report as an HTML string using Jinja2."""
     templates_dir = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "templates",
@@ -2117,28 +2123,14 @@ def _generate_cleanup_html_report(
     candidates_dicts = [_movie_candidate_to_dict(c, base_url, api_key) for c in candidates]
     total_size = sum(c.size_bytes for c in candidates)
 
-    # Build series dicts for template
     series_dicts = []
     series_total_size = 0
     if series_candidates:
         series_dicts = [_series_candidate_to_dict(c, base_url, api_key) for c in series_candidates]
         series_total_size = sum(c.size_bytes for c in series_candidates)
 
-    # Build near-miss dicts (with days_left)
-    movie_near_miss_dicts = []
-    for c in (movie_near_miss or []):
-        d = _movie_candidate_to_dict(c, base_url, api_key)
-        d["days_left"] = c.days_left
-        d["days_left_str"] = _format_days_left(c.days_left)
-        movie_near_miss_dicts.append(d)
-    series_near_miss_dicts = []
-    for c in (series_near_miss or []):
-        d = _series_candidate_to_dict(c, base_url, api_key)
-        d["days_left"] = c.days_left
-        d["days_left_str"] = _format_days_left(c.days_left)
-        series_near_miss_dicts.append(d)
-    movie_near_miss_size = sum(c.size_bytes for c in (movie_near_miss or []))
-    series_near_miss_size = sum(c.size_bytes for c in (series_near_miss or []))
+    movie_nm_dicts, movie_nm_size = _process_near_miss_candidates(movie_near_miss, False, base_url, api_key)
+    series_nm_dicts, series_nm_size = _process_near_miss_candidates(series_near_miss, True, base_url, api_key)
 
     return template.render(
         base_url=base_url,
@@ -2159,10 +2151,10 @@ def _generate_cleanup_html_report(
         series_candidates=series_dicts,
         series_stats=series_stats or {},
         series_total_size_human=format_size(series_total_size),
-        movie_near_miss=movie_near_miss_dicts,
-        movie_near_miss_size_human=format_size(movie_near_miss_size),
-        series_near_miss=series_near_miss_dicts,
-        series_near_miss_size_human=format_size(series_near_miss_size),
+        movie_near_miss=movie_nm_dicts,
+        movie_near_miss_size_human=format_size(movie_nm_size),
+        series_near_miss=series_nm_dicts,
+        series_near_miss_size_human=format_size(series_nm_size),
     )
 
 
