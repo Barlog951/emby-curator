@@ -2111,7 +2111,24 @@ def _generate_cleanup_html_report(
     movie_near_miss: Optional[list[CleanupCandidate]] = None,
     series_near_miss: Optional[list[SeriesCleanupCandidate]] = None,
 ) -> str:
-    """Render the cleanup report as an HTML string using Jinja2."""
+    """Render the cleanup report as an HTML string using Jinja2.
+
+    Args:
+        base_url: Emby server base URL (used for external links).
+        candidates: List of CleanupCandidate objects (movies).
+        protection_stats: Dict with filter stage counts for movies.
+        config: CleanupConfig used for this run.
+        doit: Whether deletions were performed.
+        server_id: Emby server ID for deep links.
+        api_key: Emby API key for image URLs.
+        series_candidates: Optional list of SeriesCleanupCandidate objects.
+        series_stats: Optional dict with filter stage counts for series.
+        movie_near_miss: Movies protected only by rating (closest to removal).
+        series_near_miss: Series protected only by rating (closest to removal).
+
+    Returns:
+        Rendered HTML string.
+    """
     templates_dir = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "templates",

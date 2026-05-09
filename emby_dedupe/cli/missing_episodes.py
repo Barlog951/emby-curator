@@ -282,11 +282,9 @@ def _parse_and_override_env_vars(args):
     env_html_only = get_env_variable(ENV_DEDUPE_HTML_ONLY) in ("true", "True", "TRUE", "1")
 
     set_logging_level(args.verbosity, env_verbosity)
-    verbosity_str = str(args.verbosity) if args.verbosity is not None else None
-    override_warning("--verbosity", verbosity_str, env_verbosity)
+    override_warning("--verbosity", args.verbosity and str(logger.level), env_verbosity)
     override_warning("--host", args.host, env_host)
-    port_str = str(args.port) if args.port is not None else None
-    override_warning("--port", port_str, env_port)
+    override_warning("--port", args.port and str(args.port), env_port)
     override_warning("--api-key", args.api_key, env_api_key)
     override_warning("--library", args.library, env_library_str)
 

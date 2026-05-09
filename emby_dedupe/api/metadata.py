@@ -317,11 +317,12 @@ def get_quality_description(item: Dict[str, Any]) -> Dict[str, Any]:
             languages.append(lang)
 
     # Construct the quality description safely
+    size_bytes = item.get("Size", 0)
     quality_description = {
         "video": _extract_video_quality(video_stream),
         "audio": _extract_audio_quality(audio_stream, languages),
-        "size": item.get("Size", 0),  # Raw size for sorting
-        "size_formatted": _format_file_size(item.get("Size", 0)),  # Human-readable size
+        "size": size_bytes,  # Raw size for sorting
+        "size_formatted": _format_file_size(size_bytes),  # Human-readable size
         "date_added": _resolve_date_added(item),
         "premiere_date": _extract_premiere_date(item),
         "year": item.get("ProductionYear", "unknown"),

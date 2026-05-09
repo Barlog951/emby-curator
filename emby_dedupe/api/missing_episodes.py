@@ -496,6 +496,7 @@ def _group_missing_episodes(episodes: List[Dict]) -> tuple[Dict, Dict]:
     by_series = {}
     by_season = {}
 
+    logger.info(f"Analyzing {len(episodes)} missing episodes")
     with tqdm(total=len(episodes), desc="Analyzing missing episodes", unit="episode") as progress:
         for episode in episodes:
             series_name = episode.get("SeriesName", UNKNOWN_SERIES_NAME)

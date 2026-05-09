@@ -11,6 +11,7 @@ HTTP_TIMEOUT = 120  # HTTP timeout in seconds (2 minutes)
 PAGE_SIZE = 1000  # The page size for paginated requests
 EMOJI_CHECK = "✅"
 EMOJI_CROSS = "❌"
+IGNORED_IMDB_ID = "tt0000000"  # IMDb ID to ignore
 
 # Report generation constants
 ITEMS_TO_DELETE_HEADER = "Items to Delete"

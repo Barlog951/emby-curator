@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from tqdm import tqdm
 
-from emby_dedupe.reports.common import calculate_report_statistics, format_size
+from emby_dedupe.reports.common import calculate_report_statistics
 from emby_dedupe.utils.logging import logger
 
 
@@ -195,10 +195,15 @@ def _process_decision_group(decision: Dict[str, Any], base_url: str) -> Dict[str
     def date_sort_key(item: Dict[str, Any]) -> str:
         return item['quality_description'].get('date_added', '0000-00-00')
 
-    # Try to sort items by date
-    sorted_items = sorted(all_items, key=date_sort_key, reverse=True)
-    newest_item = sorted_items[0] if sorted_items else keep_item
-    oldest_item = sorted_items[-1] if len(sorted_items) > 1 else keep_item
+    try:
+        # Try to sort items by date. Safety net for potential None values or sorting errors.
+        sorted_items = sorted(all_items, key=date_sort_key, reverse=True)
+        newest_item = sorted_items[0] if sorted_items else keep_item
+        oldest_item = sorted_items[-1] if len(sorted_items) > 1 else keep_item
+    except Exception as e:
+        logger.warning(f"Error sorting items by date: {e}")
+        newest_item = keep_item
+        oldest_item = keep_item
 
     # Process delete items
     processed_delete_items = []

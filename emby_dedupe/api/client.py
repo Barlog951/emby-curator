@@ -15,6 +15,7 @@ from emby_dedupe.utils.constants import (
     DEFAULT_PORT_EMBY,
     DEFAULT_PORT_HTTP,
     DEFAULT_PORT_HTTPS,
+    IGNORED_IMDB_ID,
     PAGE_SIZE,
 )
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError
@@ -591,7 +592,7 @@ def _process_all_provider_ids(
     item: dict,
     provider_tables: dict,
     library_name: str,
-    ignored_imdb_id: str = "tt0000000",
+    ignored_imdb_id: str = IGNORED_IMDB_ID,
 ) -> None:
     """Process all provider IDs for a single media item."""
     provider_ids = item.get("ProviderIds", {})

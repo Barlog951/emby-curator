@@ -146,11 +146,9 @@ def _apply_override_warnings(args, env_vars):
         env_vars: Dictionary of environment variable values.
     """
     set_logging_level(args.verbosity, env_vars['verbosity'])
-    verbosity_str = str(args.verbosity) if args.verbosity is not None else None
-    override_warning("--verbosity", verbosity_str, env_vars['verbosity'])
+    override_warning("--verbosity", args.verbosity and str(logger.level), env_vars['verbosity'])
     override_warning("--host", args.host, env_vars['host'])
-    port_str = str(args.port) if args.port is not None else None
-    override_warning("--port", port_str, env_vars['port'])
+    override_warning("--port", args.port and str(args.port), env_vars['port'])
     override_warning("--api-key", args.api_key, env_vars['api_key'])
 
     env_library = [lib.strip() for lib in env_vars['library_str'].split(',')] if env_vars['library_str'] else None
