@@ -200,7 +200,7 @@ def _process_decision_group(decision: Dict[str, Any], base_url: str) -> Dict[str
         sorted_items = sorted(all_items, key=date_sort_key, reverse=True)
         newest_item = sorted_items[0] if sorted_items else keep_item
         oldest_item = sorted_items[-1] if len(sorted_items) > 1 else keep_item
-    except Exception as e:
+    except (TypeError, ValueError) as e:
         logger.warning(f"Error sorting items by date: {e}")
         newest_item = keep_item
         oldest_item = keep_item
