@@ -80,6 +80,12 @@ GENRE_NORMALIZATION_MAP = {
     "hudobný": "Music",             # Slovak (4 items)
     # Custom/junk — user confirmed "dada" means Comedy
     "dada": "Comedy",               # 1645 items!
+    # 2026-05-27 audit additions
+    "reality show": "Reality",      # verbose duplicate of Reality (3 items)
+    "sci-fi & fantasy": _SCIENCE_FICTION,  # TMDB TV compound — pick distinct element (2 items)
+    "detský": "Kids",               # Slovak for "children's" (2 items)
+    "akčný a dobrodružný": "Action",  # Slovak "Action & Adventure" — Action dominant (3 items)
+    "tv film": "TV Movie",          # Emby variant of TMDB "TV Movie" (75 items)
 }
 
 # TMDB canonical genre names — the authoritative list used for audit suggestions.
@@ -96,6 +102,9 @@ TMDB_CANONICAL_GENRES: frozenset[str] = frozenset({
     # Common extras that Emby / metadata agents use
     "Biography", "Children", "Mini-Series", "Musical",
     "Short", "Special Interest", "Sport", "Talk Show",
+    # 2026-05-27 audit additions — legitimate distinct Emby categories
+    "TV Movie", "Anime", "Travel", "Food", "Game Show",
+    "Martial Arts", "Indie", "Home and Garden",
 })
 
 # Environment variable names for Phase 2 external APIs (define early)
