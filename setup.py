@@ -17,6 +17,7 @@ setup(
         "rank-torrent-name>=1.10.0",  # For quality source detection
         "python-dotenv>=1.0.0",  # Load .env files automatically
         "typer>=0.24.0",
+        "lingua-language-detector>=2.2.0",
     ],
     extras_require={
         "dev": [

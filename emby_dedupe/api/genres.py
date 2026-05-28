@@ -19,11 +19,14 @@ from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.logging import logger
 
-# Full metadata fields for library-wide genre audit/reports
+# Full metadata fields for library-wide genre audit/reports.
+# SeriesId/ParentIndexNumber/IndexNumber are episode-specific but harmless
+# to request on movies/series — they simply come back as None.
 _GENRE_FIELDS = (
     "Genres,GenreItems,ProviderIds,LockedFields,Overview,Tags,Studios,"
     "OfficialRating,CommunityRating,CriticRating,SortName,Taglines,"
-    "DateCreated,PremiereDate,ProductionYear,EndDate,Status,AirDays"
+    "DateCreated,PremiereDate,ProductionYear,EndDate,Status,AirDays,"
+    "SeriesId,ParentIndexNumber,IndexNumber"
 )
 
 # Minimal fields for targeted batch fetch (webhook/item-ids mode)
@@ -80,7 +83,11 @@ def fetch_all_genres(client: httpx.Client, base_url: str) -> list[dict]:
 
 
 def fetch_items_with_genres(
-    client: httpx.Client, base_url: str, library_ids: list[str], user_id: str = ""
+    client: httpx.Client,
+    base_url: str,
+    library_ids: list[str],
+    user_id: str = "",
+    item_types: str = "Movie,Series",
 ) -> list[dict]:
     """Fetch all media items with full metadata, paginated.
 
@@ -93,6 +100,10 @@ def fetch_items_with_genres(
         base_url: Base URL of the Emby server.
         library_ids: List of library IDs to filter by. If empty, fetches all items.
         user_id: Emby user ID for the user-scoped endpoint. Falls back to /Items if empty.
+        item_types: Comma-separated Emby item types to include.  Default is
+            ``"Movie,Series"`` to match the genre-normalize workflow; the
+            descriptions CLI passes ``"Movie,Series,Episode"`` to also fetch
+            episodes for per-episode overview localization.
 
     Returns:
         Flat list of all media items with all metadata fields.
@@ -100,7 +111,7 @@ def fetch_items_with_genres(
     all_items: list[dict] = []
     base_params = {
         "Recursive": "true",
-        "IncludeItemTypes": "Movie,Series",
+        "IncludeItemTypes": item_types,
         "Fields": _GENRE_FIELDS,
     }
 
@@ -118,6 +129,7 @@ def fetch_items_by_ids(
     user_id: str,
     item_ids: list[str],
     chunk_size: int = 100,
+    fields: Optional[str] = None,
 ) -> list[dict]:
     """Fetch specific items by ID using the batch endpoint.
 
@@ -131,6 +143,9 @@ def fetch_items_by_ids(
         user_id: Emby user ID for the user-scoped endpoint.
         item_ids: List of Emby item IDs to fetch.
         chunk_size: Max IDs per request (default 100).
+        fields: Optional comma-separated Fields query value.  Defaults to the
+            minimal genre-only set; callers that need Overview/Taglines/Name
+            (e.g. the descriptions CLI) should pass an explicit field list.
 
     Returns:
         List of full item dicts.  Items that no longer exist are omitted.
@@ -138,6 +153,7 @@ def fetch_items_by_ids(
     if not item_ids:
         return []
 
+    fields_value = fields or _GENRE_FIELDS_BATCH
     all_items: list[dict] = []
 
     for i in range(0, len(item_ids), chunk_size):
@@ -145,7 +161,7 @@ def fetch_items_by_ids(
         endpoint = f"{base_url}/Users/{user_id}/Items"
         params = {
             "Ids": ",".join(chunk),
-            "Fields": _GENRE_FIELDS_BATCH,
+            "Fields": fields_value,
         }
         try:
             response = make_http_request(client, "GET", endpoint, params=params)

@@ -51,8 +51,8 @@ def add_genres_arguments(parser: argparse.ArgumentParser) -> None:
     """
     parser.add_argument(
         "action",
-        choices=["audit", "normalize", "fix"],
-        help="Action to perform: audit (report genre health), normalize (fix genre names), or fix (fetch from TMDB/OMDb)",
+        choices=["audit", "normalize", "fix", "process"],
+        help="Action to perform: audit (report genre health), normalize (fix genre names), fix (fetch from TMDB/OMDb), or process (normalize + fix in one pass)",
     )
     parser.add_argument(
         "--doit",
