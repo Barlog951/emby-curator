@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """
-Emby genre webhook listener.
+Emby genre + description webhook listener.
 
 Receives ItemAdded webhooks from Emby, debounces for DEBOUNCE_SECONDS,
-then runs genre normalize + fix --validate for all queued items.
+then runs TWO pipelines for all queued items:
 
-Targeted mode: collects item IDs during the debounce window and passes
-them to the CLI via --item-ids. Only the new items are processed —
-no full library scan needed.
+1. ``genres process --validate`` — normalize variant genre names + fill gaps
+   from TMDB/OMDb.  For episodes, queued under the parent SeriesId because
+   genres live on the Series.
+2. ``descriptions fill --update-title`` — replace English Overview/Tagline
+   with Slovak/Czech from TMDB, with title-language policy.  For episodes,
+   queued by Episode ID because each episode has its own Overview.
+
+The two queues share the same debounce timer so a single Emby webhook
+fires both pipelines.  Both share the on-disk TMDB cache, so repeat events
+on the same items cost nothing.
 
 Configure in Emby: Dashboard > Notifications > Webhooks
   URL: http://localhost:8765/webhook
@@ -43,29 +50,16 @@ logger = logging.getLogger("genre-watcher")
 
 _lock = threading.Lock()
 _timer: threading.Timer | None = None
-# Keyed by item ID — deduplicates if same item fires multiple events
-_queued_items: dict[str, str] = {}  # {item_id: item_name}
+# Two queues — different IDs needed for each pipeline:
+#   _queued_for_genres: episodes collapse to their SeriesId (genres live on Series)
+#   _queued_for_descriptions: episodes are queued by their own ID (per-episode Overview)
+_queued_for_genres: dict[str, str] = {}        # {series_or_item_id: display_name}
+_queued_for_descriptions: dict[str, str] = {}  # {item_id: display_name}
 
 
-def _run_genre_fix() -> None:
-    global _queued_items
-    with _lock:
-        items = dict(_queued_items)
-        _queued_items = {}
-
-    item_ids = list(items.keys())
-    names = list(items.values())
-    logger.info(
-        f"=== Genre fix triggered for {len(item_ids)} new item(s): "
-        f"{', '.join(names[:5])}{'...' if len(names) > 5 else ''} ==="
-    )
-
-    cli = f"{VENV_BIN}/emby-dedupe"
-    ids_arg = ",".join(item_ids)
-
-    # Single "genres process" command: normalize + fix in one pass, items fetched once
-    cmd = [cli, "genres", "process", "--doit", "--validate", "--item-ids", ids_arg]
-    logger.info("--- normalize + fix (single pass) ---")
+def _run_subprocess(label: str, cmd: list[str]) -> None:
+    """Run a CLI command, stream its output to the journal, log a clear divider."""
+    logger.info(f"--- {label} ---")
     try:
         result = subprocess.run(
             cmd, cwd=WORKDIR, text=True,
@@ -75,36 +69,83 @@ def _run_genre_fix() -> None:
             if line.strip():
                 logger.info(line)
         if result.returncode != 0:
-            logger.error(f"genres process exited with code {result.returncode}")
+            logger.error(f"{label} exited with code {result.returncode}")
     except Exception as exc:
-        logger.error(f"genres process failed: {exc}")
-
-    logger.info("=== Genre fix complete ===")
+        logger.error(f"{label} failed: {exc}")
 
 
-def _schedule_fix(item_id: str, item_name: str) -> None:
-    global _timer, _queued_items
+def _run_pipelines() -> None:
+    """Fired by the debounce timer: snapshot both queues and run both CLIs."""
+    global _queued_for_genres, _queued_for_descriptions
     with _lock:
-        _queued_items[item_id] = item_name
-        count = len(_queued_items)
+        genre_items = dict(_queued_for_genres)
+        desc_items = dict(_queued_for_descriptions)
+        _queued_for_genres = {}
+        _queued_for_descriptions = {}
+
+    cli = f"{VENV_BIN}/emby-dedupe"
+
+    # === Pipeline 1: genres ===
+    if genre_items:
+        genre_ids = list(genre_items.keys())
+        genre_names = list(genre_items.values())
+        logger.info(
+            f"=== Genre pipeline: {len(genre_ids)} target(s): "
+            f"{', '.join(genre_names[:5])}{'...' if len(genre_names) > 5 else ''} ==="
+        )
+        _run_subprocess(
+            "genres process",
+            [cli, "genres", "process", "--doit", "--validate", "--item-ids", ",".join(genre_ids)],
+        )
+
+    # === Pipeline 2: descriptions ===
+    if desc_items:
+        desc_ids = list(desc_items.keys())
+        desc_names = list(desc_items.values())
+        logger.info(
+            f"=== Description pipeline: {len(desc_ids)} target(s): "
+            f"{', '.join(desc_names[:5])}{'...' if len(desc_names) > 5 else ''} ==="
+        )
+        _run_subprocess(
+            "descriptions fill",
+            [cli, "descriptions", "fill", "--update-title", "--doit", "--item-ids", ",".join(desc_ids)],
+        )
+
+    logger.info("=== Webhook batch complete ===")
+
+
+def _schedule_fix(
+    desc_id: str, desc_name: str,
+    genre_id: str, genre_name: str,
+) -> None:
+    """Queue an item for both pipelines and (re)arm the debounce timer."""
+    global _timer, _queued_for_genres, _queued_for_descriptions
+    with _lock:
+        _queued_for_descriptions[desc_id] = desc_name
+        _queued_for_genres[genre_id] = genre_name
+        count_d = len(_queued_for_descriptions)
+        count_g = len(_queued_for_genres)
         if _timer is not None:
             _timer.cancel()
-        _timer = threading.Timer(DEBOUNCE_SECONDS, _run_genre_fix)
+        _timer = threading.Timer(DEBOUNCE_SECONDS, _run_pipelines)
         _timer.daemon = True
         _timer.start()
 
     logger.info(
-        f"ItemAdded: '{item_name}' (id={item_id}) "
-        f"({count} queued — running in {DEBOUNCE_SECONDS}s if no more arrive)"
+        f"ItemAdded: '{desc_name}' "
+        f"(queue: {count_d} desc, {count_g} genre) — running in {DEBOUNCE_SECONDS}s"
     )
 
 
-def _parse_event(body: bytes, content_type: str) -> tuple[str, str, str]:
-    """Return (event_name, queue_id, display_name) from webhook payload.
+def _parse_event(
+    body: bytes, content_type: str
+) -> tuple[str, str, str, str, str]:
+    """Return (event_name, desc_id, desc_name, genre_id, genre_name).
 
-    For Episode items, queue_id is the SeriesId (not the episode ID) so that
-    50 episodes of the same series collapse to a single queue entry.
-    For Movies/Series, queue_id is the item Id.
+    - desc_id / desc_name: the actual item — descriptions are per-item, so for
+      episodes this is the episode's own Id.
+    - genre_id / genre_name: for episodes this collapses to the parent SeriesId
+      (genres live on the Series); for movies/series it is the item Id itself.
 
     Handles both lowercase 'event' (Plex-style) and uppercase 'Event' (Emby native).
     """
@@ -117,23 +158,25 @@ def _parse_event(body: bytes, content_type: str) -> tuple[str, str, str]:
             item_id = item.get("Id") or item.get("ratingKey", "")
 
             if item_type == "Episode":
-                # Genres live on the Series — queue the series, not the episode
                 series_id = item.get("SeriesId", "")
-                series_name = item.get("SeriesName") or item.get("Name", "unknown")
+                series_name = item.get("SeriesName") or "unknown"
                 ep_name = item.get("Name", "")
+                desc_display = f"{series_name} – {ep_name}" if series_name else ep_name
+                # For descriptions: queue the episode itself.
+                # For genres: queue the series (or fall back to episode id if SeriesId is missing).
                 if series_id:
                     logger.debug(
-                        f"Episode '{ep_name}' (id={item_id}) → queuing series '{series_name}' (id={series_id})"
+                        f"Episode '{ep_name}' (id={item_id}) → "
+                        f"desc={item_id}, genre={series_id} ('{series_name}')"
                     )
-                    return event, series_id, series_name
-                # No SeriesId in payload — fall back to episode ID
-                logger.debug(f"Episode '{ep_name}' has no SeriesId, using episode id={item_id}")
-                return event, item_id, ep_name
+                    return event, item_id, desc_display, series_id, series_name
+                logger.debug(f"Episode '{ep_name}' has no SeriesId — using episode id for both queues")
+                return event, item_id, desc_display, item_id, ep_name
 
             title = item.get("Name") or item.get("title") or data.get("Title", "unknown")
             if item_id:
                 logger.debug(f"Item id={item_id} type={item_type or 'unknown'}")
-            return event, item_id, title
+            return event, item_id, title, item_id, title
         except json.JSONDecodeError:
             pass
 
@@ -142,11 +185,10 @@ def _parse_event(body: bytes, content_type: str) -> tuple[str, str, str]:
     event_match = re.search(r'"[Ee]vent"\s*:\s*"([^"]+)"', text)
     title_match = re.search(r'"(?:Name|title|Title)"\s*:\s*"([^"]+)"', text)
     id_match = re.search(r'"Id"\s*:\s*"([^"]+)"', text)
-    return (
-        event_match.group(1) if event_match else "",
-        id_match.group(1) if id_match else "",
-        title_match.group(1) if title_match else "unknown",
-    )
+    event = event_match.group(1) if event_match else ""
+    item_id = id_match.group(1) if id_match else ""
+    title = title_match.group(1) if title_match else "unknown"
+    return event, item_id, title, item_id, title
 
 
 # Events Emby sends for new media added (varies by plugin version)
@@ -173,13 +215,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         raw_text = body.decode("utf-8", errors="replace")
         logger.debug(f"RAW PAYLOAD [{content_type}]: {raw_text[:2000]}")
 
-        event, item_id, title = _parse_event(body, content_type)
+        event, desc_id, desc_name, genre_id, genre_name = _parse_event(body, content_type)
 
         if event.lower() in _ITEM_ADDED_EVENTS:
-            if not item_id:
-                logger.warning(f"ItemAdded event but no item ID in payload — skipping: '{title}'")
+            if not desc_id or not genre_id:
+                logger.warning(f"ItemAdded event but no item ID in payload — skipping: '{desc_name}'")
             else:
-                _schedule_fix(item_id, title)
+                _schedule_fix(desc_id, desc_name, genre_id, genre_name)
         else:
             logger.debug(f"Ignored event: '{event}'")
 

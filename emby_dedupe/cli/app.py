@@ -28,11 +28,18 @@ app = typer.Typer(
 genres_app = typer.Typer(name="genres", help="Genre audit and management.")
 app.add_typer(genres_app, name="genres")
 
+descriptions_app = typer.Typer(
+    name="descriptions", help="Overview/description management."
+)
+app.add_typer(descriptions_app, name="descriptions")
+
 # Shared help strings used across multiple genre subcommands
 _LOCK_OPT = "--lock/--no-lock"
 _LOCK_HELP = "Lock genres after update."
 _ALL_LIBS_HELP = "Scan all Emby libraries."
 _ITEM_IDS_HELP = "Comma-separated Emby item IDs to process (skips full library scan)."
+_DOIT_HELP = "Apply changes (dry-run by default)."
+_TMDB_KEY_HELP = "TMDB API key."
 
 
 @dataclass
@@ -443,13 +450,13 @@ def genres_normalize(
 @genres_app.command("process")
 def genres_process(
     ctx: typer.Context,
-    doit: bool = typer.Option(False, "--doit", help="Apply changes (dry-run by default)."),
+    doit: bool = typer.Option(False, "--doit", help=_DOIT_HELP),
     lock: bool = typer.Option(True, _LOCK_OPT, help=_LOCK_HELP),
     validate: bool = typer.Option(
         False, "--validate", help="Compare existing genres against TMDB/OMDb and add missing ones."
     ),
     tmdb_api_key: Optional[str] = typer.Option(
-        None, "--tmdb-api-key", envvar="DEDUPE_TMDB_API_KEY", help="TMDB API key."
+        None, "--tmdb-api-key", envvar="DEDUPE_TMDB_API_KEY", help=_TMDB_KEY_HELP
     ),
     item_ids: str = typer.Option(..., "--item-ids", help="Comma-separated Emby item IDs (required)."),
 ) -> None:
@@ -472,14 +479,14 @@ def genres_process(
 @genres_app.command("fix")
 def genres_fix(
     ctx: typer.Context,
-    doit: bool = typer.Option(False, "--doit", help="Apply changes (dry-run by default)."),
+    doit: bool = typer.Option(False, "--doit", help=_DOIT_HELP),
     lock: bool = typer.Option(True, _LOCK_OPT, help=_LOCK_HELP),
     gaps_only: bool = typer.Option(False, "--gaps-only", help="Only process items with no genres."),
     validate: bool = typer.Option(
         False, "--validate", help="Compare existing genres against TMDB/OMDb and add missing ones."
     ),
     tmdb_api_key: Optional[str] = typer.Option(
-        None, "--tmdb-api-key", envvar="DEDUPE_TMDB_API_KEY", help="TMDB API key."
+        None, "--tmdb-api-key", envvar="DEDUPE_TMDB_API_KEY", help=_TMDB_KEY_HELP
     ),
     all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
     item_ids: Optional[str] = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
@@ -529,6 +536,88 @@ def _run_genres_subcommand(ctx: typer.Context, **kwargs) -> None:
     )
 
     run_genres_command(args)
+
+
+# ---------------------------------------------------------------------------
+# descriptions subcommands
+# ---------------------------------------------------------------------------
+
+@descriptions_app.callback(invoke_without_command=True)
+def descriptions_callback(ctx: typer.Context) -> None:
+    """Overview/description management."""
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit()
+
+
+@descriptions_app.command("fill")
+def descriptions_fill(
+    ctx: typer.Context,
+    doit: bool = typer.Option(False, "--doit", help=_DOIT_HELP),
+    lock: bool = typer.Option(
+        True, _LOCK_OPT, help="Lock Overview after update to prevent agent revert."
+    ),
+    overview_langs: Optional[str] = typer.Option(
+        None,
+        "--overview-langs",
+        help="Comma-separated BCP47 codes in priority order. Default: sk-SK,cs-CZ",
+    ),
+    update_title: bool = typer.Option(
+        False,
+        "--update-title",
+        help=(
+            "Also fix Name. Policy: keep if it matches TMDB EN/CZ/SK title; "
+            "otherwise replace with EN. OriginalTitle is never touched."
+        ),
+    ),
+    tmdb_api_key: Optional[str] = typer.Option(
+        None, "--tmdb-api-key", envvar="DEDUPE_TMDB_API_KEY", help=_TMDB_KEY_HELP
+    ),
+    limit: Optional[int] = typer.Option(
+        None, "--limit", help="Cap the number of items processed (useful for dry-run sampling)."
+    ),
+    no_cache: bool = typer.Option(
+        False, "--no-cache",
+        help="Bypass the on-disk TMDB cache and re-query every item (force refresh).",
+    ),
+    cache_ttl_days: Optional[int] = typer.Option(
+        None, "--cache-ttl-days",
+        help="How many days a cached TMDB entry stays fresh (default 30).",
+    ),
+    all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
+    item_ids: Optional[str] = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
+) -> None:
+    """Replace English Overviews with SK/CZ from TMDB (configurable chain).
+
+    With --update-title, also replaces non-EN/CZ/SK titles with English.
+
+    A persistent cache at ~/.cache/emby-dedupe/description-cache.json stores
+    TMDB results (including 'no data' negatives) — re-runs on the same library
+    skip cached items entirely, finishing in minutes instead of hours.
+    """
+    from argparse import Namespace
+
+    from emby_dedupe.cli.descriptions import run_descriptions_command
+
+    config: AppConfig = ctx.obj if ctx.obj else AppConfig()
+    args = Namespace(
+        host=config.host,
+        port=config.port,
+        api_key=config.api_key,
+        library=config.libraries or [],
+        verbosity=config.verbosity,
+        doit=doit or config.doit,
+        lock=lock,
+        overview_langs=overview_langs,
+        update_title=update_title,
+        tmdb_api_key=tmdb_api_key,
+        limit=limit,
+        no_cache=no_cache,
+        cache_ttl_days=cache_ttl_days,
+        all_libraries=all_libraries,
+        item_ids=item_ids,
+    )
+    run_descriptions_command(args)
 
 
 def main() -> None:
