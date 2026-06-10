@@ -1,6 +1,7 @@
 """
 Tests for CLI argument parsing (legacy argparse functions) and typer app structure.
 """
+import re
 from unittest.mock import patch
 
 import pytest
@@ -97,95 +98,77 @@ class TestValidateRequiredArguments:
 
 
 class TestTyperAppStructure:
-    """Verify that the typer app is correctly wired up."""
+    """Verify that the typer app is correctly wired up.
 
-    def test_app_help_exit_zero(self):
+    Help output is rendered by rich, whose wrapping/coloring varies with
+    terminal width and color support (CI vs local). _invoke_help pins a wide,
+    colorless terminal and strips any residual ANSI codes so the literal
+    option names are always assertable.
+    """
+
+    _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+    def _invoke_help(self, args):
+        """Invoke the typer app with a deterministic terminal environment.
+
+        Returns:
+            Tuple of (result, plain_output) where plain_output has ANSI
+            escape codes stripped.
+        """
         from typer.testing import CliRunner
 
         from emby_dedupe.cli.app import app
 
         runner = CliRunner()
-        result = runner.invoke(app, ["--help"])
+        result = runner.invoke(
+            app,
+            args,
+            env={"COLUMNS": "200", "NO_COLOR": "1", "FORCE_COLOR": None, "TERM": "dumb"},
+        )
+        return result, self._ANSI_RE.sub("", result.output)
+
+    def test_app_help_exit_zero(self):
+        result, _ = self._invoke_help(["--help"])
         assert result.exit_code == 0
 
     def test_app_has_genres_group(self):
-        from typer.testing import CliRunner
-
-        from emby_dedupe.cli.app import app
-
-        runner = CliRunner()
-        result = runner.invoke(app, ["--help"])
+        result, output = self._invoke_help(["--help"])
         assert result.exit_code == 0
-        assert "genres" in result.output
+        assert "genres" in output
 
     def test_genres_help_shows_subcommands(self):
-        from typer.testing import CliRunner
-
-        from emby_dedupe.cli.app import app
-
-        runner = CliRunner()
-        result = runner.invoke(app, ["genres", "--help"])
+        result, output = self._invoke_help(["genres", "--help"])
         assert result.exit_code == 0
-        assert "audit" in result.output
-        assert "normalize" in result.output
-        assert "fix" in result.output
+        assert "audit" in output
+        assert "normalize" in output
+        assert "fix" in output
 
     def test_genres_audit_help(self):
-        from typer.testing import CliRunner
-
-        from emby_dedupe.cli.app import app
-
-        runner = CliRunner()
-        result = runner.invoke(app, ["genres", "audit", "--help"])
+        result, output = self._invoke_help(["genres", "audit", "--help"])
         assert result.exit_code == 0
-        assert "--suggest" in result.output
+        assert "--suggest" in output
 
     def test_genres_normalize_help(self):
-        from typer.testing import CliRunner
-
-        from emby_dedupe.cli.app import app
-
-        runner = CliRunner()
-        result = runner.invoke(app, ["genres", "normalize", "--help"])
+        result, output = self._invoke_help(["genres", "normalize", "--help"])
         assert result.exit_code == 0
-        assert "--doit" in result.output
-        assert "--item-ids" in result.output
+        assert "--doit" in output
+        assert "--item-ids" in output
 
     def test_genres_fix_help(self):
-        from typer.testing import CliRunner
-
-        from emby_dedupe.cli.app import app
-
-        runner = CliRunner()
-        result = runner.invoke(app, ["genres", "fix", "--help"])
+        result, output = self._invoke_help(["genres", "fix", "--help"])
         assert result.exit_code == 0
-        assert "--doit" in result.output
-        assert "--validate" in result.output
-        assert "--item-ids" in result.output
+        assert "--doit" in output
+        assert "--validate" in output
+        assert "--item-ids" in output
 
     def test_dedupe_help(self):
-        from typer.testing import CliRunner
-
-        from emby_dedupe.cli.app import app
-
-        runner = CliRunner()
-        result = runner.invoke(app, ["dedupe", "--help"])
+        result, _ = self._invoke_help(["dedupe", "--help"])
         assert result.exit_code == 0
 
     def test_check_help(self):
-        from typer.testing import CliRunner
-
-        from emby_dedupe.cli.app import app
-
-        runner = CliRunner()
-        result = runner.invoke(app, ["check", "--help"])
+        result, _ = self._invoke_help(["check", "--help"])
         assert result.exit_code == 0
 
     def test_missing_episodes_help(self):
-        from typer.testing import CliRunner
-
-        from emby_dedupe.cli.app import app
-
-        runner = CliRunner()
-        result = runner.invoke(app, ["missing-episodes", "--help"])
+        result, _ = self._invoke_help(["missing-episodes", "--help"])
         assert result.exit_code == 0

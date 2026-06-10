@@ -24,7 +24,7 @@ htmlcov/
 # Documentation
 docs/
 *.md
-README.md
+!README.md
 CLAUDE.md
 HEALTH_REPORT.md
 REMEDIATION_PLAN.md
