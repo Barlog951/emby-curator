@@ -16,7 +16,6 @@ Options:
 
 import argparse
 import json
-import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime

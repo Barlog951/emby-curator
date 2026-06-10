@@ -178,7 +178,7 @@ def _fetch_localized_for_movie_or_series(
 ) -> Optional[dict]:
     """Fetch localized text for a movie/series/collection and track cache hits."""
     tmdb_id = item["ProviderIds"]["Tmdb"]
-    media = _MEDIA_TYPE_BY_ITEM_TYPE.get(item.get("Type"), "movie")
+    media = _MEDIA_TYPE_BY_ITEM_TYPE.get(item.get("Type", ""), "movie")
     pre_hit = cache is not None and f"{media}:{tmdb_id}" in cache
     localized = fetch_tmdb_localized(
         tmdb_client, tmdb_limiter, tmdb_id, media,

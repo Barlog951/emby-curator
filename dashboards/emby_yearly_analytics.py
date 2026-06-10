@@ -1,3 +1,8 @@
+# /// script
+# [tool.marimo.display]
+# theme = "dark"
+# ///
+
 import marimo
 
 __generated_with = "0.20.2"
@@ -6,38 +11,29 @@ app = marimo.App(width="full", app_title="Emby Yearly Analytics")
 
 @app.cell
 def imports():
+    import re
+    import sys
+    from collections import defaultdict
+    from datetime import datetime
+
     import marimo as mo
     import pandas as pd
-    import httpx
-    import re
-    import json as jsonlib
-    from datetime import datetime
-    from pathlib import Path
-    from collections import defaultdict
-    return Path, datetime, defaultdict, httpx, jsonlib, mo, pd, re
+    import plotly.graph_objects as go
+
+    sys.path.insert(0, str(mo.notebook_dir()))
+    import shared
+    return datetime, defaultdict, go, mo, pd, re, shared
 
 
 @app.cell
-def cache_helpers(Path, datetime, jsonlib):
-    CACHE_DIR = Path.home() / ".cache" / "emby-dashboards"
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-
+def cache_helpers(shared):
     def cache_load(name):
-        _path = CACHE_DIR / f"{name}.json"
-        try:
-            _age = datetime.now().timestamp() - _path.stat().st_mtime
-            if _age < 4 * 3600:
-                return jsonlib.loads(_path.read_text()), f"cached ({int(_age/60)}m ago)"
-        except (FileNotFoundError, OSError):
-            pass
-        return None, None
+        return shared.cache_load(name, max_age_hours=4)
 
-    def cache_save(name, data):
-        (CACHE_DIR / f"{name}.json").write_text(jsonlib.dumps(data, default=str))
+    cache_save = shared.cache_save
 
     def cache_clear():
-        for _f in CACHE_DIR.glob("yearly_analytics*.json"):
-            _f.unlink()
+        shared.cache_clear("yearly_analytics*.json")
 
     return cache_clear, cache_load, cache_save
 
@@ -56,33 +52,42 @@ def cache_on_refresh(cache_clear, refresh_btn):
 
 
 @app.cell
-def config(mo, refresh_btn):
+def config(mo, refresh_btn, shared):
+    EMBY_HOST, EMBY_API_KEY = shared.get_emby_config()
+    mo.stop(
+        not EMBY_HOST or not EMBY_API_KEY,
+        mo.callout(
+            mo.md(
+                "**Emby credentials missing.** Set `EMBY_HOST` and `EMBY_API_KEY` as "
+                "environment variables, or copy `dashboards/.env.example` to "
+                "`dashboards/.env` and fill in your values."
+            ),
+            kind="danger",
+        ),
+    )
     mo.hstack([mo.md("# Emby Yearly Analytics"), refresh_btn], justify="space-between")
-    EMBY_HOST = "https://emby.in.fukiyato.com"
-    EMBY_API_KEY = "36825b1ab6394b8daee5bc1c2186bd90"
     return EMBY_API_KEY, EMBY_HOST
 
 
 @app.cell
-def api_client(EMBY_API_KEY, EMBY_HOST, httpx):
-    _client = httpx.Client(timeout=120, verify=False)
-
-    def emby_get(path, **params):
-        params["api_key"] = EMBY_API_KEY
-        return _client.get(f"{EMBY_HOST}/emby/{path}", params=params).json()
-
+def api_client(EMBY_API_KEY, EMBY_HOST, shared):
+    _client, emby_get = shared.make_emby_client(EMBY_HOST, EMBY_API_KEY)
     return (emby_get,)
 
 
 @app.cell
-def fetch_users(emby_get):
-    _raw = emby_get("Users")
+def fetch_users(EMBY_HOST, emby_get, mo):
+    try:
+        with mo.status.spinner("Connecting to Emby..."):
+            _raw = emby_get("Users")
+    except Exception as _e:
+        mo.stop(True, mo.callout(f"Cannot reach Emby at {EMBY_HOST}: {_e}", kind="danger"))
     user_map = {u["Id"]: u["Name"] for u in _raw}
     return (user_map,)
 
 
 @app.cell
-def fetch_activity(cache_load, cache_save, emby_get, mo):
+def fetch_activity(EMBY_HOST, cache_load, cache_save, emby_get, mo):
     _cached, _status = cache_load("yearly_analytics_playback")
     if _cached:
         all_playback = _cached
@@ -90,22 +95,27 @@ def fetch_activity(cache_load, cache_save, emby_get, mo):
     else:
         all_playback = []
         _offset = 0
-        _total = emby_get("System/ActivityLog/Entries", StartIndex=0, Limit=1)["TotalRecordCount"]
-        with mo.status.spinner(f"Fetching {_total:,} activity log entries..."):
-            while _offset < _total:
-                _items = emby_get("System/ActivityLog/Entries", StartIndex=_offset, Limit=2000).get("Items", [])
-                if not _items:
-                    break
-                for _e in _items:
-                    if _e.get("Type") in ("playback.start", "playback.stop"):
-                        all_playback.append({
-                            "type": _e["Type"],
-                            "date": _e.get("Date", ""),
-                            "user_id": str(_e.get("UserId", "")),
-                            "item_id": str(_e.get("ItemId", "")),
-                            "name": _e.get("Name", ""),
-                        })
-                _offset += len(_items)
+        try:
+            _total = emby_get("System/ActivityLog/Entries", StartIndex=0, Limit=1)["TotalRecordCount"]
+            with mo.status.spinner(f"Fetching {_total:,} activity log entries..."):
+                while _offset < _total:
+                    _items = emby_get("System/ActivityLog/Entries", StartIndex=_offset, Limit=2000).get("Items", [])
+                    if not _items:
+                        break
+                    for _e in _items:
+                        if _e.get("Type") in ("playback.start", "playback.stop"):
+                            all_playback.append({
+                                "type": _e["Type"],
+                                "date": _e.get("Date", ""),
+                                "user_id": str(_e.get("UserId", "")),
+                                "item_id": str(_e.get("ItemId", "")),
+                                "name": _e.get("Name", ""),
+                            })
+                    _offset += len(_items)
+        except Exception as _exc:
+            mo.stop(True, mo.callout(
+                f"Failed to fetch activity log from Emby at {EMBY_HOST}: {_exc}", kind="danger",
+            ))
         cache_save("yearly_analytics_playback", all_playback)
         mo.callout(f"Fetched {len(all_playback):,} playback events", kind="success")
     return (all_playback,)
@@ -178,7 +188,7 @@ def compute_sessions(all_playback, datetime, defaultdict, mo, pd, re, user_map):
 @app.cell
 def tab_overview(datetime, df_sessions, df_watched, mo, pd):
     _now = datetime.now()
-    _doy = _now.timetuple().tm_yday
+    _period = f"Jan–{_now.strftime('%b')} {_now.day}"
     _years = sorted(df_sessions["year"].unique())
 
     _rows = []
@@ -203,15 +213,15 @@ def tab_overview(datetime, df_sessions, df_watched, mo, pd):
 
         _rows.append({
             "Year": _y,
-            f"Sessions (ytd d{_doy})": f"{_n_ytd:,}",
-            f"Hours (ytd d{_doy})": f"{_ytd_hrs:,}",
+            f"Sessions ({_period})": f"{_n_ytd:,}",
+            f"Hours ({_period})": f"{_ytd_hrs:,}",
             "Full Year Sessions": f"{_n_sessions:,}" if _y < _now.year else "—",
             "Full Year Hours": f"{_total_hrs:,}" if _y < _now.year else "—",
-            "Unique Titles (ytd)": _unique_ytd,
-            "Active Users (ytd)": _users_ytd,
+            f"Unique Titles ({_period})": _unique_ytd,
+            f"Active Users ({_period})": _users_ytd,
             "Avg Session (min)": _avg_session,
-            "Movies (ytd)": f"{_movies_ytd:,}",
-            "Episodes (ytd)": f"{_episodes_ytd:,}",
+            f"Movies ({_period})": f"{_movies_ytd:,}",
+            f"Episodes ({_period})": f"{_episodes_ytd:,}",
         })
 
     _df = pd.DataFrame(_rows)
@@ -219,26 +229,25 @@ def tab_overview(datetime, df_sessions, df_watched, mo, pd):
     # Headline stats: 2026 vs 2025
     _c = _rows[-1] if _rows else {}
     _p = _rows[-2] if len(_rows) > 1 else {}
-    _c_hrs = float(_c.get(f"Hours (ytd d{_doy})", "0").replace(",", ""))
-    _p_hrs = float(_p.get(f"Hours (ytd d{_doy})", "0").replace(",", ""))
+    _c_hrs = float(_c.get(f"Hours ({_period})", "0").replace(",", ""))
+    _p_hrs = float(_p.get(f"Hours ({_period})", "0").replace(",", ""))
     _hr_growth = round((_c_hrs - _p_hrs) / _p_hrs * 100, 1) if _p_hrs else 0
 
     overview_tab = mo.vstack([
-        mo.md(f"**Comparing same period: Jan 1 – day {_doy} (Mar {_now.day}) across all years**"),
+        mo.md(f"**Comparing same period: {_period} across all years**"),
         mo.hstack([
             mo.stat(value=f"{_c_hrs:,.0f}h", label=f"{_now.year} Watch Time"),
             mo.stat(value=f"{_p_hrs:,.0f}h", label=f"{_now.year-1} Watch Time"),
             mo.stat(value=f"{'+' if _hr_growth > 0 else ''}{_hr_growth}%", label="Hours YoY"),
-            mo.stat(value=_c.get(f"Sessions (ytd d{_doy})", "0"), label=f"{_now.year} Sessions"),
+            mo.stat(value=_c.get(f"Sessions ({_period})", "0"), label=f"{_now.year} Sessions"),
         ]),
-        mo.ui.table(_df, label="Year-over-Year Comparison"),
+        mo.ui.table(_df, pagination=True, page_size=25, label="Year-over-Year Comparison"),
     ])
     return (overview_tab,)
 
 
 @app.cell
-def tab_monthly(datetime, df_watched, mo, pd):
-    _now = datetime.now()
+def tab_monthly(df_watched, go, mo):
     _months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
     # Hours watched per month per year
@@ -254,19 +263,36 @@ def tab_monthly(datetime, df_watched, mo, pd):
     _pivot_cnt.index = [_months[m - 1] for m in _pivot_cnt.index]
     _pivot_cnt = _pivot_cnt.reset_index().rename(columns={"month": "Month"})
 
+    # Year-over-year line chart of watch hours per month
+    _fig_monthly = go.Figure()
+    for _y in [c for c in _pivot_hrs.columns if c != "Month"]:
+        _fig_monthly.add_trace(go.Scatter(
+            x=_pivot_hrs["Month"], y=_pivot_hrs[_y],
+            mode="lines+markers", name=str(_y),
+            hovertemplate="<b>%{x} " + str(_y) + "</b><br>%{y:,.1f} hours watched<extra></extra>",
+        ))
+    _fig_monthly.update_layout(
+        title="Watch Hours per Month — Year over Year",
+        xaxis_title="Month", yaxis_title="Hours Watched",
+        height=400, template="plotly_dark",
+        legend_title_text="Year",
+        margin={"t": 60, "b": 40},
+    )
+
     monthly_tab = mo.vstack([
+        _fig_monthly,
         mo.md("### Hours Watched per Month"),
-        mo.ui.table(_pivot_hrs),
+        mo.ui.table(_pivot_hrs, pagination=True, page_size=25),
         mo.md("### Session Count per Month"),
-        mo.ui.table(_pivot_cnt),
+        mo.ui.table(_pivot_cnt, pagination=True, page_size=25),
     ])
     return (monthly_tab,)
 
 
 @app.cell
-def tab_users(datetime, df_sessions, df_watched, mo, pd):
+def tab_users(datetime, df_sessions, df_watched, go, mo, pd):
     _now = datetime.now()
-    _doy = _now.timetuple().tm_yday
+    _period = f"Jan–{_now.strftime('%b')} {_now.day}"
     _cutoff_curr = f"{_now.year}-{_now.month:02d}-{_now.day:02d}"
     _cutoff_prev = f"{_now.year-1}-{_now.month:02d}-{_now.day:02d}"
 
@@ -300,9 +326,33 @@ def tab_users(datetime, df_sessions, df_watched, mo, pd):
         })
     _df = pd.DataFrame(_rows).sort_values(f"{_now.year} Hours", ascending=False)
 
+    # Top users by watch hours — current vs previous year
+    _top_users = _df.head(15)
+    _fig_users = go.Figure()
+    _fig_users.add_trace(go.Bar(
+        y=_top_users["User"], x=_top_users[f"{_now.year} Hours"],
+        name=str(_now.year), orientation="h", marker_color="#3498db",
+        hovertemplate="<b>%{y}</b><br>" + str(_now.year) + ": %{x:,.1f} hours<extra></extra>",
+    ))
+    _fig_users.add_trace(go.Bar(
+        y=_top_users["User"], x=_top_users[f"{_now.year-1} Hours"],
+        name=str(_now.year - 1), orientation="h", marker_color="#95a5a6",
+        hovertemplate="<b>%{y}</b><br>" + str(_now.year - 1) + ": %{x:,.1f} hours<extra></extra>",
+    ))
+    _fig_users.update_layout(
+        barmode="group",
+        title=f"Top Users by Watch Hours ({_period})",
+        xaxis_title="Hours Watched", yaxis_title="",
+        height=max(400, len(_top_users) * 34),
+        template="plotly_dark",
+        yaxis={"autorange": "reversed"},
+        legend_title_text="Year",
+    )
+
     users_tab = mo.vstack([
-        mo.md(f"### User Watch Time — {_now.year} vs {_now.year-1} (Jan 1 – day {_doy})"),
-        mo.ui.table(_df),
+        mo.md(f"### User Watch Time — {_now.year} vs {_now.year-1} ({_period})"),
+        _fig_users,
+        mo.ui.table(_df, pagination=True, page_size=25),
     ])
     return (users_tab,)
 
@@ -310,7 +360,7 @@ def tab_users(datetime, df_sessions, df_watched, mo, pd):
 @app.cell
 def tab_content(datetime, df_sessions, df_watched, mo, pd):
     _now = datetime.now()
-    _doy = _now.timetuple().tm_yday
+    _period = f"Jan–{_now.strftime('%b')} {_now.day}"
     _years = sorted(df_sessions["year"].unique())
 
     # Content type split per year (same period)
@@ -339,8 +389,8 @@ def tab_content(datetime, df_sessions, df_watched, mo, pd):
     _df = pd.DataFrame(_rows)
 
     content_tab = mo.vstack([
-        mo.md(f"### Movies vs Episodes — Same Period (day {_doy})"),
-        mo.ui.table(_df),
+        mo.md(f"### Movies vs Episodes — Same Period ({_period})"),
+        mo.ui.table(_df, pagination=True, page_size=25),
     ])
     return (content_tab,)
 
@@ -391,18 +441,18 @@ def tab_peak(datetime, df_watched, mo, pd):
 
     peak_tab = mo.vstack([
         mo.md(f"### Top 20 Watch Days in {_now.year}"),
-        mo.ui.table(_daily),
+        mo.ui.table(_daily, pagination=True, page_size=25),
         mo.md(f"### Average by Day of Week ({_now.year})"),
-        mo.ui.table(_df_dow),
+        mo.ui.table(_df_dow, pagination=True, page_size=25),
     ])
     return (peak_tab,)
 
 
 @app.cell
-def tab_hourly(datetime, df_watched, mo, pd):
+def tab_hourly(datetime, df_watched, go, mo, pd):
     _now = datetime.now()
     _years = sorted(df_watched["year"].unique())
-    _doy = _now.timetuple().tm_yday
+    _period = f"Jan–{_now.strftime('%b')} {_now.day}"
 
     # Hours watched per hour-of-day, same period, per year
     _rows = []
@@ -417,9 +467,25 @@ def tab_hourly(datetime, df_watched, mo, pd):
 
     _df = pd.DataFrame(_rows)
 
+    # Hourly distribution — grouped bars per year
+    _fig_hourly = go.Figure()
+    for _y in _years:
+        _fig_hourly.add_trace(go.Bar(
+            x=_df["Hour"], y=_df[str(_y)], name=str(_y),
+            hovertemplate="<b>%{x}</b> in " + str(_y) + "<br>%{y:,.1f} hours watched<extra></extra>",
+        ))
+    _fig_hourly.update_layout(
+        barmode="group",
+        title=f"Watch Hours by Time of Day ({_period}, all years)",
+        xaxis_title="Hour of Day", yaxis_title="Hours Watched",
+        height=400, template="plotly_dark",
+        legend_title_text="Year",
+    )
+
     hourly_tab = mo.vstack([
-        mo.md(f"### Watch Hours by Time of Day (same period, day {_doy})"),
-        mo.ui.table(_df),
+        mo.md(f"### Watch Hours by Time of Day (same period, {_period})"),
+        _fig_hourly,
+        mo.ui.table(_df, pagination=True, page_size=25),
     ])
     return (hourly_tab,)
 

@@ -10,6 +10,7 @@ scripts/smoke_test_*.py
 stale_series_analysis.json
 STALE_SERIES_CANDIDATES.md
 dashboards/exports/
+dashboards/.env
 HANDOFF_descriptions.md
 
 # Byte-compiled / optimized / DLL files

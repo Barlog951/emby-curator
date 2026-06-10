@@ -215,13 +215,11 @@ def _compute_effective_rating(
     Returns:
         Effective rating on 0-10 scale for threshold comparison.
     """
-    has_community = community_rating is not None
-    has_critic = critic_rating is not None
-    if has_community and has_critic:
+    if community_rating is not None and critic_rating is not None:
         return (community_rating + critic_rating / _CRITIC_RATING_DIVISOR) / 2.0
-    if has_community:
+    if community_rating is not None:
         return community_rating
-    if has_critic:
+    if critic_rating is not None:
         return critic_rating / _CRITIC_RATING_DIVISOR
     return 0.0
 
@@ -1585,7 +1583,7 @@ def _run_series_cleanup_pipeline(
     logger.info(f"Total series fetched: {len(all_series)}")
 
     if not all_series:
-        return [], stats
+        return [], stats, []
 
     # 2. Build last-episode-added map from episodes
     print("Building episode staleness map...")
@@ -2126,17 +2124,17 @@ def _generate_cleanup_html_report(
 
     # Build near-miss dicts (with days_left)
     movie_near_miss_dicts = []
-    for c in (movie_near_miss or []):
-        d = _movie_candidate_to_dict(c, base_url, api_key)
-        d["days_left"] = c.days_left
-        d["days_left_str"] = _format_days_left(c.days_left)
-        movie_near_miss_dicts.append(d)
+    for mc in (movie_near_miss or []):
+        movie_dict = _movie_candidate_to_dict(mc, base_url, api_key)
+        movie_dict["days_left"] = mc.days_left
+        movie_dict["days_left_str"] = _format_days_left(mc.days_left)
+        movie_near_miss_dicts.append(movie_dict)
     series_near_miss_dicts = []
-    for c in (series_near_miss or []):
-        d = _series_candidate_to_dict(c, base_url, api_key)
-        d["days_left"] = c.days_left
-        d["days_left_str"] = _format_days_left(c.days_left)
-        series_near_miss_dicts.append(d)
+    for sc in (series_near_miss or []):
+        series_dict = _series_candidate_to_dict(sc, base_url, api_key)
+        series_dict["days_left"] = sc.days_left
+        series_dict["days_left_str"] = _format_days_left(sc.days_left)
+        series_near_miss_dicts.append(series_dict)
     movie_near_miss_size = sum(c.size_bytes for c in (movie_near_miss or []))
     series_near_miss_size = sum(c.size_bytes for c in (series_near_miss or []))
 
@@ -2288,7 +2286,13 @@ def _perform_deletions(
         password: Emby password for DELETE auth.
         api_key: Emby API key.
         label: Label for progress bar (e.g. "movies" or "series").
+
+    Raises:
+        ValueError: If username, password, or api_key is missing (deletions
+            require full auth; enforced earlier by _validate_cleanup_args).
     """
+    if username is None or password is None or api_key is None:
+        raise ValueError("username, password and api_key are required for deletions")
     logger.info(f"Deleting {len(candidates)} {label} candidates...")
     with tqdm(candidates, desc=f"Deleting {label}", unit=label.rstrip("s")) as progress:
         for candidate in progress:
@@ -2304,7 +2308,7 @@ def _perform_deletions(
 def _resolve_library_ids(
     client: httpx.Client,
     base_url: str,
-    api_key: Optional[str],
+    api_key: str,
     libraries: list[str],
     all_libraries: bool,
 ) -> tuple[list[str], dict[str, str]]:
@@ -2382,7 +2386,7 @@ def _execute_cleanup(
     client: httpx.Client,
     base_url: str,
     config: CleanupConfig,
-    api_key: Optional[str],
+    api_key: str,
     libraries: list[str],
     all_libraries: bool,
     username: Optional[str],
@@ -2486,6 +2490,8 @@ def run_cleanup_command(args) -> None:
     )
 
     _validate_cleanup_args(host, api_key, libraries, all_libraries, doit, username, password)
+    # _validate_cleanup_args exits on missing host/api_key; narrow for type checking
+    assert host is not None and api_key is not None
 
     base_url, resolved_port = handle_host_and_port(host, port)
     if resolved_port not in (80, 443):

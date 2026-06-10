@@ -1120,7 +1120,9 @@ def _create_proposed_as_existing(proposed: ProposedQuality) -> ExistingQuality:
             width, height = RESOLUTION_MAP[res_lower]
 
     # Detect source quality and AI upscale for proposed item
-    proposed_source_tier = ExistingQuality._detect_source_quality_tier(proposed.path, proposed.name)
+    proposed_source_tier = ExistingQuality._detect_source_quality_tier(
+        proposed.path, proposed.name or ""
+    )
     proposed_is_ai_upscale = detect_ai_upscale(proposed.path, proposed.name)
 
     return ExistingQuality(
