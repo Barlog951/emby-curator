@@ -4,10 +4,13 @@ pr-docs/**
 .emby-mcp/
 .mcp.json
 scripts/run-*-smoke.sh
+scripts/run-cleanup-doit.sh
 scripts/analyze_stale_series.py
 scripts/smoke_test_*.py
 stale_series_analysis.json
 STALE_SERIES_CANDIDATES.md
+dashboards/exports/
+HANDOFF_descriptions.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
