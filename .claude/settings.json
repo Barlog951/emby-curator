@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "cocoindex-code": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--prerelease=explicit",
+        "--python=3.13",
+        "--with",
+        "cocoindex>=1.0.0a16",
+        "cocoindex-code@latest"
+      ],
+      "env": {
+        "COCOINDEX_CODE_EMBEDDING_MODEL": "ollama/qwen3-embedding:8b"
+      }
+    }
+  }
+}

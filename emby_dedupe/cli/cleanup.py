@@ -2029,7 +2029,7 @@ def _movie_candidate_to_dict(c: CleanupCandidate, base_url: str, api_key: str) -
             if c.critic_rating is not None else None
         ),
         "threshold": c.threshold,
-        "threshold_str": f"{c.threshold:.1f}",
+        "threshold_str": f"{c.threshold:.2f}",
         "age_years": round(c.age_years, 1),
         "library": c.library,
         "size_bytes": c.size_bytes,
@@ -2058,7 +2058,7 @@ def _series_candidate_to_dict(c: SeriesCleanupCandidate, base_url: str, api_key:
             if c.critic_rating is not None else None
         ),
         "threshold": c.threshold,
-        "threshold_str": f"{c.threshold:.1f}",
+        "threshold_str": f"{c.threshold:.2f}",
         "stale_years": round(c.stale_years, 1),
         "last_episode_added": c.last_episode_added,
         "episode_count": c.episode_count,
