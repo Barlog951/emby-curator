@@ -43,7 +43,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/troykelly/emby-dedupe
+          images: ghcr.io/${{ github.repository }}
           tags: |
             type=semver,pattern={{version}}-prerelease
             type=semver,pattern={{major}}.{{minor}}-prerelease
