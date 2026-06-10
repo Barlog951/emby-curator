@@ -11,48 +11,35 @@ app = marimo.App(width="full", app_title="Emby Missing Content Dashboard")
 
 @app.cell
 def imports():
+    import json as jsonlib
+    import os
+    import sys
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timedelta
+    from pathlib import Path
+
+    import httpx
     import marimo as mo
     import pandas as pd
     import plotly.graph_objects as go
-    import httpx
-    import time
-    import json as jsonlib
-    import os
-    import threading
-    from datetime import datetime, timedelta
-    from concurrent.futures import ThreadPoolExecutor
-    from pathlib import Path
-    return Path, ThreadPoolExecutor, datetime, go, httpx, jsonlib, mo, os, pd, threading, time, timedelta
+
+    sys.path.insert(0, str(mo.notebook_dir()))
+    import shared
+    return Path, ThreadPoolExecutor, datetime, go, httpx, jsonlib, mo, os, pd, shared, threading, time, timedelta
 
 
 @app.cell
-def cache_helpers(Path, datetime, jsonlib, os, timedelta):
-    CACHE_DIR = Path.home() / ".cache" / "emby-dashboards"
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    CACHE_MAX_AGE_HOURS = 2
+def cache_helpers(shared):
+    CACHE_DIR = shared.CACHE_DIR
 
     def cache_load(name):
-        """Load from cache if fresh enough. Returns (data, is_cached)."""
-        _path = CACHE_DIR / f"{name}.json"
-        try:
-            _age = datetime.now().timestamp() - _path.stat().st_mtime
-            if _age < CACHE_MAX_AGE_HOURS * 3600:
-                _mins = int(_age / 60)
-                return jsonlib.loads(_path.read_text()), f"cached ({_mins}m ago)"
-        except (FileNotFoundError, OSError):
-            pass
-        return None, None
+        """Load from cache if fresh enough. Returns (data, status)."""
+        return shared.cache_load(name, max_age_hours=2)
 
-    def cache_save(name, data):
-        """Save data to cache."""
-        _path = CACHE_DIR / f"{name}.json"
-        _path.write_text(jsonlib.dumps(data, default=str))
-
-    def cache_clear():
-        """Clear all cache files."""
-        for _f in CACHE_DIR.glob("*.json"):
-            _f.unlink()
-
+    cache_save = shared.cache_save
+    cache_clear = shared.cache_clear
     return CACHE_DIR, cache_clear, cache_load, cache_save
 
 
@@ -80,24 +67,30 @@ def current_year_filter(datetime, mo):
 
 
 @app.cell
-def config(mo, refresh_btn):
-    mo.hstack([mo.md("# Emby Missing Content Dashboard"), refresh_btn], justify="space-between")
-    EMBY_HOST = "https://emby.in.fukiyato.com"
-    EMBY_API_KEY = "***EMBY_KEY_REDACTED***"
+def config(mo, refresh_btn, shared):
+    EMBY_HOST, EMBY_API_KEY = shared.get_emby_config()
+    TMDB_TOKEN = shared.get_tmdb_token()
     EMBY_SERVER_ID = "ea8f5299fd0649a6867beb6368c873a1"
-    TMDB_TOKEN = "***TMDB_TOKEN_REDACTED***"
+    mo.stop(
+        not EMBY_HOST or not EMBY_API_KEY or not TMDB_TOKEN,
+        mo.callout(
+            mo.md(
+                "**Credentials missing.** Set `EMBY_HOST`, `EMBY_API_KEY` and `TMDB_TOKEN` "
+                "as environment variables, or copy `dashboards/.env.example` to "
+                "`dashboards/.env` and fill in your values."
+            ),
+            kind="danger",
+        ),
+    )
+    mo.hstack([mo.md("# Emby Missing Content Dashboard"), refresh_btn], justify="space-between")
     return EMBY_API_KEY, EMBY_HOST, EMBY_SERVER_ID, TMDB_TOKEN
 
 
 @app.cell
-def api_clients(EMBY_API_KEY, EMBY_HOST, TMDB_TOKEN, httpx, mo):
-    _emby = httpx.Client(timeout=120, verify=False)
+def api_clients(EMBY_API_KEY, EMBY_HOST, TMDB_TOKEN, httpx, mo, shared):
+    _emby_client, emby_get = shared.make_emby_client(EMBY_HOST, EMBY_API_KEY)
     _tmdb = httpx.Client(timeout=30, base_url="https://api.themoviedb.org/3",
                          headers={"Authorization": f"Bearer {TMDB_TOKEN}"})
-
-    def emby_get(path, **params):
-        params["api_key"] = EMBY_API_KEY
-        return _emby.get(f"{EMBY_HOST}/emby/{path}", params=params).json()
 
     def emby_fetch_all(item_type, fields="", extra=None):
         _all, _off = [], 0
@@ -122,8 +115,11 @@ def api_clients(EMBY_API_KEY, EMBY_HOST, TMDB_TOKEN, httpx, mo):
         params.setdefault("language", "en-US")
         return _tmdb.get(path, params=params).json()
 
-    with mo.status.spinner("Connecting to Emby & TMDB..."):
-        _test = emby_get("System/Info")
+    try:
+        with mo.status.spinner("Connecting to Emby & TMDB..."):
+            _test = emby_get("System/Info")
+    except Exception as _e:
+        mo.stop(True, mo.callout(f"Cannot reach Emby at {EMBY_HOST}: {_e}", kind="danger"))
     mo.callout(f"Connected — Emby: {_test.get('ServerName', 'OK')}", kind="success")
     return emby_fetch_all, emby_get, tmdb_get
 
@@ -213,7 +209,7 @@ def analyze_missing_episodes(EMBY_API_KEY, EMBY_HOST, ThreadPoolExecutor, cache_
                 _results = list(_pool.map(_fetch_missing, raw_series))
 
         cache_save("missing_episodes", _results)
-        mo.callout(f"Fetched fresh missing episodes data", kind="success")
+        mo.callout("Fetched fresh missing episodes data", kind="success")
 
     _rows = {}  # Keyed by TMDB ID to deduplicate
     _series_map = {_s["Id"]: _s for _s in raw_series}
@@ -471,17 +467,20 @@ def tab_overview_missing(df_franchise_gaps, df_franchise_gaps_filtered, df_missi
         _fig.add_trace(go.Pie(labels=["Have", "Missing"],
                               values=[int(df_missing_episodes["Have Episodes"].sum()), _n_miss_eps],
                               name="Episodes", domain={"x": [0, 0.3]},
-                              marker_colors=["#2ecc71", "#e74c3c"], hole=0.5))
+                              marker_colors=["#2ecc71", "#e74c3c"], hole=0.5,
+                              hovertemplate="<b>%{label}</b><br>%{value:,} episodes (%{percent})<extra></extra>"))
     if not _fran_df.empty:
         _fig.add_trace(go.Pie(labels=["Have", "Missing"],
                               values=[int(_fran_df["Have"].sum()), _n_fran_miss],
                               name="Franchises", domain={"x": [0.35, 0.65]},
-                              marker_colors=["#3498db", "#e67e22"], hole=0.5))
+                              marker_colors=["#3498db", "#e67e22"], hole=0.5,
+                              hovertemplate="<b>%{label}</b><br>%{value:,} franchise movies (%{percent})<extra></extra>"))
     _fig.add_trace(go.Pie(labels=["In Library", "Missing"],
                           values=[len(raw_movies), len(df_pop_movies) if not df_pop_movies.empty else 0],
                           name="Popular", domain={"x": [0.7, 1]},
-                          marker_colors=["#9b59b6", "#f39c12"], hole=0.5))
-    _fig.update_layout(title_text="Content Completeness", height=350, template="plotly_white",
+                          marker_colors=["#9b59b6", "#f39c12"], hole=0.5,
+                          hovertemplate="<b>%{label}</b><br>%{value:,} movies (%{percent})<extra></extra>"))
+    _fig.update_layout(title_text="Content Completeness", height=350, template="plotly_dark",
                        annotations=[
                            {"text": "Episodes", "x": 0.13, "y": 0.5, "font_size": 12, "showarrow": False},
                            {"text": "Franchises", "x": 0.50, "y": 0.5, "font_size": 12, "showarrow": False},
@@ -542,16 +541,19 @@ def tab_episodes(EMBY_HOST, EMBY_SERVER_ID, active_direction, active_period, dat
         _top = _filtered.head(25)
         _fig = go.Figure()
         _fig.add_trace(go.Bar(y=_top["Name"], x=_top["Have Episodes"], name="Have",
-                              orientation="h", marker_color="#2ecc71"))
+                              orientation="h", marker_color="#2ecc71",
+                              hovertemplate="<b>%{y}</b><br>Have: %{x:,} episodes<extra></extra>"))
         _fig.add_trace(go.Bar(y=_top["Name"], x=_top["Missing Episodes"], name="Missing",
-                              orientation="h", marker_color="#e74c3c"))
+                              orientation="h", marker_color="#e74c3c",
+                              hovertemplate="<b>%{y}</b><br>Missing: %{x:,} episodes<extra></extra>"))
         _fig.update_layout(barmode="stack", title="Series with Most Missing Episodes",
                            xaxis_title="Episode Count", height=max(400, len(_top) * 30),
-                           template="plotly_white", yaxis={"autorange": "reversed"})
+                           template="plotly_dark", yaxis={"autorange": "reversed"})
 
-        _fig2 = go.Figure(go.Histogram(x=_filtered["% Complete"], nbinsx=20, marker_color="#3498db"))
+        _fig2 = go.Figure(go.Histogram(x=_filtered["% Complete"], nbinsx=20, marker_color="#3498db",
+                                       hovertemplate="%{x}% complete<br>%{y:,} series<extra></extra>"))
         _fig2.update_layout(title="Series Completeness Distribution", xaxis_title="% Complete",
-                            yaxis_title="Number of Series", height=300, template="plotly_white")
+                            yaxis_title="Number of Series", height=300, template="plotly_dark")
 
         _records = []
         for _, _r in _filtered.iterrows():
@@ -588,12 +590,14 @@ def tab_franchises(df_franchise_gaps, df_franchise_gaps_filtered, go, hide_curre
         _top = _df.head(25)
         _fig = go.Figure()
         _fig.add_trace(go.Bar(y=_top["Collection"], x=_top["Have"], name="Have",
-                              orientation="h", marker_color="#2ecc71"))
+                              orientation="h", marker_color="#2ecc71",
+                              hovertemplate="<b>%{y}</b><br>Have: %{x:,} movies<extra></extra>"))
         _fig.add_trace(go.Bar(y=_top["Collection"], x=_top["Missing"], name="Missing",
-                              orientation="h", marker_color="#e74c3c"))
+                              orientation="h", marker_color="#e74c3c",
+                              hovertemplate="<b>%{y}</b><br>Missing: %{x:,} movies<extra></extra>"))
         _fig.update_layout(barmode="stack", title="Incomplete Movie Franchises",
                            xaxis_title="Movies in Collection", height=max(400, len(_top) * 30),
-                           template="plotly_white", yaxis={"autorange": "reversed"})
+                           template="plotly_dark", yaxis={"autorange": "reversed"})
 
         _records = [
             {"Collection": mo.Html(f'<a href="https://www.themoviedb.org/collection/{r["TMDB Collection ID"]}" target="_blank" style="position:relative;z-index:10">{r["Collection"]}</a>'),
@@ -653,9 +657,11 @@ def tab_popular(datetime, df_pop_movies, df_pop_series, go, hide_current_year, m
             y=_top_m["Title"] + " (" + _top_m["Year"].astype(str) + ")",
             x=_top_m["Rating"], orientation="h",
             marker_color=["#e74c3c" if r >= 8 else "#e67e22" if r >= 7 else "#f39c12" for r in _top_m["Rating"]],
-            text=[f"{r:.1f}" for r in _top_m["Rating"]], textposition="outside"))
+            text=[f"{r:.1f}" for r in _top_m["Rating"]], textposition="outside",
+            customdata=_top_m["Votes"],
+            hovertemplate="<b>%{y}</b><br>TMDB rating: %{x:.1f}<br>%{customdata:,} votes<extra></extra>"))
         _fig_m.update_layout(title="Top Missing Movies", xaxis_title="TMDB Rating", xaxis_range=[5, 10],
-                             height=max(400, len(_top_m) * 28), template="plotly_white",
+                             height=max(400, len(_top_m) * 28), template="plotly_dark",
                              yaxis={"autorange": "reversed"})
 
     _fig_s = go.Figure()
@@ -665,9 +671,11 @@ def tab_popular(datetime, df_pop_movies, df_pop_series, go, hide_current_year, m
             y=_top_s["Title"] + " (" + _top_s["Year"].astype(str) + ")",
             x=_top_s["Rating"], orientation="h",
             marker_color=["#e74c3c" if r >= 8 else "#e67e22" if r >= 7 else "#f39c12" for r in _top_s["Rating"]],
-            text=[f"{r:.1f}" for r in _top_s["Rating"]], textposition="outside"))
+            text=[f"{r:.1f}" for r in _top_s["Rating"]], textposition="outside",
+            customdata=_top_s["Votes"],
+            hovertemplate="<b>%{y}</b><br>TMDB rating: %{x:.1f}<br>%{customdata:,} votes<extra></extra>"))
         _fig_s.update_layout(title="Top Missing TV Series", xaxis_title="TMDB Rating", xaxis_range=[5, 10],
-                             height=max(400, len(_top_s) * 28), template="plotly_white",
+                             height=max(400, len(_top_s) * 28), template="plotly_dark",
                              yaxis={"autorange": "reversed"})
 
     popular_tab = mo.vstack([
@@ -791,7 +799,7 @@ def tab_export_preview(EMBY_HOST, EMBY_SERVER_ID, export_data_ready, export_max_
             mo.stat(value=f"{len(export_data_ready)}", label="Shows to Export"),
             mo.stat(value=f"{sum(len(e['episodes']) for e in export_data_ready)}", label="Total Episodes"),
         ], justify="start", gap="2rem"),
-        mo.ui.table(_preview_rows, pagination=True, page_size=15, label="Export Preview") if _preview_rows else mo.md("No shows match filters"),
+        mo.ui.table(_preview_rows, pagination=True, page_size=25, label="Export Preview") if _preview_rows else mo.md("No shows match filters"),
         export_btn,
     ])
     return (export_preview,)
@@ -898,7 +906,7 @@ def franchise_export_preview_cell(fran_export_data_ready, fran_export_min_pct, f
             mo.stat(value=f"{len(fran_export_data_ready)}", label="Collections"),
             mo.stat(value=f"{_total_movies}", label="Missing Movies"),
         ], justify="start", gap="2rem"),
-        mo.ui.table(_preview_rows, pagination=True, page_size=15, label="Franchise Export Preview") if _preview_rows else mo.md("No collections match filters"),
+        mo.ui.table(_preview_rows, pagination=True, page_size=25, label="Franchise Export Preview") if _preview_rows else mo.md("No collections match filters"),
         fran_export_btn,
     ])
     return (franchise_export_preview,)

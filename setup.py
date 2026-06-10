@@ -26,6 +26,7 @@ setup(
             "pytest-mock>=3.15.1",
             "pytest-xdist>=3.8.0",
             "mypy>=1.19.1",
+            "types-PyYAML>=6.0.12",
             "ruff>=0.15.0",
             "vulture>=2.14",
             "requests>=2.32.5",

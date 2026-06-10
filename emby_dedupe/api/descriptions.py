@@ -24,7 +24,7 @@ from emby_dedupe.api.description_cache import (
     make_entry,
     read_entry,
 )
-from emby_dedupe.api.genre_providers import RateLimiter, TMDB_BASE
+from emby_dedupe.api.genre_providers import TMDB_BASE, RateLimiter
 from emby_dedupe.utils.logging import logger
 
 # Default preference: Slovak first, Czech fallback.  English is the implicit

@@ -1466,6 +1466,17 @@ class TestRunSeriesCleanupPipeline:
                 client, self.BASE_URL, config, ["lib1"], "uid1"
             )
 
+    def test_empty_library_returns_three_tuple(self):
+        """Regression: empty series list must return (candidates, stats, near_miss).
+
+        A previous version returned a 2-tuple on the empty-library path, which
+        crashed the 3-value unpack in _execute_cleanup with a ValueError.
+        """
+        candidates, stats, near_miss = self._pipeline([])
+        assert candidates == []
+        assert near_miss == []
+        assert stats["total_analyzed"] == 0
+
     def test_staleness_filter_removes_recent(self):
         """Series with recent episodes (< min_age_years) are filtered out."""
         series = _make_series(item_id="recent")

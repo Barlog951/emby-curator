@@ -44,8 +44,8 @@ from emby_dedupe.api.quality_compare import (
     compare_quality,
 )
 from emby_dedupe.api.search import SEARCH_FIELDS, search_media
-from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.config import Config, ensure_cache_dir
+from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.logging import logger
 
 

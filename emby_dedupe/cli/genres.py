@@ -16,6 +16,7 @@ from emby_dedupe.api.client import (
     get_library_id,
     handle_host_and_port,
 )
+from emby_dedupe.api.genre_providers import RateLimiter, compare_genres, fetch_genres_for_item
 from emby_dedupe.api.genres import (
     build_genre_audit,
     fetch_all_genres,
@@ -38,7 +39,6 @@ from emby_dedupe.utils.constants import (
     ENV_DEDUPE_TMDB_API_KEY,
     GENRE_NORMALIZATION_MAP,
 )
-from emby_dedupe.api.genre_providers import RateLimiter, compare_genres, fetch_genres_for_item
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.logging import logger, set_logging_level
 

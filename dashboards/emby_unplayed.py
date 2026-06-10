@@ -1,3 +1,8 @@
+# /// script
+# [tool.marimo.display]
+# theme = "dark"
+# ///
+
 import marimo
 
 __generated_with = "0.20.2"
@@ -6,33 +11,39 @@ app = marimo.App(width="full", app_title="Emby Unplayed Content Dashboard")
 
 @app.cell
 def imports():
+    import sys
+    from datetime import datetime, timedelta
+
     import marimo as mo
     import pandas as pd
-    import plotly.express as px
     import plotly.graph_objects as go
-    import httpx
-    from datetime import datetime, timedelta
-    return datetime, go, httpx, mo, pd, px, timedelta
+
+    sys.path.insert(0, str(mo.notebook_dir()))
+    import shared
+    return datetime, go, mo, pd, shared, timedelta
 
 
 @app.cell
-def config(mo):
+def config(mo, shared):
+    EMBY_HOST, EMBY_API_KEY = shared.get_emby_config()
+    mo.stop(
+        not EMBY_HOST or not EMBY_API_KEY,
+        mo.callout(
+            mo.md(
+                "**Emby credentials missing.** Set `EMBY_HOST` and `EMBY_API_KEY` as "
+                "environment variables, or copy `dashboards/.env.example` to "
+                "`dashboards/.env` and fill in your values."
+            ),
+            kind="danger",
+        ),
+    )
     mo.md("""# Emby Unplayed Content Dashboard""")
-    EMBY_HOST = "https://emby.in.fukiyato.com"
-    EMBY_API_KEY = "***EMBY_KEY_REDACTED***"
     return EMBY_API_KEY, EMBY_HOST
 
 
 @app.cell
-def api_helpers(EMBY_API_KEY, EMBY_HOST, httpx, mo):
-    _client = httpx.Client(timeout=120, verify=False)
-
-    def api_get(path, **params):
-        params["api_key"] = EMBY_API_KEY
-        _url = f"{EMBY_HOST}/emby/{path}"
-        _resp = _client.get(_url, params=params)
-        _resp.raise_for_status()
-        return _resp.json()
+def api_helpers(EMBY_API_KEY, EMBY_HOST, mo, shared):
+    _client, api_get = shared.make_emby_client(EMBY_HOST, EMBY_API_KEY)
 
     def fetch_all_items(path, item_type, fields="", extra_params=None, user_id=None):
         """Page through all items of a given type."""
@@ -63,21 +74,32 @@ def api_helpers(EMBY_API_KEY, EMBY_HOST, httpx, mo):
             _offset += _batch
         return _all
 
-    with mo.status.spinner("Connecting to Emby API..."):
-        users = api_get("Users")
+    try:
+        with mo.status.spinner("Connecting to Emby API..."):
+            users = api_get("Users")
+    except Exception as _e:
+        mo.stop(True, mo.callout(f"Cannot reach Emby at {EMBY_HOST}: {_e}", kind="danger"))
     mo.callout(f"Connected to Emby — {len(users)} users found", kind="success")
     return api_get, fetch_all_items, users
 
 
 @app.cell
 def load_played_data(fetch_all_items, mo, users):
-    with mo.status.spinner("Loading played data across all users (this takes ~60s)..."):
-        played_movie_ids = set()
-        played_series_ids = set()
-        played_episode_ids = set()
-        series_watchers = {}
+    played_movie_ids = set()
+    played_series_ids = set()
+    played_episode_ids = set()
+    series_watchers = {}
 
-        for _u in users:
+    with mo.status.progress_bar(
+        total=len(users),
+        title="Loading played data",
+        subtitle=f"0/{len(users)} users scanned",
+        completion_title="Played data loaded",
+        completion_subtitle=f"{len(users)} users scanned",
+        show_eta=True,
+        show_rate=False,
+    ) as _bar:
+        for _idx, _u in enumerate(users, start=1):
             _uid = _u["Id"]
             _uname = _u["Name"]
 
@@ -97,6 +119,8 @@ def load_played_data(fetch_all_items, mo, users):
                     if _sid not in series_watchers:
                         series_watchers[_sid] = set()
                     series_watchers[_sid].add(_uname)
+
+            _bar.update(subtitle=f"{_idx}/{len(users)} users scanned ({_uname})")
 
     return played_episode_ids, played_movie_ids, played_series_ids, series_watchers
 
@@ -274,6 +298,7 @@ def tab_overview(df_movies, df_series, go, mo, pd):
         domain={"x": [0, 0.45]},
         marker_colors=["#2ecc71", "#e74c3c"],
         hole=0.4,
+        hovertemplate="<b>%{label}</b><br>%{value:,} movies (%{percent})<extra></extra>",
     ))
     _fig_pie.add_trace(go.Pie(
         labels=["Watched", "Unwatched"],
@@ -282,6 +307,7 @@ def tab_overview(df_movies, df_series, go, mo, pd):
         domain={"x": [0.55, 1]},
         marker_colors=["#3498db", "#e67e22"],
         hole=0.4,
+        hovertemplate="<b>%{label}</b><br>%{value:,} series (%{percent})<extra></extra>",
     ))
     _fig_pie.update_layout(
         title_text="Content Utilization",
@@ -290,7 +316,7 @@ def tab_overview(df_movies, df_series, go, mo, pd):
             {"text": "Series", "x": 0.80, "y": 0.5, "font_size": 14, "showarrow": False},
         ],
         height=350,
-        template="plotly_white",
+        template="plotly_dark",
     )
 
     _bar_data = pd.DataFrame({
@@ -309,13 +335,18 @@ def tab_overview(df_movies, df_series, go, mo, pd):
         text=[f"{v}% ({u:,}/{t:,})" for v, u, t in zip(_bar_data["Unplayed %"], _bar_data["Unplayed"], _bar_data["Total"])],
         textposition="outside",
         marker_color=["#e74c3c", "#e67e22", "#f39c12"],
+        customdata=list(zip(_bar_data["Unplayed"], _bar_data["Total"])),
+        hovertemplate=(
+            "<b>%{x}</b><br>%{y:.1f}% unplayed"
+            "<br>%{customdata[0]:,} of %{customdata[1]:,}<extra></extra>"
+        ),
     ))
     _fig_bar.update_layout(
         title="Unplayed Content by Type",
         yaxis_title="% Unplayed",
         yaxis_range=[0, 70],
         height=350,
-        template="plotly_white",
+        template="plotly_dark",
     )
 
     overview_tab = mo.vstack([
@@ -360,15 +391,17 @@ def tab_by_library(df_movies, df_series, go, mo, pd):
         name="Played", x=_df_lib_movies["Library"],
         y=_df_lib_movies["Total Movies"] - _df_lib_movies["Unplayed"],
         marker_color="#2ecc71",
+        hovertemplate="<b>%{x}</b><br>%{y:,} played movies<extra></extra>",
     ))
     _fig.add_trace(go.Bar(
         name="Unplayed", x=_df_lib_movies["Library"],
         y=_df_lib_movies["Unplayed"],
         marker_color="#e74c3c",
+        hovertemplate="<b>%{x}</b><br>%{y:,} unplayed movies<extra></extra>",
     ))
     _fig.update_layout(
         barmode="stack", title="Movies by Library: Played vs Unplayed",
-        height=400, template="plotly_white",
+        height=400, template="plotly_dark",
     )
 
     library_tab = mo.vstack([
@@ -428,12 +461,17 @@ def tab_cleanup(decade_dropdown, df_movies, genre_dropdown, go, mo, size_slider)
         marker_color="#e74c3c",
         text=[f"{s:.1f} GB" for s in _top20["SizeGB"]],
         textposition="outside",
+        customdata=list(zip(_top20["Year"], _top20["PrimaryGenre"])),
+        hovertemplate=(
+            "<b>%{y}</b> (%{customdata[0]})<br>"
+            "Size: %{x:.1f} GB<br>Genre: %{customdata[1]}<extra></extra>"
+        ),
     ))
     _fig.update_layout(
         title="Biggest Unplayed Movies",
         xaxis_title="Size (GB)", yaxis_title="",
         height=max(400, len(_top20) * 28),
-        template="plotly_white",
+        template="plotly_dark",
         yaxis={"autorange": "reversed"},
     )
 
@@ -467,16 +505,18 @@ def tab_language(df_movies, go, mo, pd):
     _fig1.add_trace(go.Bar(
         name="Played", x=_top_langs["Language"], y=_top_langs["Played"],
         marker_color="#2ecc71",
+        hovertemplate="<b>%{x}</b><br>%{y:,} played movies<extra></extra>",
     ))
     _fig1.add_trace(go.Bar(
         name="Unplayed", x=_top_langs["Language"], y=_top_langs["Unplayed"],
         marker_color="#e74c3c",
+        hovertemplate="<b>%{x}</b><br>%{y:,} unplayed movies<extra></extra>",
     ))
     _fig1.update_layout(
         barmode="stack",
         title="Movies by Audio Language",
         height=450,
-        template="plotly_white",
+        template="plotly_dark",
     )
 
     _fig2 = go.Figure(go.Bar(
@@ -485,12 +525,13 @@ def tab_language(df_movies, go, mo, pd):
         marker_color=["#e74c3c" if v > 50 else "#f39c12" if v > 30 else "#2ecc71" for v in _top_langs["% Unplayed"]],
         text=[f"{v}%" for v in _top_langs["% Unplayed"]],
         textposition="outside",
+        hovertemplate="<b>%{x}</b><br>%{y:.1f}% unplayed<extra></extra>",
     ))
     _fig2.update_layout(
         title="Unplayed Rate by Language",
         yaxis_title="% Unplayed", yaxis_range=[0, 100],
         height=400,
-        template="plotly_white",
+        template="plotly_dark",
     )
 
     language_tab = mo.vstack([
@@ -512,13 +553,14 @@ def tab_forgotten(df_movies, df_series, go, mo):
         x=_forgotten_movies["DaysInLibrary"],
         nbinsx=30,
         marker_color="#8e44ad",
+        hovertemplate="%{x} days in library<br>%{y:,} movies<extra></extra>",
     ))
     _fig_hist.update_layout(
         title="How Long Have Unplayed Movies Been in the Library?",
         xaxis_title="Days in Library",
         yaxis_title="Number of Movies",
         height=350,
-        template="plotly_white",
+        template="plotly_dark",
     )
 
     _avg_days = _forgotten_movies["DaysInLibrary"].mean()
@@ -571,12 +613,17 @@ def tab_abandoned(df_series, go, mo):
             _top_abandoned["PctWatched"], _top_abandoned["PlayedEpisodes"], _top_abandoned["TotalEpisodes"]
         )],
         textposition="outside",
+        customdata=list(zip(_top_abandoned["PlayedEpisodes"], _top_abandoned["TotalEpisodes"])),
+        hovertemplate=(
+            "<b>%{y}</b><br>%{x:.0f}% watched"
+            "<br>%{customdata[0]:,} of %{customdata[1]:,} episodes<extra></extra>"
+        ),
     ))
     _fig.update_layout(
         title="Most Abandoned Series (started but <50% watched)",
         xaxis_title="% Watched", xaxis_range=[0, 55],
         height=max(400, len(_top_abandoned) * 28),
-        template="plotly_white",
+        template="plotly_dark",
         yaxis={"autorange": "reversed"},
     )
 
