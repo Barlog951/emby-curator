@@ -27,7 +27,7 @@ updates:
           - "patch"
     # Automatically assign PRs to the repository owner
     assignees:
-      - "troykelly"
+      - "Barlog951"
     # Only allow security updates to create PRs for major versions
     ignore:
       - dependency-name: "*"
