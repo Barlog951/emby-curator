@@ -2,10 +2,11 @@
 HTTP utilities for making requests to the Emby server with retries and error handling.
 """
 
-from typing import Any, Dict
+from typing import Any
 
 import backoff
 import httpx
+from backoff._typing import Details
 from httpx import HTTPStatusError, ReadTimeout, RequestError
 
 from emby_dedupe.utils.constants import HTTP_TIMEOUT, MAX_BACKOFF_TIME, MAX_RETRIES
@@ -28,7 +29,7 @@ def should_give_up(e: Exception) -> bool:
     return is_client_error
 
 
-def handle_giveup(details: Dict[str, Any]) -> None:
+def handle_giveup(details: Details) -> None:
     """
     A callback function that will be called when the retry loop has been
     terminated and is giving up.

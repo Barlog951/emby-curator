@@ -1,9 +1,9 @@
 """
 Tests for CLI argument parsing (legacy argparse functions) and typer app structure.
 """
-import os
-import pytest
 from unittest.mock import patch
+
+import pytest
 
 from emby_dedupe.cli.arguments import (
     get_env_variable,
@@ -101,6 +101,7 @@ class TestTyperAppStructure:
 
     def test_app_help_exit_zero(self):
         from typer.testing import CliRunner
+
         from emby_dedupe.cli.app import app
 
         runner = CliRunner()
@@ -109,6 +110,7 @@ class TestTyperAppStructure:
 
     def test_app_has_genres_group(self):
         from typer.testing import CliRunner
+
         from emby_dedupe.cli.app import app
 
         runner = CliRunner()
@@ -118,6 +120,7 @@ class TestTyperAppStructure:
 
     def test_genres_help_shows_subcommands(self):
         from typer.testing import CliRunner
+
         from emby_dedupe.cli.app import app
 
         runner = CliRunner()
@@ -129,6 +132,7 @@ class TestTyperAppStructure:
 
     def test_genres_audit_help(self):
         from typer.testing import CliRunner
+
         from emby_dedupe.cli.app import app
 
         runner = CliRunner()
@@ -138,6 +142,7 @@ class TestTyperAppStructure:
 
     def test_genres_normalize_help(self):
         from typer.testing import CliRunner
+
         from emby_dedupe.cli.app import app
 
         runner = CliRunner()
@@ -148,6 +153,7 @@ class TestTyperAppStructure:
 
     def test_genres_fix_help(self):
         from typer.testing import CliRunner
+
         from emby_dedupe.cli.app import app
 
         runner = CliRunner()
@@ -159,6 +165,7 @@ class TestTyperAppStructure:
 
     def test_dedupe_help(self):
         from typer.testing import CliRunner
+
         from emby_dedupe.cli.app import app
 
         runner = CliRunner()
@@ -167,6 +174,7 @@ class TestTyperAppStructure:
 
     def test_check_help(self):
         from typer.testing import CliRunner
+
         from emby_dedupe.cli.app import app
 
         runner = CliRunner()
@@ -175,6 +183,7 @@ class TestTyperAppStructure:
 
     def test_missing_episodes_help(self):
         from typer.testing import CliRunner
+
         from emby_dedupe.cli.app import app
 
         runner = CliRunner()

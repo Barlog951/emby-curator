@@ -1,6 +1,5 @@
 """Tests for source quality and AI upscale detection."""
 
-import pytest
 
 from emby_dedupe.api.quality_compare import (
     SOURCE_QUALITY_TIERS,

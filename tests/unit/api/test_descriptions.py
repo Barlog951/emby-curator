@@ -3,8 +3,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from emby_dedupe.api.descriptions import (
     LANG_CHAIN_DEFAULT,
     build_series_tmdb_map,
@@ -669,6 +667,7 @@ class TestFetchTmdbOneLangErrors:
 
     def test_exception_returns_none_silently(self):
         import httpx
+
         from emby_dedupe.api.descriptions import fetch_tmdb_localized
         # Build a client whose .get raises a RequestError every call.
         client = MagicMock()
@@ -682,6 +681,7 @@ class TestFetchTmdbOneLangErrors:
 
     def test_episode_exception_returns_empty(self):
         import httpx
+
         from emby_dedupe.api.descriptions import fetch_tmdb_episode_localized
         client = MagicMock()
         client.get.side_effect = httpx.RequestError("oops")

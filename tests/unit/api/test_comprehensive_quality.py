@@ -1,17 +1,14 @@
 """Tests for comprehensive quality scoring system with BPP and RED FLAG detection."""
 
-import pytest
 
 from emby_dedupe.api.quality_compare import (
-    BPP_QUALITY_BANDS,
-    MIN_BITRATE_THRESHOLDS,
-    ProposedQuality,
     ExistingQuality,
+    ProposedQuality,
     calculate_bpp,
-    get_bpp_multiplier,
-    has_quality_red_flags,
-    get_codec_multiplier_with_rtn,
     compare_quality,
+    get_bpp_multiplier,
+    get_codec_multiplier_with_rtn,
+    has_quality_red_flags,
 )
 
 

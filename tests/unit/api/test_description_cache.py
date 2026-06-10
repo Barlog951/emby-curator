@@ -1,11 +1,7 @@
 """Unit tests for emby_dedupe.api.description_cache."""
 from __future__ import annotations
 
-import json
 import time
-from pathlib import Path
-
-import pytest
 
 from emby_dedupe.api import description_cache as cache_mod
 from emby_dedupe.api.description_cache import (

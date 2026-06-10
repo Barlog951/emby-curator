@@ -1,20 +1,18 @@
 """
 Advanced tests for deduplication functionality
 """
-import pytest
-import re
-from unittest.mock import patch, Mock, MagicMock, call
+from unittest.mock import MagicMock, patch
 
 from emby_dedupe.api.deduplication import (
+    build_disjoint_set,
     determine_items_to_delete,
     process_duplicate_groups,
-    build_disjoint_set
 )
 
 
 class TestAdvancedDeduplication:
     """Advanced tests for deduplication functionality."""
-    
+
     def test_determine_items_to_delete_basic(self, sample_media_item):
         """Test basic determination of items to delete."""
         # Create a list of items with varying quality
@@ -47,21 +45,21 @@ class TestAdvancedDeduplication:
                 "Bitrate": 2500000
             }
         ]
-        
+
         # Run determination
         decision = determine_items_to_delete(["12345", "67890"], items)
-        
+
         # Verify decision
         assert "keep" in decision
         assert "delete" in decision
-        
+
         # High quality item should be kept
         assert decision["keep"]["id"] == "12345"
-        
+
         # Low quality item should be deleted
         assert len(decision["delete"]) == 1
         assert decision["delete"][0]["id"] == "67890"
-    
+
     def test_determine_items_to_delete_multiple(self):
         """Test determination with multiple items to delete."""
         # Create several items with varying quality
@@ -136,35 +134,35 @@ class TestAdvancedDeduplication:
                 "Bitrate": 2500000
             }
         ]
-        
+
         # Run determination
         decision = determine_items_to_delete(["12345", "67890", "24680"], items)
-        
+
         # Verify decision
         assert "keep" in decision
         assert "delete" in decision
-        
+
         # Best quality item should be kept
         assert decision["keep"]["id"] == "12345"
-        
+
         # All other items should be deleted
         assert len(decision["delete"]) == 2
         delete_ids = [item["id"] for item in decision["delete"]]
         assert "67890" in delete_ids
         assert "24680" in delete_ids
-    
+
     def test_determine_items_to_delete_empty(self):
         """Test determination with empty items list."""
         decision = determine_items_to_delete(["12345", "67890"], [])
-        
+
         # Should return empty decision
         assert decision == {"keep": {}, "delete": []}
-    
-    
+
+
     def test_determine_items_with_duplicate_paths(self):
         """Test handling of duplicate paths in determination."""
         # Items with the same path
-        # Updated test: With our new implementation, items with identical paths are skipped 
+        # Updated test: With our new implementation, items with identical paths are skipped
         # to avoid marking identical files for deletion
         items = [
             {
@@ -188,17 +186,17 @@ class TestAdvancedDeduplication:
                 "Size": 5000000000
             }
         ]
-        
+
         # Run determination
         decision = determine_items_to_delete(["12345", "67890"], items)
-        
+
         # Verify that we correctly return an empty decision when paths are identical
         # (indicating no true duplicates found)
         assert "keep" in decision
         assert "delete" in decision
         assert not decision["keep"]  # keep should be empty
         assert len(decision["delete"]) == 0  # delete should be empty
-    
+
     def test_determine_items_with_language_priorities(self):
         """Test item determination with language priorities."""
         # Create items with different languages
@@ -224,28 +222,28 @@ class TestAdvancedDeduplication:
                 "Size": 5000000000
             }
         ]
-        
+
         # Set language priorities (English first)
         lang_priorities = ["eng", "fre", "spa"]
-        
+
         # Run determination with language priorities
         decision = determine_items_to_delete(["12345", "67890"], items, lang_priorities)
-        
+
         # Verify that the English item is kept despite lower quality
         assert decision["keep"]["id"] == "67890"
         assert len(decision["delete"]) == 1
         assert decision["delete"][0]["id"] == "12345"
-        
+
         # Check that language priority information is included
-        assert decision["keep"]["selected_by_language_priority"] == True
-        assert decision["keep"]["changed_by_language_priority"] == True
+        assert decision["keep"]["selected_by_language_priority"]
+        assert decision["keep"]["changed_by_language_priority"]
         assert decision["keep"]["priority_language_used"] == "eng"
-    
+
     # Smart Language Priority Tests
     # These tests validate the enhanced language priority logic that prevents
     # small single-language movies from being kept over much larger multi-language movies
     # when there's a significant quality difference.
-    
+
     def test_smart_language_priority_quality_override(self):
         """Test smart language priority - quality override for single vs multi-language."""
         # Create items: small single-language high-priority vs large multi-language lower-priority
@@ -274,19 +272,19 @@ class TestAdvancedDeduplication:
                 "Bitrate": 18000000
             }
         ]
-        
+
         # Set language priorities (Slovak first, Czech second)
         lang_priorities = ["sk", "cs", "eng"]  # Using normalized language codes
-        
+
         # Run determination with language priorities
         decision = determine_items_to_delete(["single_lang_sk", "multi_lang_cz_en"], items, lang_priorities)
-        
+
         # Should choose the multi-language, higher-quality item despite language priority
         # because single-language item vs multi-language item with significant quality difference
         assert decision["keep"]["id"] == "multi_lang_cz_en"
         assert len(decision["delete"]) == 1
         assert decision["delete"][0]["id"] == "single_lang_sk"
-    
+
     def test_smart_language_priority_normal_behavior(self):
         """Test smart language priority - quality wins when both have priority langs and quality is 2x+ better."""
         # Create items where both have multiple languages but quality gap is massive (4K vs 1080p)
@@ -366,7 +364,7 @@ class TestAdvancedDeduplication:
         assert decision["keep"]["id"] == "sk_1080p"
         assert len(decision["delete"]) == 1
         assert decision["delete"][0]["id"] == "cz_1080p"
-    
+
     def test_smart_language_priority_insufficient_quality_difference(self):
         """Test smart language priority - no override when quality difference is insufficient."""
         # Create items with single vs multi-language but insufficient quality difference
@@ -395,19 +393,19 @@ class TestAdvancedDeduplication:
                 "Bitrate": 11000000
             }
         ]
-        
+
         # Set language priorities (Slovak first, Czech second)
         lang_priorities = ["sk", "cs", "eng"]  # Using normalized language codes
-        
+
         # Run determination with language priorities
         decision = determine_items_to_delete(["single_lang_sk", "multi_lang_cz_en"], items, lang_priorities)
-        
+
         # Should use normal language priority since quality difference isn't significant (< 1.5x)
         assert decision["keep"]["id"] == "single_lang_sk"
         assert len(decision["delete"]) == 1
         assert decision["delete"][0]["id"] == "multi_lang_cz_en"
-        assert decision["keep"]["selected_by_language_priority"] == True
-    
+        assert decision["keep"]["selected_by_language_priority"]
+
     def test_smart_language_priority_reverse_scenario(self):
         """Test smart language priority - quality wins when gap is massive (4K vs 1080p)."""
         # 4K English-only vs 1080p Slovak/Czech — quality gap is >3x
@@ -474,15 +472,15 @@ class TestAdvancedDeduplication:
                 "Size": 3000000000
             }
         ]
-        
+
         # This should separate episodes and result in no true duplicates
         decision = determine_items_to_delete(["12345", "67890"], items)
-        
+
         # Should return empty decision since they're different episodes
         assert "keep" in decision
         assert decision["keep"] == {}
         assert decision["delete"] == []
-    
+
     @patch('emby_dedupe.api.deduplication.fetch_items_details')
     @patch('emby_dedupe.api.deduplication.get_image_url')
     @patch('emby_dedupe.api.deduplication.determine_items_to_delete')
@@ -491,30 +489,29 @@ class TestAdvancedDeduplication:
         # Set up mocks
         mock_client = MagicMock()
         base_url = "http://emby.server"
-        api_key = "test_api_key"
-        
+
         # Mock the items details fetch
         mock_fetch.return_value = [
             {"Id": "id1", "Name": "Item 1", "ImageTags": {"Primary": "tag1"}, "Path": "/path/1.mkv"},
             {"Id": "id2", "Name": "Item 2", "ImageTags": {"Primary": "tag2"}, "Path": "/path/2.mkv"}
         ]
-        
+
         # Mock the determination function
         mock_determine.return_value = {
             "keep": {"id": "id1", "name": "Item 1", "serverid": "server1"},
             "delete": [{"id": "id2", "name": "Item 2", "serverid": "server1"}]
         }
-        
+
         # Mock image URL generation
         mock_get_image.return_value = "http://emby.server/image/path"
-        
+
         # Call the function with a single group
         result, exclusion_metadata = process_duplicate_groups(
-            mock_client, 
-            base_url, 
+            mock_client,
+            base_url,
             [["id1", "id2"]]
         )
-        
+
         # Verify the result
         assert len(result) == 1
         assert exclusion_metadata is not None
@@ -524,12 +521,12 @@ class TestAdvancedDeduplication:
         assert decision["keep"]["id"] == "id1"
         assert len(decision["delete"]) == 1
         assert decision["delete"][0]["id"] == "id2"
-        
+
         # Verify image URLs were added
         assert "image_url" in decision["keep"]
         assert "image_url" in decision["delete"][0]
-    
-    
+
+
     def test_build_disjoint_set(self):
         """Test building disjoint sets from provider data."""
         # Set up test data with normal movies and TV episodes
@@ -550,18 +547,18 @@ class TestAdvancedDeduplication:
                 ]
             }
         }
-        
+
         # Mock the tqdm progress bar
         with patch('emby_dedupe.api.deduplication.tqdm') as mock_tqdm:
             mock_progress = MagicMock()
             mock_tqdm.return_value.__enter__.return_value = mock_progress
-            
+
             # Build the disjoint set
             result = build_disjoint_set(provider_data)
-            
+
             # Check that movies were grouped together
             assert result.find("movie1") == result.find("movie2")
-            
+
             # Make sure all three episodes exist as keys
             assert "episode1" in result.parent
             assert "episode2" in result.parent
@@ -573,7 +570,7 @@ class TestAdvancedDeduplication:
         items = [
             {
                 "Id": "slovak_slo",  # Uses "slo" language code
-                "Name": "Movie Slovak SLO", 
+                "Name": "Movie Slovak SLO",
                 "Path": "/movies/movie_slovak_slo.mkv",
                 "MediaStreams": [
                     {"Type": "Video", "Codec": "h265", "Height": 1080, "Width": 1920, "BitRate": 10000000},
@@ -583,9 +580,9 @@ class TestAdvancedDeduplication:
                 "Bitrate": 10000000
             },
             {
-                "Id": "slovak_sk", # Uses "sk" language code  
+                "Id": "slovak_sk", # Uses "sk" language code
                 "Name": "Movie Slovak SK",
-                "Path": "/movies/movie_slovak_sk.mkv", 
+                "Path": "/movies/movie_slovak_sk.mkv",
                 "MediaStreams": [
                     {"Type": "Video", "Codec": "h265", "Height": 1080, "Width": 1920, "BitRate": 12000000},
                     {"Type": "Audio", "Codec": "dts", "Channels": 6, "Language": "sk"}  # Slovak ISO 639-1
@@ -598,14 +595,14 @@ class TestAdvancedDeduplication:
                 "Name": "Movie Czech CZE",
                 "Path": "/movies/movie_czech_cze.mkv",
                 "MediaStreams": [
-                    {"Type": "Video", "Codec": "h265", "Height": 1080, "Width": 1920, "BitRate": 11000000}, 
+                    {"Type": "Video", "Codec": "h265", "Height": 1080, "Width": 1920, "BitRate": 11000000},
                     {"Type": "Audio", "Codec": "dts", "Channels": 6, "Language": "cze"}  # Czech ISO 639-2
                 ],
                 "Size": 42000000000,  # 42GB
                 "Bitrate": 11000000
             },
             {
-                "Id": "czech_ces", # Uses "ces" language code  
+                "Id": "czech_ces", # Uses "ces" language code
                 "Name": "Movie Czech CES",
                 "Path": "/movies/movie_czech_ces.mkv",
                 "MediaStreams": [
@@ -618,7 +615,7 @@ class TestAdvancedDeduplication:
             {
                 "Id": "english", # English item - should be lowest priority
                 "Name": "Movie English",
-                "Path": "/movies/movie_english.mkv", 
+                "Path": "/movies/movie_english.mkv",
                 "MediaStreams": [
                     {"Type": "Video", "Codec": "h265", "Height": 2160, "Width": 3840, "BitRate": 20000000},
                     {"Type": "Audio", "Codec": "dts", "Channels": 8, "Language": "eng"}  # English
@@ -627,30 +624,30 @@ class TestAdvancedDeduplication:
                 "Bitrate": 20000000
             }
         ]
-        
+
         # Language priorities: Slovak first (slo/sk should be treated as same), Czech second (cze/ces should be same), English last
         lang_priorities = ["sk", "cs", "eng"]  # Using normalized forms
-        
+
         # Run determination with language priorities
         decision = determine_items_to_delete(["slovak_slo", "slovak_sk", "czech_cze", "czech_ces", "english"], items, lang_priorities)
-        
+
         # Should choose the best Slovak item (slovak_sk has slightly better quality)
         # since all Slovak variants should be treated with same priority, quality should be the tiebreaker
         assert decision["keep"]["id"] == "slovak_sk"
         assert len(decision["delete"]) == 4
-        
+
         # Verify that language priority was applied
         kept_item = decision["keep"]
-        assert kept_item.get("selected_by_language_priority") == True
+        assert kept_item.get("selected_by_language_priority")
         assert kept_item.get("priority_language_used") == "sk"  # Should be normalized to "sk"
-        
+
         # Make sure the deleted items include both Slovak and Czech variants and English
         deleted_ids = [item["id"] for item in decision["delete"]]
         assert "slovak_slo" in deleted_ids  # Other Slovak variant
-        assert "czech_cze" in deleted_ids   # Czech variants  
+        assert "czech_cze" in deleted_ids   # Czech variants
         assert "czech_ces" in deleted_ids
         assert "english" in deleted_ids     # English (lowest priority)
-        
+
     def test_language_normalization_priority_vs_quality_balance(self):
         """Test that quality wins when gap is massive, even with language normalization."""
         items = [
@@ -722,7 +719,7 @@ class TestAdvancedDeduplication:
         assert decision["keep"]["id"] == "slovak_slo"
         assert len(decision["delete"]) == 1
         assert decision["delete"][0]["id"] == "czech_ces"
-        assert decision["keep"]["selected_by_language_priority"] == True
+        assert decision["keep"]["selected_by_language_priority"]
 
     def test_tv_episode_path_parsing_uses_filename_not_folder(self):
         """Test that episode parsing uses filename, not folder names.

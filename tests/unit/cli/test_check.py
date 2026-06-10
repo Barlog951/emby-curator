@@ -5,8 +5,6 @@ import json
 from argparse import Namespace
 from unittest.mock import MagicMock, Mock, patch
 
-import pytest
-
 from emby_dedupe.cli.check import (
     _extract_quality_params,
     _extract_search_params,

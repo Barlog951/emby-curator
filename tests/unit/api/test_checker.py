@@ -8,9 +8,8 @@ focusing on provider ID lookups, caching, quality checking, and configuration ma
 import json
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, patch
 
 import httpx
 import pytest

@@ -1,17 +1,16 @@
 """Tests for quality comparison module."""
 
-import pytest
 
 from emby_dedupe.api.quality_compare import (
     SOURCE_QUALITY_TIERS,
     ComparisonResult,
     ExistingQuality,
     ProposedQuality,
-    apply_language_priority,
-    compare_quality,
-    _create_proposed_as_existing,
     _apply_bluray_native_exception,
     _apply_smart_override_if_needed,
+    _create_proposed_as_existing,
+    apply_language_priority,
+    compare_quality,
 )
 
 

@@ -1,7 +1,6 @@
 """
 Tests for common reporting functionality
 """
-import pytest
 from emby_dedupe.reports.common import calculate_report_statistics
 
 
@@ -69,17 +68,17 @@ class TestReportCommon:
                 ]
             }
         ]
-        
+
         stats = calculate_report_statistics(decisions)
-        
+
         # Check the calculated statistics
         assert stats["total_groups"] == 2
         assert stats["total_items_to_keep"] == 2
         assert stats["total_items_to_delete"] == 3
         assert stats["deleted_items"] == 2  # Successful deletions
         assert stats["failed_deletions"] == 1
-        
+
         # Check total sizes
         assert stats["total_size_to_delete"] > 0
         assert stats["total_size_to_keep"] > 0
-        
+

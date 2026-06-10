@@ -1,9 +1,10 @@
 """Tests for emby_dedupe/cli/genres.py"""
 
 import argparse
+
 import pytest
 
-from emby_dedupe.cli.genres import run_genres_command, _validate_genres_args
+from emby_dedupe.cli.genres import _validate_genres_args, run_genres_command
 
 
 class TestValidateGenresArgs:
@@ -228,6 +229,7 @@ class TestNoLockCLIParsing:
     def test_no_lock_flag_sets_lock_false(self):
         """--no-lock must actually set lock=False."""
         import argparse
+
         from emby_dedupe.cli.genres import add_genres_arguments
 
         parser = argparse.ArgumentParser()
@@ -238,6 +240,7 @@ class TestNoLockCLIParsing:
 
     def test_lock_default_is_true(self):
         import argparse
+
         from emby_dedupe.cli.genres import add_genres_arguments
 
         parser = argparse.ArgumentParser()
@@ -499,6 +502,7 @@ class TestWebhookCompatibility:
     def test_typer_genres_normalize_doit_item_ids(self, mocker):
         """Webhook: genres normalize --doit --item-ids 123,456 must work end-to-end."""
         from typer.testing import CliRunner
+
         from emby_dedupe.cli.app import app
 
         self._setup_genres_mocks(mocker)
@@ -530,6 +534,7 @@ class TestWebhookCompatibility:
     def test_typer_genres_fix_doit_validate_item_ids(self, mocker):
         """Webhook: genres fix --doit --validate --item-ids 123,456 must work end-to-end."""
         from typer.testing import CliRunner
+
         from emby_dedupe.cli.app import app
 
         self._setup_genres_mocks(mocker)
@@ -571,9 +576,10 @@ class TestWebhookCompatibility:
 
     def test_typer_genres_normalize_item_ids_no_host_fails(self, mocker):
         """Without --host (and no env vars), genres normalize --item-ids must exit non-zero."""
+
         from typer.testing import CliRunner
+
         from emby_dedupe.cli.app import app
-        import os
 
         runner = CliRunner()
         # Explicitly clear host/api-key env vars so validation fires
@@ -593,6 +599,7 @@ class TestWebhookCompatibility:
     def test_typer_genres_process_doit_validate_item_ids(self, mocker):
         """Webhook: genres process --doit --validate --item-ids runs normalize + fix in one pass."""
         from typer.testing import CliRunner
+
         from emby_dedupe.cli.app import app
 
         self._setup_genres_mocks(mocker)
