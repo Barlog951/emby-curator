@@ -67,8 +67,8 @@ def _try_parse_date_field(item: Dict[str, Any], field_name: str, include_time: b
     if field_name not in item or not item[field_name]:
         return None
 
+    date_str = item[field_name]
     try:
-        date_str = item[field_name]
         parsed = _parse_iso_date(date_str, include_time=include_time)
         if parsed:
             logger.debug(f"Found {field_name}: {parsed}")
@@ -78,7 +78,7 @@ def _try_parse_date_field(item: Dict[str, Any], field_name: str, include_time: b
             result = str(date_str)
             logger.debug(f"Found {field_name} (non-ISO): {result}")
             return result
-    except Exception as e:
+    except (ValueError, TypeError) as e:
         logger.warning(f"Error parsing {field_name}: {e}")
         return None
 
@@ -97,13 +97,13 @@ def _try_fallback_date_fields(item: Dict[str, Any]) -> Optional[str]:
         if field not in item or not item[field]:
             continue
 
-        try:
-            date_str = item[field]
-            if field == "ProductionYear":
-                result = f"{date_str}-01-01 (year only)"
-                logger.debug(f"Using ProductionYear as date: {result}")
-                return result
+        date_str = item[field]
+        if field == "ProductionYear":
+            result = f"{date_str}-01-01 (year only)"
+            logger.debug(f"Using ProductionYear as date: {result}")
+            return result
 
+        try:
             # Try ISO 8601 format
             parsed = _parse_iso_date(date_str, include_time=False)
             if parsed:
@@ -113,7 +113,7 @@ def _try_fallback_date_fields(item: Dict[str, Any]) -> Optional[str]:
                 result = str(date_str)
                 logger.debug(f"Found date in {field} (non-ISO): {result}")
                 return result
-        except Exception as e:
+        except (ValueError, TypeError) as e:
             logger.warning(f"Error parsing date from {field}: {e}")
 
     return None
@@ -220,15 +220,11 @@ def _extract_premiere_date(item: Dict[str, Any]) -> str:
     if "PremiereDate" not in item:
         return "unknown"
 
-    try:
-        date_str = item["PremiereDate"]
-        parsed = _parse_iso_date(date_str, include_time=False)
-        if parsed:
-            return parsed
-        else:
-            return date_str
-    except Exception:
-        return item.get("PremiereDate", "unknown")
+    date_str = item["PremiereDate"]
+    parsed = _parse_iso_date(date_str, include_time=False)
+    if parsed:
+        return parsed
+    return date_str
 
 
 def _build_tv_metadata(item: Dict[str, Any], quality_desc: Dict[str, Any]) -> None:
@@ -252,6 +248,42 @@ def _build_tv_metadata(item: Dict[str, Any], quality_desc: Dict[str, Any]) -> No
         quality_desc["episode_info"] = f"S{quality_desc['season_number']}E{quality_desc['episode_number']}"
     else:
         quality_desc["episode_info"] = "Unknown episode"
+
+
+def _extract_video_quality(video_stream: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extract video quality information from a video stream."""
+    if not video_stream:
+        return {
+            "codec": "unknown",
+            "resolution": "unknown",
+            "bitrate": "unknown",
+            "bitdepth": "unknown",
+            "interlaced": "unknown",
+        }
+    return {
+        "codec": video_stream.get("Codec", "unknown"),
+        "resolution": video_stream.get("DisplayTitle", "unknown"),
+        "bitrate": video_stream.get("BitRate", "unknown"),
+        "bitdepth": video_stream.get("BitDepth", "unknown"),
+        "interlaced": video_stream.get("IsInterlaced", "unknown"),
+    }
+
+
+def _extract_audio_quality(audio_stream: Optional[Dict[str, Any]], languages: List[str]) -> Dict[str, Any]:
+    """Extract audio quality information from an audio stream and language list."""
+    if not audio_stream:
+        return {
+            "codec": "unknown",
+            "channels": "unknown",
+            "bitrate": "unknown",
+            "languages": languages if languages else ["unknown"],
+        }
+    return {
+        "codec": audio_stream.get("Codec", "unknown"),
+        "channels": audio_stream.get("Channels", "unknown"),
+        "bitrate": audio_stream.get("BitRate", "unknown"),
+        "languages": languages if languages else ["unknown"],
+    }
 
 
 def get_quality_description(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -278,53 +310,21 @@ def get_quality_description(item: Dict[str, Any]) -> Dict[str, Any]:
 
     # Find all audio languages
     audio_streams = [s for s in item.get("MediaStreams", []) if s["Type"] == "Audio"]
-    languages = set()
+    languages = []
     for stream in audio_streams:
         lang = stream.get("Language", "unknown")
-        if lang and lang != "unknown":
-            languages.add(lang)
-
-    # Use helper functions to extract data
-    size_bytes = item.get("Size", 0)
-    size_formatted = _format_file_size(size_bytes)
-    date_added = _resolve_date_added(item)
-    premiere_date = _extract_premiere_date(item)
+        if lang and lang != "unknown" and lang not in languages:
+            languages.append(lang)
 
     # Construct the quality description safely
+    size_bytes = item.get("Size", 0)
     quality_description = {
-        "video": {
-            "codec": video_stream.get("Codec", "unknown")
-            if video_stream
-            else "unknown",
-            "resolution": video_stream.get("DisplayTitle", "unknown")
-            if video_stream
-            else "unknown",
-            "bitrate": video_stream.get("BitRate", "unknown")
-            if video_stream
-            else "unknown",
-            "bitdepth": video_stream.get("BitDepth", "unknown")
-            if video_stream
-            else "unknown",
-            "interlaced": video_stream.get("IsInterlaced", "unknown")
-            if video_stream
-            else "unknown",
-        },
-        "audio": {
-            "codec": audio_stream.get("Codec", "unknown")
-            if audio_stream
-            else "unknown",
-            "channels": audio_stream.get("Channels", "unknown")
-            if audio_stream
-            else "unknown",
-            "bitrate": audio_stream.get("BitRate", "unknown")
-            if audio_stream
-            else "unknown",
-            "languages": list(languages) if languages else ["unknown"],
-        },
+        "video": _extract_video_quality(video_stream),
+        "audio": _extract_audio_quality(audio_stream, languages),
         "size": size_bytes,  # Raw size for sorting
-        "size_formatted": size_formatted,  # Human-readable size
-        "date_added": date_added,
-        "premiere_date": premiere_date,
+        "size_formatted": _format_file_size(size_bytes),  # Human-readable size
+        "date_added": _resolve_date_added(item),
+        "premiere_date": _extract_premiere_date(item),
         "year": item.get("ProductionYear", "unknown"),
         "rating": item.get("OfficialRating", "unknown"),
         "overview": item.get("Overview", ""),
@@ -395,12 +395,12 @@ def _calculate_quality_rating(
     """
     # Parse date added to get timestamp for comparison
     date_rating = 0
-    try:
-        date_str = item.get("DateCreated", "")
-        if isinstance(date_str, str) and 'T' in date_str:
+    date_str = item.get("DateCreated", "")
+    if isinstance(date_str, str) and 'T' in date_str:
+        try:
             date_rating = int(datetime.fromisoformat(date_str).timestamp())
-    except Exception as e:
-        logger.warning(f"Error parsing DateCreated for rating: {e}")
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Error parsing DateCreated for rating: {e}")
 
     # Define quality factors and their corresponding weights
     quality_factors = {

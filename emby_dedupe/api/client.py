@@ -15,6 +15,7 @@ from emby_dedupe.utils.constants import (
     DEFAULT_PORT_EMBY,
     DEFAULT_PORT_HTTP,
     DEFAULT_PORT_HTTPS,
+    IGNORED_IMDB_ID,
     PAGE_SIZE,
 )
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError
@@ -564,47 +565,75 @@ def _process_provider_id(provider, table_name, id_value, provider_tables, item, 
         provider_tables[table_name][id_value].append(item_info)
 
 
+def _index_by_series_episode(item: dict, library_name: str, provider_tables: dict) -> None:
+    """Index episodes by SeriesName + Season + Episode for fallback grouping.
+
+    This catches duplicates where one copy has no provider IDs at all.
+    """
+    series_name = item.get("SeriesName")
+    season = item.get("ParentIndexNumber")
+    episode_num = item.get("IndexNumber")
+
+    if not (series_name and season is not None and episode_num is not None):
+        return
+
+    se_key = f"{series_name}|S{season}E{episode_num}"
+    if se_key not in provider_tables["series_episode"]:
+        provider_tables["series_episode"][se_key] = []
+
+    # Avoid adding the same item twice (already indexed via provider ID)
+    existing_ids = {i["id"] for i in provider_tables["series_episode"][se_key]}
+    if item["Id"] not in existing_ids:
+        item_info = _create_item_info(item, library_name, se_key)
+        provider_tables["series_episode"][se_key].append(item_info)
+
+
+def _process_all_provider_ids(
+    item: dict,
+    provider_tables: dict,
+    library_name: str,
+    ignored_imdb_id: str = IGNORED_IMDB_ID,
+) -> None:
+    """Process all provider IDs for a single media item."""
+    provider_ids = item.get("ProviderIds", {})
+    # Create case-insensitive lookup for provider IDs
+    # Emby API returns inconsistent casing (e.g., "Imdb" vs "IMDB")
+    provider_ids_lower = {k.lower(): v for k, v in provider_ids.items()}
+
+    for provider, table_name in [
+        ("imdb", "imdb"),
+        ("tvdb", "tvdb"),
+        ("tmdb", "tmdb"),
+    ]:
+        id_value = provider_ids_lower.get(provider)
+        _process_provider_id(
+            provider,
+            table_name,
+            id_value,
+            provider_tables,
+            item,
+            library_name,
+            ignored_imdb_id,
+        )
+
+
 def build_provider_id_tables(media_items: list, provider_tables: dict):
     """
-    Builds tables that map provider IDs (Imdb, Tvdb, Tmdb) to lists of media item IDs,
-    ignoring items with specific IMDb values.
+    Builds tables that map provider IDs (Imdb, Tvdb, Tmdb) to lists of media item IDs.
 
     Args:
         media_items (list): A list of media items fetched from the Emby server.
         provider_tables (dict): A dictionary with keys 'imdb', 'tvdb', 'tmdb', and 'library_name' to store the mappings.
     """
-    IGNORED_IMDB_ID = "tt0000000"  # IMDb ID to ignore
     library_name = provider_tables.get("library_name", "Unknown")
 
     for item in media_items:
         # Check the item is not a folder
         if item.get("IsFolder", False):
             continue
-        provider_ids = item.get("ProviderIds", {})
 
-        # Create case-insensitive lookup for provider IDs
-        # Emby API returns inconsistent casing (e.g., "Imdb" vs "IMDB")
-        provider_ids_lower = {k.lower(): v for k, v in provider_ids.items()}
-
-        for provider, table_name in [
-            ("imdb", "imdb"),
-            ("tvdb", "tvdb"),
-            ("tmdb", "tmdb"),
-        ]:
-            id_value = provider_ids_lower.get(provider)
-            _process_provider_id(provider, table_name, id_value, provider_tables, item, library_name, IGNORED_IMDB_ID)
+        # Process all provider IDs
+        _process_all_provider_ids(item, provider_tables, library_name)
 
         # Also index episodes by SeriesName + Season + Episode for fallback grouping.
-        # This catches duplicates where one copy has no provider IDs at all.
-        series_name = item.get("SeriesName")
-        season = item.get("ParentIndexNumber")
-        episode_num = item.get("IndexNumber")
-        if series_name and season is not None and episode_num is not None:
-            se_key = f"{series_name}|S{season}E{episode_num}"
-            if se_key not in provider_tables["series_episode"]:
-                provider_tables["series_episode"][se_key] = []
-            # Avoid adding the same item twice (already indexed via provider ID)
-            existing_ids = {i["id"] for i in provider_tables["series_episode"][se_key]}
-            if item["Id"] not in existing_ids:
-                item_info = _create_item_info(item, library_name, se_key)
-                provider_tables["series_episode"][se_key].append(item_info)
+        _index_by_series_episode(item, library_name, provider_tables)

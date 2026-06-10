@@ -150,7 +150,7 @@ def get_env_variable(name: str) -> Optional[str]:
     return os.environ.get(name)
 
 
-def override_warning(arg_name: str, cmd_val: str, env_val: str) -> None:
+def override_warning(arg_name: str, cmd_val: Optional[str], env_val: Optional[str]) -> None:
     """Print a warning if a command-line argument overrides an environment variable.
 
     Args:
