@@ -1,19 +1,19 @@
 """Tests for emby_dedupe/api/genres.py"""
 
-import pytest
 from unittest.mock import MagicMock
 
 import httpx
+import pytest
 
 from emby_dedupe.api.genres import (
     build_genre_audit,
+    fetch_full_item,
     fetch_items_by_ids,
     fetch_items_with_genres,
+    get_user_id,
     normalize_genre_name,
     suggest_genre_mappings,
     update_item_genres,
-    fetch_full_item,
-    get_user_id,
 )
 from emby_dedupe.utils.constants import GENRE_NORMALIZATION_MAP
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError

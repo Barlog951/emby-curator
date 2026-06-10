@@ -1,24 +1,17 @@
 """
 Tests for HTML report generation
 """
-import pytest
-import os
-import tempfile
-import io
-import shutil
-from unittest.mock import patch, Mock, MagicMock
+from unittest.mock import MagicMock, patch
 
 from emby_dedupe.reports.html import (
-    generate_html_report,
-    format_html_report,
-    _validate_decisions,
+    _create_language_priority_message,
     _detect_language_priority_usage,
     _ensure_quality_fields,
     _process_delete_item,
-    _create_language_priority_message,
-    _process_decision_group,
+    _validate_decisions,
+    format_html_report,
+    generate_html_report,
 )
-from emby_dedupe.reports.common import calculate_report_statistics
 
 
 class TestHtmlReports:
@@ -32,15 +25,15 @@ class TestHtmlReports:
         # Setup mocks for the Jinja template system
         mock_env_instance = MagicMock()
         mock_env.return_value = mock_env_instance
-        
+
         mock_template = MagicMock()
         mock_env_instance.get_template.return_value = mock_template
         mock_template.render.return_value = "<html>Test Content</html>"
-        
+
         # Prepare test data
         base_url = "http://example.com"
         decisions = []
-        
+
         # Mock statistics calculation
         mock_calculate_stats.return_value = {
             "total_groups": 0,
@@ -49,28 +42,28 @@ class TestHtmlReports:
             "deleted_items": 0,
             "failed_deletions": 0,
             "skipped_deletions": 0,
-            "formatted_size_to_keep": "0 B", 
+            "formatted_size_to_keep": "0 B",
             "formatted_size_to_delete": "0 B",
             "percentage_saved": 0
         }
-        
+
         # Patch the tqdm progress bar
         with patch('emby_dedupe.reports.html.tqdm') as mock_tqdm:
             mock_progress_bar = MagicMock()
             mock_tqdm.return_value = mock_progress_bar
-            
+
             # Call the function
             try:
                 result = format_html_report(base_url, decisions)
-                
+
                 # Verify output
                 assert result == "<html>Test Content</html>"
                 assert mock_template.render.called
             except ImportError:
                 # Handle the case where jinja2 is not installed (might happen in test environment)
                 pass
-    
-    
+
+
     @patch('jinja2.Environment')
     @patch('jinja2.FileSystemLoader')
     @patch('emby_dedupe.reports.common.calculate_report_statistics')
@@ -79,11 +72,11 @@ class TestHtmlReports:
         # Setup mocks for the Jinja template system
         mock_env_instance = MagicMock()
         mock_env.return_value = mock_env_instance
-        
+
         mock_template = MagicMock()
         mock_env_instance.get_template.return_value = mock_template
         mock_template.render.return_value = "<html>Test Content with Language Priorities</html>"
-        
+
         # Prepare test data with language priorities
         base_url = "http://example.com"
         decisions = [
@@ -116,7 +109,7 @@ class TestHtmlReports:
                 ]
             }
         ]
-        
+
         # Mock statistics calculation
         mock_calculate_stats.return_value = {
             "total_groups": 1,
@@ -125,33 +118,33 @@ class TestHtmlReports:
             "deleted_items": 1,
             "failed_deletions": 0,
             "skipped_deletions": 0,
-            "formatted_size_to_keep": "1 GB", 
+            "formatted_size_to_keep": "1 GB",
             "formatted_size_to_delete": "500 MB",
             "percentage_saved": 33.3
         }
-        
+
         # Patch the tqdm progress bar
         with patch('emby_dedupe.reports.html.tqdm') as mock_tqdm:
             mock_progress_bar = MagicMock()
             mock_tqdm.return_value = mock_progress_bar
-            
+
             # Call the function
             try:
                 result = format_html_report(base_url, decisions)
-                
+
                 # Verify output
                 assert result == "<html>Test Content with Language Priorities</html>"
                 assert mock_template.render.called
-                
+
                 # Verify template data contains language priority information
                 template_data = mock_template.render.call_args[1]
-                assert template_data["language_priorities_used"] == True
-                assert template_data["language_priorities_changed_selection"] == True
+                assert template_data["language_priorities_used"]
+                assert template_data["language_priorities_changed_selection"]
                 assert template_data["language_priorities_list"] == ["eng", "spa", "fre"]
             except ImportError:
                 # Handle the case where jinja2 is not installed
                 pass
-                
+
     @patch('jinja2.Environment')
     @patch('jinja2.FileSystemLoader')
     @patch('emby_dedupe.reports.common.calculate_report_statistics')
@@ -160,11 +153,11 @@ class TestHtmlReports:
         # Setup mocks for the Jinja template system
         mock_env_instance = MagicMock()
         mock_env.return_value = mock_env_instance
-        
+
         mock_template = MagicMock()
         mock_env_instance.get_template.return_value = mock_template
         mock_template.render.return_value = "<html>Test Content with Excluded IDs</html>"
-        
+
         # Prepare test data with excluded IDs
         base_url = "http://example.com"
         decisions = [
@@ -193,7 +186,7 @@ class TestHtmlReports:
                 ]
             }
         ]
-        
+
         # Create metadata with excluded IDs
         metadata = {
             "excluded_ids": ["tt0120737", "tt0167261", "550"],
@@ -216,7 +209,7 @@ class TestHtmlReports:
                 }
             }
         }
-        
+
         # Mock statistics calculation
         mock_calculate_stats.return_value = {
             "total_groups": 1,
@@ -225,27 +218,27 @@ class TestHtmlReports:
             "deleted_items": 1,
             "failed_deletions": 0,
             "skipped_deletions": 0,
-            "formatted_size_to_keep": "1 GB", 
+            "formatted_size_to_keep": "1 GB",
             "formatted_size_to_delete": "500 MB",
             "percentage_saved": 33.3
         }
-        
+
         # Patch the tqdm progress bar
         with patch('emby_dedupe.reports.html.tqdm') as mock_tqdm:
             mock_progress_bar = MagicMock()
             mock_tqdm.return_value = mock_progress_bar
-            
+
             # Call the function
             try:
                 result = format_html_report(base_url, decisions, metadata)
-                
+
                 # Verify output
                 assert result == "<html>Test Content with Excluded IDs</html>"
                 assert mock_template.render.called
-                
+
                 # Verify template data contains excluded IDs information
                 template_data = mock_template.render.call_args[1]
-                assert template_data["has_excluded_ids"] == True
+                assert template_data["has_excluded_ids"]
                 assert len(template_data["excluded_ids"]) == 3
                 assert "tt0120737" in template_data["excluded_ids"]
                 assert template_data["excluded_groups_count"] == 3
@@ -255,7 +248,7 @@ class TestHtmlReports:
             except ImportError:
                 # Handle the case where jinja2 is not installed
                 pass
-    
+
     @patch('emby_dedupe.reports.html.format_html_report')
     @patch('tempfile.gettempdir')
     @patch('time.time')
@@ -267,48 +260,48 @@ class TestHtmlReports:
         mock_format_html.return_value = "<html>Test content</html>"
         mock_tempdir.return_value = "/tmp"
         mock_time.return_value = 1234567890
-        
+
         # Create a simple mock for file operations
         m = MagicMock()
         m_handle = MagicMock()
         m.return_value.__enter__.return_value = m_handle
-        
+
         # Create a mock for path joining
         path_join_mock = MagicMock(return_value="/tmp/emby_dedupe_report_1234567890.html")
-        
+
         # Patch the necessary functions
         with patch('builtins.open', m):
             with patch('os.path.join', path_join_mock):
                 with patch('shutil.copy2'):
                     result = generate_html_report(base_url, decisions)
-                    
+
         # Verify the result is the file path
         assert "emby_dedupe_report_1234567890.html" in result
-    
+
     @patch('emby_dedupe.reports.html.format_html_report')
     def test_generate_html_report_with_css_error(self, mock_format_html):
         """Test HTML report generation handling CSS copy errors gracefully."""
         # Setup
         base_url = "http://emby.server"
         decisions = [{"keep": {"id": "123"}, "delete": [{"id": "456"}]}]
-        
+
         mock_format_html.return_value = "<html>Test content</html>"
-        
+
         # Mock shutil.copy2 to raise an IOError
         with patch('shutil.copy2', side_effect=IOError("Test error")):
             # Mock open to avoid actual file operations
             with patch('builtins.open', MagicMock()):
                 # Mock logger to check error is logged
-                with patch('emby_dedupe.reports.html.logger') as mock_logger:
+                with patch('emby_dedupe.reports.html.logger'):
                     # Mock os.path.join
                     with patch('os.path.join', return_value="/tmp/report.html"):
                         with patch('tempfile.gettempdir', return_value="/tmp"):
                             with patch('time.time', return_value=1234567890):
                                 result = generate_html_report(base_url, decisions)
-                                
+
                                 # Just verify the function returns some string
                                 assert isinstance(result, str)
-                                
+
     @patch('jinja2.Environment')
     @patch('jinja2.FileSystemLoader')
     @patch('emby_dedupe.reports.common.calculate_report_statistics')
@@ -317,11 +310,11 @@ class TestHtmlReports:
         # Setup mocks for the Jinja template system
         mock_env_instance = MagicMock()
         mock_env.return_value = mock_env_instance
-        
+
         mock_template = MagicMock()
         mock_env_instance.get_template.return_value = mock_template
         mock_template.render.return_value = "<html>Test Content with Deleted Items</html>"
-        
+
         # Prepare test data with deleted items that have provider IDs
         base_url = "http://example.com"
         decisions = [
@@ -375,7 +368,7 @@ class TestHtmlReports:
                 ]
             }
         ]
-        
+
         # Mock statistics calculation
         mock_calculate_stats.return_value = {
             "total_groups": 1,
@@ -384,11 +377,11 @@ class TestHtmlReports:
             "deleted_items": 2,
             "failed_deletions": 0,
             "skipped_deletions": 1,
-            "formatted_size_to_keep": "1 GB", 
+            "formatted_size_to_keep": "1 GB",
             "formatted_size_to_delete": "1.5 GB",
             "percentage_saved": 33.3
         }
-        
+
         # Patch the tqdm progress bar
         with patch('emby_dedupe.reports.html.tqdm') as mock_tqdm:
             mock_progress_bar = MagicMock()
@@ -430,10 +423,10 @@ class TestHtmlReports:
                     if item.get("deletion_result", {}).get("status") == "success":
                         if "provider_id" in item:
                             if item["provider_id"].startswith("tt"):
-                                imdb_url = f"https://www.imdb.com/title/{item['provider_id']}"
+                                f"https://www.imdb.com/title/{item['provider_id']}"
                                 assert "IMDB" in item["name"]  # Verify it's our IMDB test item
                             elif item["provider_id"].isdigit():
-                                tmdb_url = f"https://www.themoviedb.org/movie/{item['provider_id']}"
+                                f"https://www.themoviedb.org/movie/{item['provider_id']}"
                                 assert "TMDB" in item["name"]  # Verify it's our TMDB test item
                     else:
                         # Non-deleted items should still have their Emby URL

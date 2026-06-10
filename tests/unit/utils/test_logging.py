@@ -2,16 +2,9 @@
 Tests for logging utilities
 """
 import logging
-import pytest
-from io import StringIO
 from unittest.mock import Mock, patch
 
-from emby_dedupe.utils.logging import (
-    logger,
-    SensitiveDataFilter,
-    set_logging_level
-)
-from emby_dedupe.utils.constants import LOGGING_LEVELS
+from emby_dedupe.utils.logging import SensitiveDataFilter, logger, set_logging_level
 
 
 class TestSensitiveDataFilter:
@@ -35,9 +28,9 @@ class TestSensitiveDataFilter:
             name='test', level=logging.INFO, pathname='', lineno=0,
             msg='API key: api_key=abcdef1234567890', args=(), exc_info=None
         )
-        
+
         result = filter.filter(record)
-        
+
         assert result is True  # Should always return True
         assert 'REDACTED' in record.msg
         assert 'abcdef1234567890' not in record.msg
@@ -49,9 +42,9 @@ class TestSensitiveDataFilter:
             name='test', level=logging.INFO, pathname='', lineno=0,
             msg='Password: password=SuperSecretPassword123', args=(), exc_info=None
         )
-        
+
         result = filter.filter(record)
-        
+
         assert result is True
         assert 'REDACTED' in record.msg
         assert 'SuperSecretPassword123' not in record.msg
@@ -63,9 +56,9 @@ class TestSensitiveDataFilter:
             name='test', level=logging.INFO, pathname='', lineno=0,
             msg='Token: 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b', args=(), exc_info=None
         )
-        
+
         result = filter.filter(record)
-        
+
         assert result is True
         assert 'REDACTED' in record.msg
         assert '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b' not in record.msg

@@ -177,7 +177,7 @@ def _extract_media_info(media_streams: list) -> dict:
     """Extract video and audio info from media streams."""
     media_info = {}
 
-    video_stream = next((s for s in media_streams if s.get("Type") == "Video"), {})
+    video_stream: dict = next((s for s in media_streams if s.get("Type") == "Video"), {})
     if video_stream:
         media_info["video"] = _extract_video_info(video_stream)
 
@@ -466,7 +466,7 @@ def _verify_tv_series_group(items, all_items_dict) -> dict:
     Returns:
         Dictionary mapping series keys to sets of item IDs
     """
-    series_groups = {}
+    series_groups: dict = {}
     for item_id in items:
         item_data = all_items_dict.get(item_id, {})
 
@@ -522,7 +522,7 @@ def _group_items_by_episode_path(all_items_details) -> tuple[list, bool]:
     Returns:
         Tuple of (filtered_items list, is_movie_group bool)
     """
-    episode_path_groups = {}
+    episode_path_groups: dict = {}
     non_episode_items = []
 
     for item in all_items_details:
@@ -558,7 +558,7 @@ def _group_items_by_episode_path(all_items_details) -> tuple[list, bool]:
 def _deduplicate_movies_by_path(items_details) -> list:
     """Remove duplicate paths from movie items using dict tracking."""
     unique_items = []
-    seen_paths = {}
+    seen_paths: dict = {}
 
     for item in items_details:
         item_path = item.get("Path")
@@ -825,7 +825,7 @@ def _classify_items_by_type(items, ds) -> tuple[dict, list]:
     Returns:
         Tuple of (tv_episode_groups dict, movie_items list)
     """
-    tv_episode_groups = {}
+    tv_episode_groups: dict = {}
     movie_items = []
 
     for item in items:
@@ -892,7 +892,7 @@ def _union_movie_groups(ds, movie_items) -> int:
     update_count = 0
 
     # Group movies by provider ID
-    movie_groups_by_provider = {}
+    movie_groups_by_provider: dict = {}
     for item in movie_items:
         item_provider_id = item.get("provider_id", "unknown")
 
@@ -931,7 +931,7 @@ def identify_duplicates(provider_tables: dict, excluded_ids: list = None) -> dic
 
     excluded_ids = excluded_ids or []
     excluded_count = 0
-    duplicates = {}
+    duplicates: dict = {}
 
     for provider, id_table in provider_tables.items():
         duplicates[provider] = {}
@@ -1295,7 +1295,7 @@ def process_duplicate_groups(
     # Track statistics
     excluded_groups_count = 0
     excluded_titles = {}
-    decisions = []
+    decisions: list = []
 
     with tqdm(total=len(duplicate_groups), desc="Processing duplicate groups", unit="group") as progress_bar:
         for group in duplicate_groups:
@@ -1323,7 +1323,7 @@ def process_duplicate_groups(
             try:
                 decision = determine_items_to_delete(group, items_details, lang_priorities)
                 if decision:
-                    _enrich_and_add_decision(decision, items_details, base_url, api_key, decisions)
+                    _enrich_and_add_decision(decision, items_details, base_url, api_key or "", decisions)
             except Exception as e:
                 logger.error(f"Error processing group: {e}")
                 logger.debug(f"Group details: {group}")

@@ -5,8 +5,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from emby_dedupe.utils.config import (
     Config,
     ensure_cache_dir,

@@ -5,22 +5,15 @@ This module provides comprehensive behavioral tests for missing episode detectio
 enrichment with series metadata, and alternative detection methods.
 """
 
-from unittest.mock import Mock, patch, MagicMock
-from typing import List, Dict
+from unittest.mock import Mock, patch
 
 import httpx
-import pytest
 
 from emby_dedupe.api.missing_episodes import (
+    analyze_missing_episodes,
     enrich_episodes_with_series_metadata,
     get_missing_episodes,
     get_missing_episodes_alternative,
-    analyze_missing_episodes,
-    _get_user_id,
-    _fetch_series_metadata,
-    _parse_episodes_response,
-    _try_authenticated_missing_episodes,
-    _try_api_key_missing_episodes,
 )
 
 
@@ -263,7 +256,7 @@ class TestMissingEpisodes:
 
         mock_alternative.return_value = []
 
-        episodes = get_missing_episodes(client, "http://emby.local")
+        get_missing_episodes(client, "http://emby.local")
 
         mock_alternative.assert_called_once()
 

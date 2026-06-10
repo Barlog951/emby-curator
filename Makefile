@@ -85,13 +85,13 @@ coverage:
 # ============ Code Quality Commands ============
 
 lint:
-	ruff check emby_dedupe/
+	ruff check emby_dedupe/ tests/ dashboards/ scripts/
 
 lint-all:
-	ruff check emby_dedupe/ tests/
+	ruff check emby_dedupe/ tests/ dashboards/ scripts/
 
 lint-fix:
-	ruff check emby_dedupe/ --fix
+	ruff check emby_dedupe/ tests/ dashboards/ scripts/ --fix
 
 mypy:
 	mypy emby_dedupe/

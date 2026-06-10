@@ -7,7 +7,6 @@ on:
       - '**.py'
       - 'pyproject.toml'
       - 'requirements.txt'
-      - 'setup.py'
       - 'Makefile'
   pull_request:
     branches: [ main ]
@@ -15,7 +14,6 @@ on:
       - '**.py'
       - 'pyproject.toml'
       - 'requirements.txt'
-      - 'setup.py'
       - 'Makefile'
 
 jobs:

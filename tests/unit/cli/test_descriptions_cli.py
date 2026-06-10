@@ -8,7 +8,7 @@ paths without needing a live Emby/TMDB.
 from __future__ import annotations
 
 import argparse
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -24,8 +24,8 @@ from emby_dedupe.cli.descriptions import (
     _parse_lang_chain,
     _pick_updates,
     _preview_change,
-    _process_item,
     _print_fill_summary,
+    _process_item,
     _resolve_cache,
     _resolve_episode_series_tmdb,
     _resolve_tmdb_key,
@@ -33,7 +33,6 @@ from emby_dedupe.cli.descriptions import (
     _validate_args,
     run_descriptions_command,
 )
-
 
 # ---------------------------------------------------------------------------
 # _parse_lang_chain

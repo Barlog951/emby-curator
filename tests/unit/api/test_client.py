@@ -1,39 +1,36 @@
 """
 Tests for Emby API client functionality
 """
-import pytest
+from unittest.mock import Mock, patch
+
 import httpx
-from unittest.mock import patch, Mock, MagicMock
+import pytest
 
 from emby_dedupe.api.client import (
-    handle_host_and_port,
-    check_emby_connection,
-    get_library_id,
-    make_http_request,
-    fetch_and_process_media_items,
     build_provider_id_tables,
-    delete_item,
-    get_auth_token,
+    check_emby_connection,
     create_http_client,
+    delete_item,
     ensure_authenticated_for_delete,
+    fetch_and_process_media_items,
     fetch_items_details,
-    logout
+    get_auth_token,
+    get_library_id,
+    handle_host_and_port,
+    logout,
+    make_http_request,
 )
-from emby_dedupe.utils.constants import (
-    DEFAULT_PORT_HTTP,
-    DEFAULT_PORT_HTTPS,
-    DEFAULT_PORT_EMBY
-)
+from emby_dedupe.utils.constants import DEFAULT_PORT_HTTP, DEFAULT_PORT_HTTPS
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 
 
 class TestClient:
     """Tests for Emby API client functionality."""
-    
+
     def test_build_provider_id_tables(self):
         """Test building provider ID tables from media items."""
         provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "series_episode": {}, "library_name": "Test Library"}
-        
+
         # Create test media items
         media_items = [
             {
@@ -55,33 +52,33 @@ class TestClient:
                 }
             }
         ]
-        
+
         build_provider_id_tables(media_items, provider_tables)
-        
+
         # Check that provider IDs were extracted correctly
         assert "tt1234567" in provider_tables["imdb"]
         assert "1234" in provider_tables["tmdb"]
-        
+
         # Check that the same provider ID maps to both item IDs
         imdb_items = provider_tables["imdb"]["tt1234567"]
         tmdb_items = provider_tables["tmdb"]["1234"]
-        
+
         # Verify item counts
         assert len(imdb_items) == 2
         assert len(tmdb_items) == 2
-        
+
         # Verify item IDs
         assert imdb_items[0]["id"] == "12345"
         assert imdb_items[1]["id"] == "67890"
         assert tmdb_items[0]["id"] == "12345"
         assert tmdb_items[1]["id"] == "67890"
-        
+
         # Verify metadata
         for item in imdb_items:
             assert item["library_name"] == "Test Library"
             assert item["is_episode"] is False
             assert "provider_id" in item
-    
+
     def test_build_provider_id_tables_with_ignored_imdb(self):
         """Test that ignored IMDB IDs are skipped."""
         provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "series_episode": {}, "library_name": "Test Library"}
@@ -96,18 +93,18 @@ class TestClient:
                 }
             }
         ]
-        
+
         build_provider_id_tables(media_items, provider_tables)
-        
+
         # The IMDB ID should be ignored, but TMDB ID should be included
         assert "tt0000000" not in provider_tables["imdb"]
         assert "1234" in provider_tables["tmdb"]
-        
+
         # Verify the TMDB entry
         tmdb_items = provider_tables["tmdb"]["1234"]
         assert len(tmdb_items) == 1
         assert tmdb_items[0]["id"] == "12345"
-    
+
     def test_build_provider_id_tables_skips_folders(self):
         """Test that folders are skipped when building provider ID tables."""
         provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "series_episode": {}, "library_name": "Test Library"}
@@ -196,7 +193,7 @@ class TestClient:
 
         tmdb_items = provider_tables["tmdb"]["1234"]
         assert len(tmdb_items) == 3
-    
+
     def test_build_provider_id_tables_series_episode_grouping(self):
         """Test that episodes are grouped by SeriesName+Season+Episode even without provider IDs."""
         provider_tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "series_episode": {}, "library_name": "Test Library"}
@@ -261,11 +258,11 @@ class TestClient:
     def test_fetch_and_process_media_items(self, mock_make_http_request):
         """Test fetching and processing media items."""
         mock_client = Mock()
-        
+
         # Mock first response to get total count
         mock_total_response = Mock()
         mock_total_response.json.return_value = {"TotalRecordCount": 2}
-        
+
         # Mock second response with actual items
         mock_items_response = Mock()
         mock_items_response.json.return_value = {
@@ -288,21 +285,21 @@ class TestClient:
                 }
             ]
         }
-        
+
         # Configure the mock to return different responses for different calls
         mock_make_http_request.side_effect = [mock_total_response, mock_items_response]
-        
+
         # Call the function
         result = fetch_and_process_media_items(mock_client, "http://example.com", "lib1")
-        
+
         # Verify the result
         assert "imdb" in result
         assert "tt1234567" in result["imdb"]
         assert "tt7654321" in result["imdb"]
-        
+
         # Verify API calls
         assert mock_make_http_request.call_count == 2
-    
+
     @patch('emby_dedupe.api.client.make_http_request')
     @patch('emby_dedupe.api.client.ensure_authenticated_for_delete')
     def test_delete_item_success(self, mock_ensure_auth, mock_make_http_request):
@@ -310,47 +307,47 @@ class TestClient:
         mock_client = Mock()
         mock_response = Mock()
         mock_response.is_success = True
-        
+
         mock_make_http_request.return_value = mock_response
         mock_ensure_auth.return_value = ("auth_token", "user_id")
-        
+
         result = delete_item(
-            mock_client, "http://example.com", "item123", 
+            mock_client, "http://example.com", "item123",
             True, "username", "password", "api_key"
         )
-        
+
         assert result["status"] == "success"
         assert result["id"] == "item123"
         assert mock_ensure_auth.called
         mock_make_http_request.assert_called_once()
-    
+
     @patch('emby_dedupe.api.client.ensure_authenticated_for_delete')
     def test_delete_item_no_auth(self, mock_ensure_auth):
         """Test item deletion with authentication failure."""
         mock_client = Mock()
         mock_ensure_auth.return_value = (None, None)  # Auth failed
-        
+
         result = delete_item(
-            mock_client, "http://example.com", "item123", 
+            mock_client, "http://example.com", "item123",
             True, "username", "password", "api_key"
         )
-        
+
         assert result["status"] == "failed"
         assert "Authentication failed" in result["error"]
         assert not mock_client.request.called  # No request should be made
-    
+
     def test_delete_item_skipped(self):
         """Test item deletion in dry-run mode."""
         mock_client = Mock()
-        
+
         result = delete_item(
-            mock_client, "http://example.com", "item123", 
+            mock_client, "http://example.com", "item123",
             False, "username", "password", "api_key"
         )
-        
+
         assert result["status"] == "skipped"
         assert not mock_client.request.called  # No request should be made
-    
+
     @patch('emby_dedupe.api.client.hashlib')
     def test_get_auth_token_success(self, mock_hashlib):
         """Test successful authentication token retrieval."""
@@ -361,27 +358,27 @@ class TestClient:
             "User": {"Id": "user123"}
         }
         mock_client.post.return_value = mock_response
-        
+
         # Mock the SHA1 hash
         mock_sha = Mock()
         mock_sha.hexdigest.return_value = "hashed_password"
         mock_hashlib.sha1.return_value = mock_sha
-        
+
         token, user_id = get_auth_token(mock_client, "http://example.com", "testuser", "testpass")
-        
+
         assert token == "test_token"
         assert user_id == "user123"
         assert mock_client.post.called
-    
+
     @patch('emby_dedupe.api.client.get_auth_token')
     def test_create_http_client(self, mock_get_auth_token):
         """Test creating an HTTP client with authentication."""
         mock_get_auth_token.return_value = ("test_token", "user123")
-        
+
         client, token, user_id = create_http_client(
             "http://example.com", "testuser", "testpass"
         )
-        
+
         assert token == "test_token"
         assert user_id == "user123"
         assert "X-Emby-Token" in client.headers
@@ -393,7 +390,7 @@ class TestClient:
         host, port = handle_host_and_port("http://emby.example.com", None)
         assert host == "http://emby.example.com"
         assert port == DEFAULT_PORT_HTTP
-        
+
         # Test with https scheme
         host, port = handle_host_and_port("https://emby.example.com", None)
         assert host == "https://emby.example.com"
@@ -411,7 +408,7 @@ class TestClient:
         host, port = handle_host_and_port("http://emby.example.com:8080", 9090)
         assert host == "http://emby.example.com"
         assert port == 9090
-        
+
         # Argument port should be used if no port in URL
         host, port = handle_host_and_port("http://emby.example.com", 9090)
         assert host == "http://emby.example.com"
@@ -428,9 +425,9 @@ class TestClient:
         """Test checking Emby connection with successful response."""
         mock_client = Mock()
         mock_make_http_request.return_value = Mock()
-        
+
         result = check_emby_connection(mock_client, "http://emby.example.com:8096")
-        
+
         assert result is True
         mock_make_http_request.assert_called_once_with(
             mock_client, "GET", "http://emby.example.com:8096"
@@ -444,7 +441,7 @@ class TestClient:
             "Error", request=Mock(), response=Mock()
         )
         mock_make_http_request.side_effect.response.content = b"Error message"
-        
+
         with pytest.raises(EmbyServerConnectionError):
             check_emby_connection(mock_client, "http://emby.example.com:8096")
 
@@ -453,7 +450,7 @@ class TestClient:
         """Test checking Emby connection with request error."""
         mock_client = Mock()
         mock_make_http_request.side_effect = httpx.RequestError("Error", request=Mock())
-        
+
         with pytest.raises(EmbyServerConnectionError):
             check_emby_connection(mock_client, "http://emby.example.com:8096")
 
@@ -467,9 +464,9 @@ class TestClient:
             {"Name": "TV Shows", "Id": "lib2"}
         ]
         mock_make_http_request.return_value = mock_response
-        
+
         result = get_library_id(mock_client, "http://emby.example.com:8096", "Movies")
-        
+
         assert result == "lib1"
         mock_make_http_request.assert_called_once_with(
             mock_client, "GET", "http://emby.example.com:8096/Library/VirtualFolders"
@@ -485,9 +482,9 @@ class TestClient:
             {"Name": "TV Shows", "Id": "lib2"}
         ]
         mock_make_http_request.return_value = mock_response
-        
+
         result = get_library_id(mock_client, "http://emby.example.com:8096", "Music")
-        
+
         assert result is None
         mock_make_http_request.assert_called_once_with(
             mock_client, "GET", "http://emby.example.com:8096/Library/VirtualFolders"
@@ -500,9 +497,9 @@ class TestClient:
         mock_make_http_request.side_effect = httpx.HTTPStatusError(
             "Error", request=Mock(), response=Mock()
         )
-        
+
         result = get_library_id(mock_client, "http://emby.example.com:8096", "Movies")
-        
+
         assert result is None
 
     def test_make_http_request_success(self):
@@ -510,15 +507,15 @@ class TestClient:
         mock_client = Mock()
         mock_response = Mock()
         mock_client.request.return_value = mock_response
-        
+
         result = make_http_request(mock_client, "GET", "http://emby.example.com:8096/endpoint")
-        
+
         assert result == mock_response
         mock_client.request.assert_called_once_with(
             "GET", "http://emby.example.com:8096/endpoint", timeout=120
         )
         mock_response.raise_for_status.assert_called_once()
-    
+
     @patch('emby_dedupe.api.client.make_http_request')
     def test_fetch_items_details(self, mock_make_http_request):
         """Test fetching detailed information for media items."""
@@ -532,21 +529,21 @@ class TestClient:
             ]
         }
         mock_make_http_request.return_value = mock_response
-        
+
         result = fetch_items_details(mock_client, "http://example.com", ["item1", "item2"])
-        
+
         # Verify the result
         assert len(result) == 2
         assert result[0]["Id"] == "item1"
         assert result[1]["Id"] == "item2"
-        
+
         # Verify the API call
         mock_make_http_request.assert_called_once()
         call_args = mock_make_http_request.call_args
         assert call_args[0][2] == "http://example.com/Items"
         params = call_args[1]["params"]
         assert "item1,item2" in params["Ids"]
-    
+
     @patch('emby_dedupe.api.client.make_http_request')
     def test_fetch_items_details_error(self, mock_make_http_request):
         """Test error handling when fetching item details."""
@@ -554,26 +551,26 @@ class TestClient:
         mock_make_http_request.side_effect = httpx.HTTPStatusError(
             "Error", request=Mock(), response=Mock()
         )
-        
+
         result = fetch_items_details(mock_client, "http://example.com", ["item1", "item2"])
-        
+
         # Should return empty list on error
         assert result == []
         mock_make_http_request.assert_called_once()
-    
+
     @patch('emby_dedupe.api.client.get_auth_token')
     def test_ensure_authenticated_for_delete_success(self, mock_get_auth_token):
         """Test successful authentication for delete operations."""
         mock_get_auth_token.return_value = ("test_token", "user123")
-        
+
         token, user_id = ensure_authenticated_for_delete(
             Mock(), "http://example.com", "testuser", "testpass"
         )
-        
+
         assert token == "test_token"
         assert user_id == "user123"
         mock_get_auth_token.assert_called_once()
-    
+
     def test_ensure_authenticated_for_delete_missing_credentials(self):
         """Test authentication failure due to missing credentials."""
         # Just testing the basic principle - the function shouldn't
@@ -621,7 +618,7 @@ class TestClient:
                 # Restore original values to not affect other tests
                 client_module.auth_state.token_for_delete = original_token
                 client_module.auth_state.user_id = original_user_id
-    
+
     def test_ensure_authenticated_for_delete_auth_failure(self):
         """Test authentication failure when get_auth_token fails."""
         # Use a more direct approach to verify behavior when authentication fails
@@ -654,7 +651,7 @@ class TestClient:
                     # Restore original values to not affect other tests
                     client_module.auth_state.token_for_delete = original_token
                     client_module.auth_state.user_id = original_user_id
-    
+
     @patch('emby_dedupe.api.client.httpx')
     def test_logout_success(self, mock_httpx):
         """Test successful logout."""
@@ -662,22 +659,22 @@ class TestClient:
         mock_response = Mock()
         mock_response.raise_for_status.return_value = None
         mock_client.post.return_value = mock_response
-        
+
         # Mock logger to avoid actual logging
         with patch('emby_dedupe.api.client.logger'):
-            result = logout(mock_client, "http://example.com", "test_token")
-            
+            logout(mock_client, "http://example.com", "test_token")
+
             # Logout doesn't return anything, it's a procedure not a function
             # Just verify the correct calls were made
             mock_client.post.assert_called_once()
             url = mock_client.post.call_args[0][0]
             assert "http://example.com/Sessions/Logout" in url
-    
+
     def test_logout_failure(self):
         """Test logout failure."""
         mock_client = Mock()
         mock_client.post.side_effect = Exception("Logout failed")
-        
+
         # Mock logger to avoid actual logging
         with patch('emby_dedupe.api.client.logger'):
             # The logout function should catch any exceptions
@@ -687,7 +684,7 @@ class TestClient:
                 # If we reach here, the exception was caught as expected
             except Exception:
                 pytest.fail("logout() should have caught the exception")
-            
+
             # Verify the call was attempted
             mock_client.post.assert_called_once()
             url = mock_client.post.call_args[0][0]

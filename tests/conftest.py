@@ -1,10 +1,11 @@
 """
 Pytest configuration file with fixtures.
 """
-import os
 import json
+import os
+from unittest.mock import Mock
+
 import pytest
-from unittest.mock import Mock, patch
 
 
 @pytest.fixture

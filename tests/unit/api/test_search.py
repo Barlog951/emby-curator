@@ -1,17 +1,16 @@
 """Tests for search module."""
 
-import pytest
 from unittest.mock import Mock, patch
 
 from emby_dedupe.api.search import (
-    normalize_title,
-    titles_match,
-    search_by_name,
-    search_by_provider_id,
-    search_tv_episode,
     get_all_library_ids,
     get_library_ids_by_name,
+    normalize_title,
+    search_by_name,
+    search_by_provider_id,
     search_media,
+    search_tv_episode,
+    titles_match,
 )
 
 
@@ -105,7 +104,6 @@ class TestSearchByName:
     def test_search_by_name_handles_error(self):
         """Test that search_by_name handles HTTP errors."""
         import httpx
-        from unittest.mock import patch
         mock_client = Mock()
 
         with patch("emby_dedupe.api.search.make_http_request", side_effect=httpx.HTTPError("Connection error")):

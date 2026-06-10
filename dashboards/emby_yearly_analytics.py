@@ -255,13 +255,15 @@ def tab_monthly(df_watched, go, mo):
     _monthly["hours"] = (_monthly["duration_min"] / 60).round(1)
     _pivot_hrs = _monthly.pivot(index="month", columns="year", values="hours").fillna(0).round(1)
     _pivot_hrs.index = [_months[m - 1] for m in _pivot_hrs.index]
-    _pivot_hrs = _pivot_hrs.reset_index().rename(columns={"month": "Month"})
+    _pivot_hrs.index.name = "Month"
+    _pivot_hrs = _pivot_hrs.reset_index().rename(columns=str)
 
     # Session count per month per year
     _monthly_cnt = df_watched.groupby(["year", "month"]).size().reset_index(name="sessions")
     _pivot_cnt = _monthly_cnt.pivot(index="month", columns="year", values="sessions").fillna(0).astype(int)
     _pivot_cnt.index = [_months[m - 1] for m in _pivot_cnt.index]
-    _pivot_cnt = _pivot_cnt.reset_index().rename(columns={"month": "Month"})
+    _pivot_cnt.index.name = "Month"
+    _pivot_cnt = _pivot_cnt.reset_index().rename(columns=str)
 
     # Year-over-year line chart of watch hours per month
     _fig_monthly = go.Figure()

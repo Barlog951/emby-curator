@@ -1,9 +1,6 @@
 """Tests for emby_dedupe/api/genre_providers.py"""
-import json
 import time
-import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
 
 from emby_dedupe.api.genre_providers import (
     RateLimiter,

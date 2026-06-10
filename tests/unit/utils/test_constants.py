@@ -1,19 +1,17 @@
 """
 Tests for constants module
 """
-import os
-import pytest
 from emby_dedupe.utils.constants import (
-    ENV_DEDUPE_LOGGING,
-    ENV_DEDUPE_EMBY_HOST,
-    ENV_DEDUPE_EMBY_PORT,
-    ENV_DEDUPE_EMBY_API_KEY,
-    ENV_DEDUPE_EMBY_LIBRARY,
-    ENV_DEDUPE_DOIT,
+    DEFAULT_PORT_EMBY,
     DEFAULT_PORT_HTTP,
     DEFAULT_PORT_HTTPS,
-    DEFAULT_PORT_EMBY,
-    should_quality_override_language
+    ENV_DEDUPE_DOIT,
+    ENV_DEDUPE_EMBY_API_KEY,
+    ENV_DEDUPE_EMBY_HOST,
+    ENV_DEDUPE_EMBY_LIBRARY,
+    ENV_DEDUPE_EMBY_PORT,
+    ENV_DEDUPE_LOGGING,
+    should_quality_override_language,
 )
 
 

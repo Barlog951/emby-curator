@@ -4,8 +4,7 @@ Tests for CLI missing episodes command
 import json
 from argparse import Namespace
 from datetime import datetime
-from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 

@@ -1,15 +1,12 @@
 """
 Tests for HTTP utilities
 """
-import pytest
-import httpx
 from unittest.mock import Mock, patch
 
-from emby_dedupe.utils.http import (
-    should_give_up,
-    handle_giveup,
-    make_http_request
-)
+import httpx
+import pytest
+
+from emby_dedupe.utils.http import handle_giveup, make_http_request, should_give_up
 
 
 class TestHttpUtils:
@@ -22,9 +19,9 @@ class TestHttpUtils:
         mock_response.status_code = 404
         error = Mock(spec=httpx.HTTPStatusError)
         error.response = mock_response
-        
+
         result = should_give_up(error)
-        
+
         assert result is True
 
     def test_should_give_up_server_error(self):
@@ -34,18 +31,18 @@ class TestHttpUtils:
         mock_response.status_code = 500
         error = Mock(spec=httpx.HTTPStatusError)
         error.response = mock_response
-        
+
         result = should_give_up(error)
-        
+
         assert result is False
 
     def test_should_give_up_non_http_error(self):
         """Test that should_give_up returns False for non-HTTP errors."""
         # Not an HTTPStatusError
         error = httpx.RequestError("Connection error", request=Mock())
-        
+
         result = should_give_up(error)
-        
+
         assert result is False
 
     def test_handle_giveup_generic(self):
@@ -74,9 +71,9 @@ class TestHttpUtils:
         mock_client = Mock()
         mock_response = Mock()
         mock_client.request.return_value = mock_response
-        
+
         result = make_http_request(mock_client, 'GET', 'http://example.com')
-        
+
         assert result == mock_response
         mock_client.request.assert_called_once_with('GET', 'http://example.com', timeout=120)
         mock_response.raise_for_status.assert_called_once()
@@ -86,9 +83,9 @@ class TestHttpUtils:
         mock_client = Mock()
         mock_response = Mock()
         mock_client.request.return_value = mock_response
-        
+
         result = make_http_request(mock_client, 'GET', 'http://example.com', timeout=60)
-        
+
         assert result == mock_response
         mock_client.request.assert_called_once_with('GET', 'http://example.com', timeout=60)
 
@@ -97,13 +94,13 @@ class TestHttpUtils:
         mock_client = Mock()
         mock_response = Mock()
         mock_client.request.return_value = mock_response
-        
+
         result = make_http_request(
             mock_client, 'POST', 'http://example.com',
             json={'key': 'value'},
             headers={'Content-Type': 'application/json'}
         )
-        
+
         assert result == mock_response
         mock_client.request.assert_called_once_with(
             'POST', 'http://example.com',
@@ -117,19 +114,19 @@ class TestHttpUtils:
         """Test make_http_request with an error response."""
         # Mock backoff to not apply retries
         mock_backoff.on_exception.return_value = lambda f: f
-        
+
         mock_client = Mock()
         mock_response = Mock()
         mock_response.status_code = 404
-        
+
         # Create a properly structured HTTPStatusError
         error = httpx.HTTPStatusError(
-            "Error", 
-            request=Mock(), 
+            "Error",
+            request=Mock(),
             response=mock_response
         )
         mock_client.request.side_effect = error
-        
+
         # Test that the error is propagated
         with pytest.raises(httpx.HTTPStatusError):
             make_http_request(mock_client, 'GET', 'http://example.com')

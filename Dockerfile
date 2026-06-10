@@ -25,9 +25,9 @@ WORKDIR /build
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Copy source code and setup file
+# Copy source code and project metadata
 COPY emby_dedupe/ ./emby_dedupe/
-COPY setup.py .
+COPY pyproject.toml README.md ./
 COPY requirements.txt .
 
 # Install the package and its dependencies
@@ -48,7 +48,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy the built application from the build stage to the final stage
 COPY --from=build-stage /build/emby_dedupe /app/emby_dedupe
-COPY --from=build-stage /build/setup.py /app/
+COPY --from=build-stage /build/pyproject.toml /app/
 
 # Copy everything from rootfs to the root of the container
 COPY rootfs/ /
