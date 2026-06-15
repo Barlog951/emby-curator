@@ -28,7 +28,7 @@ jobs:
           python-version: '3.14'
           
       - name: Cache pip dependencies
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ~/.cache/pip
           key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
@@ -54,7 +54,7 @@ jobs:
         run: pytest --cov-report xml --cov=emby_dedupe
         
       - name: Upload coverage report
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: ./coverage.xml
           fail_ci_if_error: false
