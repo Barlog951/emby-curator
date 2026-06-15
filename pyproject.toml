@@ -3,16 +3,19 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "emby-dedupe"
-version = "2.0.0"
-description = "A tool for deduplicating media items in Emby libraries"
+name = "emby-curator"
+version = "3.0.0"
+description = "Curate Emby libraries: deduplicate, localize genres & descriptions, clean up stale media, and analyze missing episodes"
 readme = "README.md"
 requires-python = ">=3.12"
-keywords = ["emby", "deduplication", "media", "server"]
+keywords = ["emby", "media", "library", "curation", "deduplication", "genres", "metadata", "cleanup"]
+authors = [
+    { name = "Barlog951", email = "9975572+Barlog951@users.noreply.github.com" },
+]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -46,7 +49,14 @@ dev = [
     "requests>=2.32.5",
 ]
 
+[project.urls]
+Homepage = "https://github.com/Barlog951/emby-dedupe"
+Repository = "https://github.com/Barlog951/emby-dedupe"
+"Original Project" = "https://github.com/troykelly/emby-dedupe"
+Changelog = "https://github.com/Barlog951/emby-dedupe/blob/main/CHANGELOG.md"
+
 [project.scripts]
+emby-curator = "emby_dedupe.cli.app:main"
 emby-dedupe = "emby_dedupe.cli.app:main"
 
 [tool.setuptools.packages.find]

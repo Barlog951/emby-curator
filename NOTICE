@@ -1,0 +1,16 @@
+emby-curator
+Copyright 2026 Barlog951
+
+This product is a maintained fork of "emby-dedupe"
+(https://github.com/troykelly/emby-dedupe) by Troy Kelly, which has been
+inactive since May 2024.
+
+Both the original work and this fork are licensed under the Apache License,
+Version 2.0 (see the LICENSE file).
+
+Significant changes have been made in this fork, including: a full package
+refactor; genre management (audit/normalize/fill from TMDB/OMDb); Slavic
+(SK/CZ) description and title localization with persistent caching; library
+cleanup with rating-decay protection; missing-episode and franchise-gap
+analysis; quality comparison; marimo analytics dashboards; a 1000+ test suite;
+and CI/CD. See CHANGELOG.md for details.

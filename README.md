@@ -1,17 +1,14 @@
-# Emby Deduplication Tool
+# Emby Curator
 
-The Emby Deduplication Tool assists in managing media libraries on Emby servers by identifying potential duplicate items. It compares media items within your Emby library and generates a report detailing duplicates that may warrant removal.
+**Emby Curator** keeps your Emby media libraries in order. It deduplicates media, localizes genres and descriptions (SK/CZ from TMDB/OMDb), cleans up stale unwatched content with rating-decay protection, and analyzes missing episodes and franchise gaps — with terminal and HTML reports throughout.
 
-## Latest Versions
-
-![GitHub release (latest by date)](https://img.shields.io/github/v/release/troykelly/emby-dedupe)
-![GitHub release (latest by date including pre-releases)](https://img.shields.io/github/v/release/troykelly/emby-dedupe?include_prereleases&label=pre-release)
+> **Maintained fork.** Emby Curator is a fork of [emby-dedupe](https://github.com/troykelly/emby-dedupe) by Troy Kelly, which has been inactive since May 2024. It has been substantially rewritten and extended (genre management, description/title localization, library cleanup, missing-episode analysis, analytics dashboards, a 1000+ test suite, and CI/CD). Distributed under the Apache License 2.0 — see [NOTICE](NOTICE) and [CHANGELOG.md](CHANGELOG.md).
 
 ## Build Status
 
-![Release Build Status](https://github.com/troykelly/emby-dedupe/actions/workflows/release.yaml/badge.svg)
-![Python Tests](https://github.com/troykelly/emby-dedupe/actions/workflows/python-test.yaml/badge.svg)
-![Security Scan](https://github.com/troykelly/emby-dedupe/actions/workflows/security-scan.yaml/badge.svg)
+![Python Tests](https://github.com/Barlog951/emby-dedupe/actions/workflows/python-test.yaml/badge.svg)
+![Security Scan](https://github.com/Barlog951/emby-dedupe/actions/workflows/security-scan.yaml/badge.svg)
+![Edge Container Build](https://github.com/Barlog951/emby-dedupe/actions/workflows/edge.yaml/badge.svg)
 
 The following architectures are supported in the latest Docker version:
 
@@ -19,8 +16,8 @@ The following architectures are supported in the latest Docker version:
 |-----------------|--------------------|
 | `amd64`         | :white_check_mark: |
 | `arm64`         | :white_check_mark: |
-| `arm/v7`        | :white_check_mark: |
-| `arm/v6`        | :white_check_mark: |
+| `arm/v7`        | :x:                |
+| `arm/v6`        | :x:                |
 | `i386`          | :x:                |
 
 ## Table of Contents
