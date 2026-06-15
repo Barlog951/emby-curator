@@ -471,8 +471,15 @@ def get_codec_multiplier_with_rtn(codec: Optional[str], path: Optional[str] = No
 
 
 @dataclass
-class ProposedQuality:
-    """Quality information for a proposed (torrent) item."""
+class MediaQualityFields:
+    """Media-quality descriptor fields shared by ProposedQuality and CheckConfig.
+
+    These attributes describe the technical quality of a media item and evolve
+    together; both the proposed-item quality model and the check-input config
+    carry the identical set, so they are declared here once. All fields are
+    keyword-only in practice (every construction site uses keywords), so the
+    inherited __init__ ordering is not relied upon.
+    """
 
     resolution: Optional[str] = None
     codec: Optional[str] = None
@@ -482,8 +489,14 @@ class ProposedQuality:
     size_mb: Optional[int] = None
     bitrate_kbps: Optional[int] = None
     path: Optional[str] = None
-    name: Optional[str] = None
     source_quality_tier: Optional[str] = None
+
+
+@dataclass
+class ProposedQuality(MediaQualityFields):
+    """Quality information for a proposed (torrent) item."""
+
+    name: Optional[str] = None
     is_ai_upscale: bool = False
 
     def get_resolution_pixels(self) -> int:
