@@ -111,11 +111,31 @@ this is a careful simplification, not a blind swap.
 
 ---
 
-## Recommended order
-1. Pagination generator (#1) — biggest cleanup, no dep, low risk
-2. Cache consolidation (#2) — `diskcache` or shared util (your call on the dep)
-3. File-size helper (#3) — quick DRY win
-4. Date parsing (#4) — careful, medium value
-(skip #5)
+## OUTCOME (2026-06-16)
 
-Each is independent and test-backed (1,046 tests). Do one, run pytest, commit.
+Did the two genuine code-duplication fixes; re-examined #3/#4 under the
+devil's-advocate rule and **skipped both** — closer inspection showed each was
+net-negative (new dep / behaviour change for ~zero real gain).
+
+- **#1 DONE** — `api/pagination.py::paginate_emby_items` replaces all 5 loops.
+  Net −84 lines, no new dep. Commit `b7549c1`.
+- **#2 DONE** — `utils/json_cache.py` shared by both caches (kept JSON, no
+  `diskcache` dep: caches are load-once/save-once so the concurrency win was
+  moot and a live-cache migration on emby-gpu was avoidable). Commit `ebd8665`.
+- **#3 SKIPPED** — the 3 size formatters have *intentionally different* tested
+  output (`"512 B"` vs `"512 bytes"`, `.1f` vs `.2f`, `"Unknown"`/`"unknown"`/`"0 B"`).
+  Unifying changes user-facing report text for marginal LOC savings. Not worth it.
+- **#4 SKIPPED** — premise was wrong: on Python 3.12+ (this project's floor)
+  stdlib `datetime.fromisoformat` already parses Emby's `Z`/offset/fractional
+  timestamps. The parsing is already stdlib-correct; the verbosity is the
+  intentional multi-field fallback ladder, not parsing reinvention. `dateutil`
+  would add a dep for ~0 gain plus behaviour-change risk.
+
+Also reviewed and left alone (not reinvention): `RateLimiter` (minimal+correct),
+`_format_days_left` (compact table format), `backoff` retry (already a lib),
+`difflib`/`argparse` (those *are* the stdlib libs), `config.py` merge
+(`pydantic-settings` optional, high-risk swap), manual console tables
+(deliberate plain-text style; HTML side already uses Jinja).
+
+Net result: 2 real reinventions removed (−~110 lines of duplication), no new
+dependencies, 1,046 tests green, ruff + mypy clean.
