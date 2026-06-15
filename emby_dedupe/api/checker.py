@@ -40,6 +40,7 @@ from emby_dedupe.api.client import (
 )
 from emby_dedupe.api.quality_compare import (
     ComparisonResult,
+    MediaQualityFields,
     ProposedQuality,
     compare_quality,
 )
@@ -50,10 +51,12 @@ from emby_dedupe.utils.logging import logger
 
 
 @dataclass
-class CheckConfig:
+class CheckConfig(MediaQualityFields):
     """Configuration for media quality check.
 
     Bundles all parameters needed for check() and should_download() methods.
+    The media-quality descriptor fields are inherited from MediaQualityFields;
+    only the identification fields are declared here.
     """
 
     name: Optional[str] = None
@@ -63,15 +66,6 @@ class CheckConfig:
     tvdb: Optional[str] = None
     season: Optional[int] = None
     episode: Optional[int] = None
-    resolution: Optional[str] = None
-    codec: Optional[str] = None
-    hdr: Optional[str] = None
-    audio: Optional[str] = None
-    audio_languages: Optional[list[str]] = None
-    size_mb: Optional[int] = None
-    bitrate_kbps: Optional[int] = None
-    path: Optional[str] = None
-    source_quality_tier: Optional[str] = None
 
 
 class EmbyChecker:
