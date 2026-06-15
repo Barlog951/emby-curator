@@ -15,12 +15,11 @@ network calls.
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 from typing import Optional
 
-from emby_dedupe.utils.logging import logger
+from emby_dedupe.utils.json_cache import load_json_cache, save_json_cache
 
 CACHE_PATH = Path.home() / ".cache" / "emby-dedupe" / "description-cache.json"
 
@@ -52,23 +51,12 @@ def build_episode_key(series_tmdb_id: str, season: int, episode: int) -> str:
 
 def load_cache() -> dict:
     """Load the cache from disk.  Returns {} on missing or corrupt file."""
-    try:
-        if CACHE_PATH.exists():
-            return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning(f"Could not load description cache: {e}")
-    return {}
+    return load_json_cache(CACHE_PATH, label="description cache")
 
 
 def save_cache(cache: dict) -> None:
     """Write the cache to disk atomically via a sibling ``.tmp`` file."""
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = CACHE_PATH.with_suffix(".tmp")
-    try:
-        tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(CACHE_PATH)
-    except OSError as e:
-        logger.warning(f"Could not save description cache: {e}")
+    save_json_cache(CACHE_PATH, cache, label="description cache")
 
 
 def is_fresh(entry: Optional[dict], ttl_seconds: int = DEFAULT_TTL_SECONDS) -> bool:
