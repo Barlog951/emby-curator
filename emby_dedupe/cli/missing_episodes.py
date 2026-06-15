@@ -25,6 +25,7 @@ from emby_dedupe.cli.arguments import (
     override_warning,
     validate_required_arguments,
 )
+from emby_dedupe.cli.errors import cli_error_boundary
 from emby_dedupe.utils.constants import (
     ENV_DEDUPE_EMBY_API_KEY,
     ENV_DEDUPE_EMBY_HOST,
@@ -36,7 +37,6 @@ from emby_dedupe.utils.constants import (
     ENV_DEDUPE_HTML_REPORT,
     ENV_DEDUPE_LOGGING,
 )
-from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.file_ops import dump_object_to_file
 from emby_dedupe.utils.logging import logger, set_logging_level
 
@@ -374,7 +374,7 @@ def run_missing_episodes_command(args) -> None:
         f"Libraries: {', '.join(library)}"
     )
 
-    try:
+    with cli_error_boundary("during missing episodes search"):
         base_url = f"{validated_host}:{validated_port}"
         client = httpx.Client(headers={"X-Emby-Token": api_key})
 
@@ -399,17 +399,3 @@ def run_missing_episodes_command(args) -> None:
 
         # Log final summary
         _log_final_summary(analysis_results)
-
-    except EmbyServerConnectionError as e:
-        logger.error(str(e))
-        sys.exit(1)
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to decode JSON: {str(e)}")
-        sys.exit(1)
-    except httpx.TimeoutException as e:
-        logger.error(f"HTTP request timed out: {str(e)}")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during missing episodes search: {str(e)}")
-        logger.error(e)
-        sys.exit(1)
