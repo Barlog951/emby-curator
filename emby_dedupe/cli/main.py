@@ -2,7 +2,6 @@
 Main command-line interface for the Emby Dedupe tool.
 """
 
-import json
 import logging
 import sys
 from pathlib import Path
@@ -39,6 +38,7 @@ from emby_dedupe.cli.arguments import (
     parse_args,
     validate_required_arguments,
 )
+from emby_dedupe.cli.errors import cli_error_boundary
 from emby_dedupe.reports.html import generate_html_report
 from emby_dedupe.reports.markdown import output_report_to_stdout
 from emby_dedupe.utils.constants import (
@@ -56,7 +56,6 @@ from emby_dedupe.utils.constants import (
     ENV_DEDUPE_LOGGING,
     LANGUAGE_NORMALIZATION_MAP,
 )
-from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.file_ops import dump_object_to_file
 from emby_dedupe.utils.logging import logger, set_logging_level
 
@@ -420,37 +419,23 @@ def main() -> None:
         f"Libraries: {', '.join(library)}, DoIt: {doit}"
     )
 
+    base_url = f"{validated_host}:{validated_port}"
+    client = httpx.Client(headers={"X-Emby-Token": api_key})
+
     try:
-        base_url = f"{validated_host}:{validated_port}"
-        client = httpx.Client(headers={"X-Emby-Token": api_key})
+        with cli_error_boundary():
+            # Connect and fetch provider tables from all libraries
+            all_provider_tables = _connect_and_fetch_libraries(client, base_url, library)
 
-        # Connect and fetch provider tables from all libraries
-        all_provider_tables = _connect_and_fetch_libraries(client, base_url, library)
+            # Run deduplication pipeline
+            decisions, exclusion_metadata, markdown_report = _run_deduplication_pipeline(
+                client, base_url, all_provider_tables, excluded_ids, lang_priorities,
+                api_key, doit, username, password
+            )
 
-        # Run deduplication pipeline
-        decisions, exclusion_metadata, markdown_report = _run_deduplication_pipeline(
-            client, base_url, all_provider_tables, excluded_ids, lang_priorities,
-            api_key, doit, username, password
-        )
-
-        # Generate reports
-        _generate_reports(base_url, decisions, exclusion_metadata, excluded_ids,
-                         lang_priorities, markdown_report, html_report, html_only, no_open)
-
-    except EmbyServerConnectionError as e:
-        logger.error(str(e))
-        sys.exit(1)
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to decode JSON: {str(e)}")
-        sys.exit(1)
-    except httpx.TimeoutException as e:
-        logger.error(f"HTTP request timed out: {str(e)}")
-        sys.exit(1)
-    except Exception as e:
-        # Catch-all for any other unexpected exceptions
-        logger.error(f"An unexpected error occurred: {str(e)}")
-        logger.error(e)
-        sys.exit(1)
+            # Generate reports
+            _generate_reports(base_url, decisions, exclusion_metadata, excluded_ids,
+                             lang_priorities, markdown_report, html_report, html_only, no_open)
     finally:
         if _client_mod.auth_state.token_for_delete and doit:
             logout(client, base_url, _client_mod.auth_state.token_for_delete)
