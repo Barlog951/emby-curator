@@ -879,7 +879,7 @@ class TestSeriesCleanupCandidate:
 class TestBuildLastEpisodeAddedMap:
     """Tests for _build_last_episode_added_map."""
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_groups_by_series_id_and_takes_max(self, mock_req):
         """Multiple episodes per series — max DateCreated is kept."""
         mock_req.return_value = _make_response({
@@ -896,7 +896,7 @@ class TestBuildLastEpisodeAddedMap:
         assert result["s1"] == "2022-06-15T00:00:00Z"
         assert result["s2"] == "2023-01-01T00:00:00Z"
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_empty_response(self, mock_req):
         """Empty episode list returns empty map."""
         mock_req.return_value = _make_response({"Items": [], "TotalRecordCount": 0})
@@ -904,7 +904,7 @@ class TestBuildLastEpisodeAddedMap:
         result = _build_last_episode_added_map(client, "http://emby", ["lib1"])
         assert result == {}
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_skips_episodes_without_series_id(self, mock_req):
         """Episodes with empty/missing SeriesId are ignored."""
         mock_req.return_value = _make_response({
@@ -920,7 +920,7 @@ class TestBuildLastEpisodeAddedMap:
         assert len(result) == 1
         assert "s1" in result
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_pagination(self, mock_req):
         """Handles paginated responses correctly."""
         # First page: 2 items, total 3
@@ -1048,7 +1048,7 @@ class TestCheckSeriesPlayAndFavorites:
 class TestCalculateSeriesSizes:
     """Tests for _calculate_series_sizes."""
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_sums_episode_sizes(self, mock_req):
         """Total size is sum of all episode Size fields."""
         mock_req.return_value = _make_response({
@@ -1063,7 +1063,7 @@ class TestCalculateSeriesSizes:
         result = _calculate_series_sizes(client, "http://emby", ["s1"])
         assert result["s1"] == 3_500_000_000
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_none_size_treated_as_zero(self, mock_req):
         """Size=None in episode → treated as 0."""
         mock_req.return_value = _make_response({
@@ -1078,7 +1078,7 @@ class TestCalculateSeriesSizes:
         result = _calculate_series_sizes(client, "http://emby", ["s1"])
         assert result["s1"] == 1_000_000
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_empty_series(self, mock_req):
         """Series with no episodes returns 0 bytes."""
         mock_req.return_value = _make_response({"Items": [], "TotalRecordCount": 0})
@@ -1399,7 +1399,7 @@ class TestPaginatedFetchLibrary:
 
     ENDPOINT = "http://emby/Items"
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_single_page_items_tagged_with_library(self, mock_req):
         """Items are tagged with _library_name and _library_id."""
         mock_req.return_value = _make_response({
@@ -1416,7 +1416,7 @@ class TestPaginatedFetchLibrary:
         assert all(i["_library_id"] == "lib1" for i in items)
         assert mock_req.call_count == 1
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_multiple_pages_combined(self, mock_req):
         """Paginated responses are fetched until TotalRecordCount is reached."""
         page1 = _make_response({"Items": [{"Id": "m1"}, {"Id": "m2"}], "TotalRecordCount": 3})
@@ -1430,7 +1430,7 @@ class TestPaginatedFetchLibrary:
         assert [i["Id"] for i in items] == ["m1", "m2", "m3"]
         assert mock_req.call_count == 2
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_request_error_returns_partial_results(self, mock_req):
         """An HTTP error on a later page stops pagination but keeps earlier items."""
         page1 = _make_response({"Items": [{"Id": "m1"}], "TotalRecordCount": 5})
@@ -1442,7 +1442,7 @@ class TestPaginatedFetchLibrary:
         )
         assert [i["Id"] for i in items] == ["m1"]
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_error_on_first_page_returns_empty(self, mock_req):
         """An HTTP error on the first page returns an empty list, no crash."""
         mock_req.side_effect = httpx.RequestError("server down")
@@ -1453,7 +1453,7 @@ class TestPaginatedFetchLibrary:
         )
         assert items == []
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_empty_page_with_nonzero_total_stops(self, mock_req):
         """An empty page with TotalRecordCount > 0 must not loop forever."""
         mock_req.return_value = _make_response({"Items": [], "TotalRecordCount": 5})
@@ -1570,7 +1570,7 @@ class TestFetchAllUsers:
 class TestFetchAllLibraryMovies:
     """Tests for _fetch_all_library_movies (DA fix #12)."""
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_uses_movie_type_filter_and_user_scoped_endpoint(self, mock_req):
         """Query must use IncludeItemTypes=Movie on the user-scoped endpoint."""
         mock_req.return_value = _make_response({
@@ -1599,7 +1599,7 @@ class TestFetchAllLibraryMovies:
 class TestFetchAllLibrarySeries:
     """Tests for _fetch_all_library_series."""
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_uses_series_type_filter_and_user_scoped_endpoint(self, mock_req):
         """Query must use IncludeItemTypes=Series and request RecursiveItemCount."""
         mock_req.return_value = _make_response({
@@ -1730,7 +1730,7 @@ class TestCountActorsInItems:
 class TestBuildTopActorsFromWatchHistory:
     """Tests for _build_top_actors_from_watch_history (fallback path)."""
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_collects_actors_across_pages(self, mock_req):
         """Actor names are accumulated over multiple paginated responses."""
         page1 = _make_response({
@@ -1750,7 +1750,7 @@ class TestBuildTopActorsFromWatchHistory:
         assert result == {"Tom Hanks", "Robin Wright"}
         assert mock_req.call_count == 2
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_queries_played_movies_for_primary_user(self, mock_req):
         """Query is scoped to the primary user with Filters=IsPlayed."""
         mock_req.return_value = _make_response({"Items": [], "TotalRecordCount": 0})
@@ -1761,7 +1761,7 @@ class TestBuildTopActorsFromWatchHistory:
         assert params["Filters"] == "IsPlayed"
         assert params["IncludeItemTypes"] == "Movie"
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_request_error_returns_partial(self, mock_req):
         """An error on a later page keeps the actors counted so far."""
         page1 = _make_response({
@@ -1773,7 +1773,7 @@ class TestBuildTopActorsFromWatchHistory:
         result = _build_top_actors_from_watch_history(client, "http://emby", "uid1")
         assert result == {"Tom Hanks"}
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_limits_to_top_50_actors(self, mock_req):
         """At most _FALLBACK_TOP_N (50) actors are returned."""
         items = [
@@ -1933,7 +1933,7 @@ class TestCheckSeriesPlayAndFavoritesErrors:
 class TestBuildLastEpisodeAddedMapErrors:
     """Error-path tests for _build_last_episode_added_map."""
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_request_error_returns_empty_map(self, mock_req):
         """HTTP failure while fetching episodes returns an empty staleness map."""
         mock_req.side_effect = httpx.RequestError("boom")
@@ -1950,7 +1950,7 @@ class TestBuildLastEpisodeAddedMapErrors:
 class TestCalculateSeriesSizesErrors:
     """Error-path tests for _calculate_series_sizes."""
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_request_error_yields_zero_size(self, mock_req):
         """HTTP failure for a series records 0 bytes instead of crashing."""
         mock_req.side_effect = httpx.RequestError("boom")
@@ -1958,7 +1958,7 @@ class TestCalculateSeriesSizesErrors:
         result = _calculate_series_sizes(client, "http://emby", ["s1"])
         assert result["s1"] == 0
 
-    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    @patch("emby_dedupe.api.pagination.make_http_request")
     def test_error_on_one_series_does_not_affect_others(self, mock_req):
         """A failed series gets 0 bytes; subsequent series are still summed."""
         mock_req.side_effect = [

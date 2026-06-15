@@ -18,6 +18,7 @@ from typing import Optional
 import httpx
 from tqdm import tqdm
 
+from emby_dedupe.api.pagination import paginate_emby_items
 from emby_dedupe.models.cleanup import (
     CleanupCandidate,
     CleanupConfig,
@@ -227,24 +228,12 @@ def _paginated_fetch_library(
     """
     items: list[dict] = []
     params = {**base_params, "ParentId": lib_id}
-    start_index = 0
-    page = 0
 
     progress: tqdm | None = None
     try:
-        while True:
-            params["StartIndex"] = str(start_index)
-            try:
-                response = make_http_request(client, "GET", endpoint, params=params)
-                data = response.json()
-            except (httpx.HTTPStatusError, httpx.RequestError) as e:
-                logger.error(f"Failed to fetch from library {lib_id} page {page}: {e}")
-                break
-
-            page_items = data.get("Items", [])
-            total = data.get("TotalRecordCount", 0)
-            count = len(page_items)
-
+        for page_items, total in paginate_emby_items(
+            client, endpoint, params, error_context=f"fetch from library {lib_id}"
+        ):
             if progress is None:
                 progress = tqdm(total=total, desc=f"{progress_label} '{lib_name}'", unit=progress_unit)
 
@@ -253,14 +242,7 @@ def _paginated_fetch_library(
                 item["_library_id"] = lib_id
 
             items.extend(page_items)
-            progress.update(count)
-            logger.debug(f"Library {lib_id} page {page}: {count}/{total}")
-
-            start_index += count
-            page += 1
-
-            if start_index >= total or count == 0:
-                break
+            progress.update(len(page_items))
     finally:
         if progress is not None:
             progress.close()
@@ -504,34 +486,18 @@ def _build_top_actors_from_watch_history(
     }
 
     actor_counter: Counter = Counter()
-    start_index = 0
-    page = 0
 
     progress: tqdm | None = None
     try:
-        while True:
-            params["StartIndex"] = str(start_index)
-            try:
-                response = make_http_request(client, "GET", endpoint, params=params)
-                data = response.json()
-            except (httpx.HTTPStatusError, httpx.RequestError) as e:
-                logger.error(f"Failed to fetch played movies for actor counting (page {page}): {e}")
-                break
-
-            page_items = data.get("Items", [])
-            total = data.get("TotalRecordCount", 0)
-            count = len(page_items)
-
+        for page_items, total in paginate_emby_items(
+            client, endpoint, params,
+            error_context="fetch played movies for actor counting",
+        ):
             if progress is None:
                 progress = tqdm(total=total, desc=f"Building top-{_FALLBACK_TOP_N} actors from watch history", unit="movie")
 
             _count_actors_in_items(page_items, actor_counter)
-            progress.update(count)
-            start_index += count
-            page += 1
-
-            if start_index >= total or count == 0:
-                break
+            progress.update(len(page_items))
     finally:
         if progress is not None:
             progress.close()
@@ -769,34 +735,17 @@ def _fetch_library_episodes(
         episode_map: Mutable mapping updated in place with latest DateCreated per SeriesId.
     """
     params = {**base_params, "ParentId": lib_id}
-    start_index = 0
-    page = 0
     progress: tqdm | None = None
 
     try:
-        while True:
-            params["StartIndex"] = str(start_index)
-            try:
-                response = make_http_request(client, "GET", endpoint, params=params)
-                data = response.json()
-            except (httpx.HTTPStatusError, httpx.RequestError) as e:
-                logger.error(f"Failed to fetch episodes from library {lib_id} page {page}: {e}")
-                break
-
-            page_items = data.get("Items", [])
-            total = data.get("TotalRecordCount", 0)
-            count = len(page_items)
-
+        for page_items, total in paginate_emby_items(
+            client, endpoint, params, error_context=f"fetch episodes from library {lib_id}"
+        ):
             if progress is None:
                 progress = tqdm(total=total, desc="Fetching episodes for staleness", unit="ep")
 
             _update_episode_map(episode_map, page_items)
-            progress.update(count)
-            start_index += count
-            page += 1
-
-            if start_index >= total or count == 0:
-                break
+            progress.update(len(page_items))
     finally:
         if progress is not None:
             progress.close()
@@ -977,26 +926,12 @@ def _calculate_series_sizes(
             "Limit": str(PAGE_SIZE),
         }
         total_size = 0
-        start_index = 0
-
-        while True:
-            params["StartIndex"] = str(start_index)
-            try:
-                response = make_http_request(client, "GET", endpoint, params=params)
-                data = response.json()
-            except (httpx.HTTPStatusError, httpx.RequestError) as e:
-                logger.warning(f"Failed to fetch episode sizes for series {series_id}: {e}")
-                break
-
-            page_items = data.get("Items", [])
-            total_count = data.get("TotalRecordCount", 0)
-
+        for page_items, _total in paginate_emby_items(
+            client, endpoint, params,
+            error_context=f"fetch episode sizes for series {series_id}",
+        ):
             for ep in page_items:
                 total_size += ep.get("Size") or 0
-
-            start_index += len(page_items)
-            if start_index >= total_count or len(page_items) == 0:
-                break
 
         size_map[series_id] = total_size
 

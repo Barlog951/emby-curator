@@ -354,7 +354,7 @@ class TestFetchItemsWithGenres:
     def test_returns_empty_on_request_error(self, mocker):
         mock_client = mocker.MagicMock()
         mocker.patch(
-            "emby_dedupe.api.genres.make_http_request",
+            "emby_dedupe.api.pagination.make_http_request",
             side_effect=httpx.RequestError("connection refused"),
         )
 
