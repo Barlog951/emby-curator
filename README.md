@@ -53,23 +53,23 @@ The following architectures are supported in the latest Docker version:
 To install the Docker container, pull the image from the GitHub Container Registry:
 
 ```shell
-docker pull ghcr.io/troykelly/emby-dedupe:latest
+docker pull ghcr.io/barlog951/emby-dedupe:edge
 ```
 
-Replace `latest` with the appropriate tag to use a specific version of the container.
+The `edge` tag tracks the latest build from `main`.
 
 ### Using Python
 
 You can also install the tool directly using pip:
 
 ```shell
-pip install git+https://github.com/troykelly/emby-dedupe.git
+pip install emby-curator
 ```
 
 Or clone the repository and install locally:
 
 ```shell
-git clone https://github.com/troykelly/emby-dedupe.git
+git clone https://github.com/Barlog951/emby-dedupe.git
 cd emby-dedupe
 pip install -e .
 ```
@@ -79,7 +79,7 @@ pip install -e .
 The `emby-dedupe` tool uses a subcommand structure. Shared connection options go before the subcommand; subcommand-specific options go after.
 
 ```
-emby-dedupe [shared options] SUBCOMMAND [subcommand options]
+emby-curator [shared options] SUBCOMMAND [subcommand options]
 ```
 
 ### Subcommands
@@ -109,10 +109,10 @@ emby-dedupe [shared options] SUBCOMMAND [subcommand options]
 
 ```shell
 # Dry-run duplicate scan
-emby-dedupe --host http://your-emby-server --api-key your_api_key --library "Your Library" dedupe
+emby-curator --host http://your-emby-server --api-key your_api_key --library "Your Library" dedupe
 
 # With multiple libraries
-emby-dedupe --host http://your-emby-server --api-key your_api_key \
+emby-curator --host http://your-emby-server --api-key your_api_key \
   --library "Movies" --library "TV Shows" \
   dedupe
 ```
@@ -142,7 +142,7 @@ The CLI uses a two-level structure: shared options first, then a subcommand with
 ### Shared options (before subcommand)
 
 ```
-emby-dedupe [OPTIONS] SUBCOMMAND [SUBCOMMAND-OPTIONS]
+emby-curator [OPTIONS] SUBCOMMAND [SUBCOMMAND-OPTIONS]
 
   -H, --host TEXT        Emby server URL          [env: DEDUPE_EMBY_HOST]
   -p, --port INTEGER     Emby server port          [env: DEDUPE_EMBY_PORT]
@@ -156,7 +156,7 @@ emby-dedupe [OPTIONS] SUBCOMMAND [SUBCOMMAND-OPTIONS]
 ### dedupe subcommand options
 
 ```
-emby-dedupe ... dedupe [OPTIONS]
+emby-curator ... dedupe [OPTIONS]
 
   --username TEXT        Emby username             [env: DEDUPE_EMBY_USERNAME]
   --password TEXT        Emby password             [env: DEDUPE_EMBY_PASSWORD]
@@ -170,9 +170,9 @@ emby-dedupe ... dedupe [OPTIONS]
 ### genres subcommand options
 
 ```
-emby-dedupe ... genres audit [--suggest]
-emby-dedupe ... genres normalize [--doit] [--repair-dupes] [--item-ids IDS]
-emby-dedupe ... genres fix [--doit] [--gaps-only | --validate] [--item-ids IDS]
+emby-curator ... genres audit [--suggest]
+emby-curator ... genres normalize [--doit] [--repair-dupes] [--item-ids IDS]
+emby-curator ... genres fix [--doit] [--gaps-only | --validate] [--item-ids IDS]
 ```
 
 ## Examples
@@ -188,26 +188,26 @@ docker run \
   -e DEDUPE_EMBY_HOST="http://your-emby-server" \
   -e DEDUPE_EMBY_LIBRARY="Your Library Name" \
   -e DEDUPE_EMBY_API_KEY="your_api_key" \
-  ghcr.io/troykelly/emby-dedupe
+  ghcr.io/barlog951/emby-dedupe:edge
 
 # For multiple libraries
 docker run \
   -e DEDUPE_EMBY_HOST="http://your-emby-server" \
   -e DEDUPE_EMBY_LIBRARY="Movies,TV Shows" \
   -e DEDUPE_EMBY_API_KEY="your_api_key" \
-  ghcr.io/troykelly/emby-dedupe
+  ghcr.io/barlog951/emby-dedupe:edge
 ```
 
 Using Python:
 
 ```shell
-emby-dedupe --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" dedupe
+emby-curator --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" dedupe
 ```
 
 To scan multiple libraries:
 
 ```shell
-emby-dedupe --host "http://your-emby-server" --library "Movies" --library "TV Shows" --api-key "your_api_key" dedupe
+emby-curator --host "http://your-emby-server" --library "Movies" --library "TV Shows" --api-key "your_api_key" dedupe
 ```
 
 ### Generating an HTML Report
@@ -215,14 +215,14 @@ emby-dedupe --host "http://your-emby-server" --library "Movies" --library "TV Sh
 To generate an HTML report with images and detailed metadata:
 
 ```shell
-emby-dedupe --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" \
+emby-curator --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" \
   dedupe --html-report
 ```
 
 Or to generate only the HTML report without terminal output:
 
 ```shell
-emby-dedupe --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" \
+emby-curator --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" \
   dedupe --html-only
 ```
 
@@ -240,13 +240,13 @@ docker run \
   -e DEDUPE_EMBY_USERNAME="your_emby_username" \
   -e DEDUPE_EMBY_PASSWORD="your_emby_password" \
   -e DEDUPE_DOIT="true" \
-  ghcr.io/troykelly/emby-dedupe
+  ghcr.io/barlog951/emby-dedupe:edge
 ```
 
 Using Python:
 
 ```shell
-emby-dedupe --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" \
+emby-curator --host "http://your-emby-server" --library "Your Library Name" --api-key "your_api_key" \
   --doit dedupe --username "your_emby_username" --password "your_emby_password"
 ```
 
@@ -280,13 +280,13 @@ docker run \
   -e DEDUPE_EMBY_LIBRARY="Movies" \
   -e DEDUPE_EMBY_API_KEY="your_api_key" \
   -e DEDUPE_LANG_PRIO="slo,cze,eng" \
-  ghcr.io/troykelly/emby-dedupe
+  ghcr.io/barlog951/emby-dedupe:edge
 ```
 
 Using Python:
 
 ```shell
-emby-dedupe --host "http://your-emby-server" --library "Movies" --api-key "your_api_key" \
+emby-curator --host "http://your-emby-server" --library "Movies" --api-key "your_api_key" \
   dedupe --lang-prio "slo,cze,eng"
 ```
 
@@ -304,13 +304,13 @@ docker run \
   -e DEDUPE_EMBY_LIBRARY="Movies" \
   -e DEDUPE_EMBY_API_KEY="your_api_key" \
   -e DEDUPE_EXCLUDE_IDS="tt0468569,tt0080684,550" \
-  ghcr.io/troykelly/emby-dedupe
+  ghcr.io/barlog951/emby-dedupe:edge
 ```
 
 Using Python:
 
 ```shell
-emby-dedupe --host "http://your-emby-server" --library "Movies" --api-key "your_api_key" \
+emby-curator --host "http://your-emby-server" --library "Movies" --api-key "your_api_key" \
   dedupe --exclude-ids "tt0468569,tt0080684,550"
 ```
 
@@ -325,19 +325,19 @@ The excluded IDs can be:
 
 ```shell
 # Audit genre health (read-only)
-emby-dedupe --host "http://your-emby-server" --api-key "your_api_key" --library "Movies" genres audit
+emby-curator --host "http://your-emby-server" --api-key "your_api_key" --library "Movies" genres audit
 
 # Preview variant name normalization
-emby-dedupe --host "http://your-emby-server" --api-key "your_api_key" --library "Movies" genres normalize
+emby-curator --host "http://your-emby-server" --api-key "your_api_key" --library "Movies" genres normalize
 
 # Apply normalization
-emby-dedupe --host "http://your-emby-server" --api-key "your_api_key" --library "Movies" --doit genres normalize
+emby-curator --host "http://your-emby-server" --api-key "your_api_key" --library "Movies" --doit genres normalize
 
 # Fill missing genres from TMDB/OMDb (validate mode — only items with no genres)
-emby-dedupe --host "http://your-emby-server" --api-key "your_api_key" --library "Movies" --doit genres fix --validate
+emby-curator --host "http://your-emby-server" --api-key "your_api_key" --library "Movies" --doit genres fix --validate
 
 # Target specific items (used by webhook listener)
-emby-dedupe --host "http://your-emby-server" --api-key "your_api_key" --doit genres normalize --item-ids 123,456
+emby-curator --host "http://your-emby-server" --api-key "your_api_key" --doit genres normalize --item-ids 123,456
 ```
 
 ## API Key Requirement
@@ -362,7 +362,7 @@ emby_dedupe/
 For development, install the package with development dependencies:
 
 ```shell
-git clone https://github.com/troykelly/emby-dedupe.git
+git clone https://github.com/Barlog951/emby-dedupe.git
 cd emby-dedupe
 pip install -e ".[dev]"
 ```
@@ -502,7 +502,7 @@ The tests cover all key functionality including:
 
 ## Contributing
 
-We welcome your contributions. If you encounter bugs or have suggestions for improvement, please feel free to open an issue on the [GitHub repository](https://github.com/troykelly/emby-dedupe). Pull requests are also greatly appreciated.
+We welcome your contributions. If you encounter bugs or have suggestions for improvement, please feel free to open an issue on the [GitHub repository](https://github.com/Barlog951/emby-dedupe). Pull requests are also greatly appreciated.
 
 ## License
 
