@@ -14,6 +14,7 @@ from typing import Optional
 
 import httpx
 
+from emby_dedupe.api.pagination import paginate_emby_items
 from emby_dedupe.utils.constants import GENRE_NORMALIZATION_MAP, PAGE_SIZE, TMDB_CANONICAL_GENRES
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.http import make_http_request
@@ -188,35 +189,15 @@ def _fetch_library_items(
 ) -> list[dict]:
     """Fetch all pages of items for a single library (or all libraries if lib_id is None)."""
     items: list[dict] = []
-    start_index = 0
-    page = 0
     endpoint = f"{base_url}/Users/{user_id}/Items" if user_id else f"{base_url}/Items"
     params = {**base_params, "Limit": str(PAGE_SIZE)}
     if lib_id is not None:
         params["ParentId"] = lib_id
 
-    while True:
-        params["StartIndex"] = str(start_index)
-
-        try:
-            response = make_http_request(client, "GET", endpoint, params=params)
-            data = response.json()
-        except (httpx.HTTPStatusError, httpx.RequestError) as e:
-            logger.error(f"Failed to fetch items page {page} for library {lib_id}: {e}")
-            break
-
-        page_items = data.get("Items", [])
-        total = data.get("TotalRecordCount", 0)
-        count = len(page_items)
+    for page_items, _total in paginate_emby_items(
+        client, endpoint, params, error_context=f"fetch items for library {lib_id}"
+    ):
         items.extend(page_items)
-
-        logger.debug(f"Fetched page {page} from library {lib_id}: {count} items")
-
-        start_index += count
-        page += 1
-
-        if start_index >= total:
-            break
 
     return items
 
