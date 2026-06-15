@@ -3,7 +3,6 @@ External genre providers: TMDB and OMDb API clients with rate limiting and cachi
 Used by `genres fix` to fill missing genres and cross-validate existing ones.
 """
 
-import json
 import threading
 import time
 from pathlib import Path
@@ -13,6 +12,7 @@ import httpx
 
 from emby_dedupe.api.genres import normalize_genre_name
 from emby_dedupe.utils.constants import GENRE_NORMALIZATION_MAP
+from emby_dedupe.utils.json_cache import load_json_cache, save_json_cache
 from emby_dedupe.utils.logging import logger
 
 TMDB_BASE = "https://api.themoviedb.org/3"
@@ -50,23 +50,12 @@ class RateLimiter:
 
 def load_genre_cache() -> dict:
     """Load genre cache from disk. Returns {} on missing or corrupt file."""
-    try:
-        if CACHE_PATH.exists():
-            return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as e:
-        logger.warning(f"Could not load genre cache: {e}")
-    return {}
+    return load_json_cache(CACHE_PATH, label="genre cache")
 
 
 def save_genre_cache(cache: dict) -> None:
     """Save genre cache to disk atomically."""
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = CACHE_PATH.with_suffix(".tmp")
-    try:
-        tmp.write_text(json.dumps(cache, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(CACHE_PATH)
-    except OSError as e:
-        logger.warning(f"Could not save genre cache: {e}")
+    save_json_cache(CACHE_PATH, cache, label="genre cache")
 
 
 def fetch_tmdb_genres(
