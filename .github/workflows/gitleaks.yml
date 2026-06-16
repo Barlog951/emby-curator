@@ -1,0 +1,26 @@
+name: Secret Scan
+
+# CI layer of secret-leak prevention (complements the local gitleaks pre-commit
+# hook): catches any secret that reaches GitHub even if a commit bypassed the
+# local hook (e.g. --no-verify, or a clone without hooks installed).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0  # full history available for thorough scanning
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml
+          # gitleaks-action is free for personal/public repos (no license needed).

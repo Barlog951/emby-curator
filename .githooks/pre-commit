@@ -1,29 +1,44 @@
 #!/bin/bash
 #
-# Pre-commit hook for Emby Dedupe
-# Enforces SonarQube quality gate before allowing commits
+# Pre-commit hook for emby-curator. Version-controlled in .githooks/ and
+# activated with:  git config core.hooksPath .githooks  (run `make install-hooks`).
 #
+#   1. gitleaks  — block any secret in the STAGED changes (fast, fails first)
+#   2. SonarQube — quality gate (tests + analysis), only if sonar-scanner exists
+#
+set -uo pipefail
 
+# ── 1. Secret scan (the leak-avoider) ──────────────────────────────
 echo ""
-echo "🔒 Running pre-commit quality gate..."
-echo ""
-
-# Run SonarQube analysis (includes tests + quality gate check)
-if ! make sonar; then
+echo "🔍 Scanning staged changes for secrets (gitleaks)..."
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks git --staged --redact --config .gitleaks.toml; then
     echo ""
-    echo "❌ COMMIT REJECTED: Quality gate failed"
-    echo ""
-    echo "🚨 Quality gate failures must be fixed before committing:"
-    echo "   - Run 'make sonar-bugs' to see bug details"
-    echo "   - Run 'make sonar-critical' to see critical issues"
-    echo "   - Run 'make sonar-gate-check' to see quality gate status"
-    echo ""
-    echo "💡 To bypass (NOT RECOMMENDED): git commit --no-verify"
+    echo "❌ COMMIT BLOCKED — a secret was detected in your staged changes."
+    echo "   • Move it to an env var / a gitignored .env file, OR"
+    echo "   • If it's a false positive, allowlist it in .gitleaks.toml"
+    echo "   Bypass (NOT RECOMMENDED): git commit --no-verify"
     exit 1
+  fi
+  echo "✅ No secrets detected"
+else
+  echo "⚠️  gitleaks not installed — secret scan SKIPPED. Install: brew install gitleaks"
+fi
+
+# ── 2. Quality gate (only when the local SonarQube toolchain is present) ──
+if command -v sonar-scanner >/dev/null 2>&1; then
+  echo ""
+  echo "🔒 Running quality gate (SonarQube)..."
+  if ! make sonar; then
+    echo ""
+    echo "❌ COMMIT REJECTED — quality gate failed."
+    echo "💡 Bypass (NOT RECOMMENDED): git commit --no-verify"
+    exit 1
+  fi
+  echo "✅ Quality gate passed"
+else
+  echo "ℹ️  sonar-scanner not found — skipping quality gate (CI still enforces it)."
 fi
 
 echo ""
-echo "✅ Quality gate passed - proceeding with commit"
-echo ""
-
 exit 0

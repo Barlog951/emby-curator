@@ -1,0 +1,31 @@
+# gitleaks config for emby-curator — secret-leak prevention
+# Scans staged changes (pre-commit hook) and full history (CI).
+title = "emby-curator secret scan"
+
+[extend]
+# Include all of gitleaks' built-in rules (generic API keys, JWTs, AWS, GCP,
+# private keys, tokens, etc.). The custom rule below adds project specifics.
+useDefault = true
+
+[[rules]]
+id = "emby-api-key"
+description = "Emby API key (32 hex chars in an api-key / X-Emby-Token context)"
+regex = '''(?i)(?:emby[-_ ]?token|api[-_ ]?key|x-emby-token|DEDUPE_EMBY_API_KEY)["'\s:=]{1,5}([a-f0-9]{32})\b'''
+keywords = ["emby", "api_key", "api-key", "x-emby-token", "emby-token"]
+
+[allowlist]
+description = "Placeholders, examples, and redaction markers — never real secrets"
+# regexes match the captured SECRET value (gitleaks default target), so a real
+# 32-hex key is NOT allowlisted, but these obvious placeholders are.
+regexes = [
+  '''(?i)^your[-_ ]?(api[-_ ]?key|token|password)''',
+  '''^abc123def456''',
+  '''\*\*\*[A-Z_]*REDACTED\*\*\*''',
+  '''^0{8,}$''',
+  # Old SonarQube token, removed from the repo and rotated — historical only.
+  '''sqp_aaa240b92dd3c3c166f6e855ff89d2e2dc87768c''',
+]
+paths = [
+  '''\.gitleaks\.toml''',                      # this file documents the patterns
+  '''tests/unit/utils/test_logging\.py''',     # fake secrets that test log redaction
+]

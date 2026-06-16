@@ -1,3 +1,6 @@
+-include .sonar-token
+export SONAR_TOKEN
+
 .PHONY: help clean test test-fast test-all test-parallel test-stats coverage lint lint-all lint-fix mypy deadcode quality install dev allfx all sonar sonar-quick sonar-reports sonar-issues sonar-bugs sonar-critical sonar-new sonar-all sonar-metrics sonar-gate-check sonar-gate-wait install-hooks
 
 help:
@@ -168,53 +171,13 @@ install:
 dev:
 	pip install -e ".[dev]"
 
-# Install git pre-commit hooks (quality gates)
+# Install the version-controlled git hooks (.githooks/)
 install-hooks:
-	@echo "Installing git hooks..."
-	@mkdir -p .git/hooks .githooks
-	@echo '#!/bin/bash' > .githooks/pre-commit
-	@echo '#' >> .githooks/pre-commit
-	@echo '# Pre-commit hook for Emby Dedupe' >> .githooks/pre-commit
-	@echo '# Enforces SonarQube quality gate before allowing commits' >> .githooks/pre-commit
-	@echo '#' >> .githooks/pre-commit
-	@echo '' >> .githooks/pre-commit
-	@echo 'echo ""' >> .githooks/pre-commit
-	@echo 'echo "🔒 Running pre-commit quality gate..."' >> .githooks/pre-commit
-	@echo 'echo ""' >> .githooks/pre-commit
-	@echo '' >> .githooks/pre-commit
-	@echo '# Run SonarQube analysis (includes tests + quality gate check)' >> .githooks/pre-commit
-	@echo 'if ! make sonar; then' >> .githooks/pre-commit
-	@echo '    echo ""' >> .githooks/pre-commit
-	@echo '    echo "❌ COMMIT REJECTED: Quality gate failed"' >> .githooks/pre-commit
-	@echo '    echo ""' >> .githooks/pre-commit
-	@echo '    echo "🚨 Quality gate failures must be fixed before committing:"' >> .githooks/pre-commit
-	@echo '    echo "   - Run '"'"'make sonar-bugs'"'"' to see bug details"' >> .githooks/pre-commit
-	@echo '    echo "   - Run '"'"'make sonar-critical'"'"' to see critical issues"' >> .githooks/pre-commit
-	@echo '    echo "   - Run '"'"'make sonar-gate-check'"'"' to see quality gate status"' >> .githooks/pre-commit
-	@echo '    echo ""' >> .githooks/pre-commit
-	@echo '    echo "💡 To bypass (NOT RECOMMENDED): git commit --no-verify"' >> .githooks/pre-commit
-	@echo '    exit 1' >> .githooks/pre-commit
-	@echo 'fi' >> .githooks/pre-commit
-	@echo '' >> .githooks/pre-commit
-	@echo 'echo ""' >> .githooks/pre-commit
-	@echo 'echo "✅ Quality gate passed - proceeding with commit"' >> .githooks/pre-commit
-	@echo 'echo ""' >> .githooks/pre-commit
-	@echo '' >> .githooks/pre-commit
-	@echo 'exit 0' >> .githooks/pre-commit
-	@cp .githooks/pre-commit .git/hooks/pre-commit
-	@chmod +x .git/hooks/pre-commit
-	@echo "✅ Pre-commit hook installed"
-	@echo ""
-	@echo "📋 Hook will run before every commit:"
-	@echo "   1. make sonar-reports (tests with coverage)"
-	@echo "   2. sonar-scanner (upload to SonarQube)"
-	@echo "   3. Quality gate check (must pass)"
-	@echo ""
-	@echo "⚠️  Commits will be BLOCKED if:"
-	@echo "   - Tests fail"
-	@echo "   - Quality gate fails (new issues, duplication >3%)"
-	@echo ""
-	@echo "💡 To bypass (emergencies only): git commit --no-verify"
+	@chmod +x .githooks/pre-commit
+	@git config core.hooksPath .githooks
+	@echo "✅ Git hooks active (core.hooksPath=.githooks)"
+	@echo "   pre-commit: gitleaks secret scan + SonarQube quality gate"
+	@command -v gitleaks >/dev/null 2>&1 || echo "⚠️  gitleaks not installed — run: brew install gitleaks"
 
 clean:
 	rm -rf build/
