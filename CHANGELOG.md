@@ -5,6 +5,14 @@ All notable changes to **Emby Curator** are documented here.
 This project is a maintained fork of [emby-dedupe](https://github.com/troykelly/emby-dedupe)
 by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.0.
 
+## [3.0.1] — 2026
+
+- Repository renamed `emby-dedupe` → `emby-curator`; updated all repo/image URLs
+  in metadata, README, and CI.
+- Fixed PyPI project metadata (URLs pointed at the pre-rename repo) and made
+  README links absolute so they render on PyPI.
+- Added automated PyPI publishing on GitHub release (PyPI Trusted Publishing).
+
 ## [3.0.0] — 2026 — "Curator" (first release under the new name)
 
 Renamed from `emby-dedupe` to **`emby-curator`** to reflect a scope that has grown

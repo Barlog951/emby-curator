@@ -2,7 +2,7 @@
 
 **Emby Curator** keeps your Emby media libraries in order. It deduplicates media, localizes genres and descriptions (SK/CZ from TMDB/OMDb), cleans up stale unwatched content with rating-decay protection, and analyzes missing episodes and franchise gaps — with terminal and HTML reports throughout.
 
-> **Maintained fork.** Emby Curator is a fork of [emby-dedupe](https://github.com/troykelly/emby-dedupe) by Troy Kelly, which has been inactive since May 2024. It has been substantially rewritten and extended (genre management, description/title localization, library cleanup, missing-episode analysis, analytics dashboards, a 1000+ test suite, and CI/CD). Distributed under the Apache License 2.0 — see [NOTICE](NOTICE) and [CHANGELOG.md](CHANGELOG.md).
+> **Maintained fork.** Emby Curator is a fork of [emby-dedupe](https://github.com/troykelly/emby-dedupe) by Troy Kelly, which has been inactive since May 2024. It has been substantially rewritten and extended (genre management, description/title localization, library cleanup, missing-episode analysis, analytics dashboards, a 1000+ test suite, and CI/CD). Distributed under the Apache License 2.0 — see [NOTICE](https://github.com/Barlog951/emby-curator/blob/main/NOTICE) and [CHANGELOG.md](https://github.com/Barlog951/emby-curator/blob/main/CHANGELOG.md).
 
 ## Build Status
 
