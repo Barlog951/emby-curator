@@ -11,7 +11,7 @@ stale_series_analysis.json
 STALE_SERIES_CANDIDATES.md
 dashboards/exports/
 dashboards/.env
-HANDOFF_descriptions.md
+HANDOFF*.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
