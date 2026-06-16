@@ -506,4 +506,4 @@ We welcome your contributions. If you encounter bugs or have suggestions for imp
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](https://github.com/Barlog951/emby-curator/blob/main/LICENSE) file for details.
