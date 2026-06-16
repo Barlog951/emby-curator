@@ -50,10 +50,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/Barlog951/emby-dedupe"
-Repository = "https://github.com/Barlog951/emby-dedupe"
+Homepage = "https://github.com/Barlog951/emby-curator"
+Repository = "https://github.com/Barlog951/emby-curator"
 "Original Project" = "https://github.com/troykelly/emby-dedupe"
-Changelog = "https://github.com/Barlog951/emby-dedupe/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/Barlog951/emby-curator/blob/main/CHANGELOG.md"
 
 [project.scripts]
 emby-curator = "emby_dedupe.cli.app:main"

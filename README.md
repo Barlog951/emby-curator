@@ -6,9 +6,9 @@
 
 ## Build Status
 
-![Python Tests](https://github.com/Barlog951/emby-dedupe/actions/workflows/python-test.yaml/badge.svg)
-![Security Scan](https://github.com/Barlog951/emby-dedupe/actions/workflows/security-scan.yaml/badge.svg)
-![Edge Container Build](https://github.com/Barlog951/emby-dedupe/actions/workflows/edge.yaml/badge.svg)
+![Python Tests](https://github.com/Barlog951/emby-curator/actions/workflows/python-test.yaml/badge.svg)
+![Security Scan](https://github.com/Barlog951/emby-curator/actions/workflows/security-scan.yaml/badge.svg)
+![Edge Container Build](https://github.com/Barlog951/emby-curator/actions/workflows/edge.yaml/badge.svg)
 
 The following architectures are supported in the latest Docker version:
 
@@ -53,7 +53,7 @@ The following architectures are supported in the latest Docker version:
 To install the Docker container, pull the image from the GitHub Container Registry:
 
 ```shell
-docker pull ghcr.io/barlog951/emby-dedupe:latest
+docker pull ghcr.io/barlog951/emby-curator:latest
 ```
 
 The `latest` tag is the newest stable release; `edge` tracks the latest build from `main`.
@@ -69,7 +69,7 @@ pip install emby-curator
 Or clone the repository and install locally:
 
 ```shell
-git clone https://github.com/Barlog951/emby-dedupe.git
+git clone https://github.com/Barlog951/emby-curator.git
 cd emby-dedupe
 pip install -e .
 ```
@@ -188,14 +188,14 @@ docker run \
   -e DEDUPE_EMBY_HOST="http://your-emby-server" \
   -e DEDUPE_EMBY_LIBRARY="Your Library Name" \
   -e DEDUPE_EMBY_API_KEY="your_api_key" \
-  ghcr.io/barlog951/emby-dedupe:edge
+  ghcr.io/barlog951/emby-curator:latest
 
 # For multiple libraries
 docker run \
   -e DEDUPE_EMBY_HOST="http://your-emby-server" \
   -e DEDUPE_EMBY_LIBRARY="Movies,TV Shows" \
   -e DEDUPE_EMBY_API_KEY="your_api_key" \
-  ghcr.io/barlog951/emby-dedupe:edge
+  ghcr.io/barlog951/emby-curator:latest
 ```
 
 Using Python:
@@ -240,7 +240,7 @@ docker run \
   -e DEDUPE_EMBY_USERNAME="your_emby_username" \
   -e DEDUPE_EMBY_PASSWORD="your_emby_password" \
   -e DEDUPE_DOIT="true" \
-  ghcr.io/barlog951/emby-dedupe:edge
+  ghcr.io/barlog951/emby-curator:latest
 ```
 
 Using Python:
@@ -280,7 +280,7 @@ docker run \
   -e DEDUPE_EMBY_LIBRARY="Movies" \
   -e DEDUPE_EMBY_API_KEY="your_api_key" \
   -e DEDUPE_LANG_PRIO="slo,cze,eng" \
-  ghcr.io/barlog951/emby-dedupe:edge
+  ghcr.io/barlog951/emby-curator:latest
 ```
 
 Using Python:
@@ -304,7 +304,7 @@ docker run \
   -e DEDUPE_EMBY_LIBRARY="Movies" \
   -e DEDUPE_EMBY_API_KEY="your_api_key" \
   -e DEDUPE_EXCLUDE_IDS="tt0468569,tt0080684,550" \
-  ghcr.io/barlog951/emby-dedupe:edge
+  ghcr.io/barlog951/emby-curator:latest
 ```
 
 Using Python:
@@ -362,7 +362,7 @@ emby_dedupe/
 For development, install the package with development dependencies:
 
 ```shell
-git clone https://github.com/Barlog951/emby-dedupe.git
+git clone https://github.com/Barlog951/emby-curator.git
 cd emby-dedupe
 pip install -e ".[dev]"
 ```
@@ -502,7 +502,7 @@ The tests cover all key functionality including:
 
 ## Contributing
 
-We welcome your contributions. If you encounter bugs or have suggestions for improvement, please feel free to open an issue on the [GitHub repository](https://github.com/Barlog951/emby-dedupe). Pull requests are also greatly appreciated.
+We welcome your contributions. If you encounter bugs or have suggestions for improvement, please feel free to open an issue on the [GitHub repository](https://github.com/Barlog951/emby-curator). Pull requests are also greatly appreciated.
 
 ## License
 
