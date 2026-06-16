@@ -214,3 +214,6 @@ Temporary Items
 scripts/consolidate-series.sh
 scripts/export-missing-episodes.py
 scripts/fix-nfo-mismatches.sh
+
+# Claude Code project guidance (local only)
+CLAUDE.md
