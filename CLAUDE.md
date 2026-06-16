@@ -159,7 +159,7 @@ The project has been refactored into a proper Python package with the following 
 
 ## Build/Run/Test Commands
 - Install locally: `pip install -e .` (on server use `.venv/bin/pip install -e .` — system pip is externally managed)
-- **Server host**: use `http://localhost:8096` when running ON the Emby server — external hostname `emby.in.fukiyato.com` does not resolve from inside the server
+- **Server host**: use `http://localhost:8096` when running ON the Emby server — external hostname `emby.example.com` does not resolve from inside the server
 - Run tool: `emby-dedupe` or `python -m emby_dedupe`
 - Build container: `docker build -t emby-dedupe .`
 - Run container: `docker run -e DEDUPE_EMBY_HOST="http://your-emby-server" -e DEDUPE_EMBY_LIBRARY="Your Library" -e DEDUPE_EMBY_API_KEY="your_api_key" emby-dedupe`
