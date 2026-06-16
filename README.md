@@ -53,10 +53,10 @@ The following architectures are supported in the latest Docker version:
 To install the Docker container, pull the image from the GitHub Container Registry:
 
 ```shell
-docker pull ghcr.io/barlog951/emby-dedupe:edge
+docker pull ghcr.io/barlog951/emby-dedupe:latest
 ```
 
-The `edge` tag tracks the latest build from `main`.
+The `latest` tag is the newest stable release; `edge` tracks the latest build from `main`.
 
 ### Using Python
 
