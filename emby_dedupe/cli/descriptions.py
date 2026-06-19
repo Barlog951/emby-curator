@@ -24,6 +24,7 @@ from emby_dedupe.api.descriptions import (
     pick_overview_with_fallback,
     pick_tagline_with_fallback,
     pick_title_from_localized,
+    pick_year_from_localized,
     update_item_metadata,
 )
 from emby_dedupe.api.genre_providers import RateLimiter
@@ -48,6 +49,12 @@ def _parse_lang_chain(raw: Optional[str]) -> tuple[str, ...]:
     return chain or LANG_CHAIN_DEFAULT
 
 
+def _truncate(text: str, limit: int = 240) -> str:
+    """Trim text to ``limit`` chars, appending an ellipsis when shortened."""
+    text = (text or "").strip()
+    return f"{text[:limit]}…" if len(text) > limit else text
+
+
 def _preview_change(
     item: dict,
     new_overview: Optional[str],
@@ -55,13 +62,17 @@ def _preview_change(
     new_title: Optional[str],
     new_tagline: Optional[str] = None,
     tagline_lang: Optional[str] = None,
+    new_year: Optional[int] = None,
 ) -> None:
     """Print a side-by-side dry-run preview for one item."""
     name = item.get("Name", item.get("Id", "?"))
     year = item.get("ProductionYear") or ""
     header = f"{name} ({year})" if year else name
-    tag = overview_lang or "title/tagline-only"
+    tag = overview_lang or "title/tagline/year-only"
     print(f"\n━━━ {header}  [{tag}] ━━━")
+    if new_year is not None:
+        print(f"  [Year, current]: {year or '(none)'}")
+        print(f"  [Year, new    ]: {new_year}")
     if new_title is not None:
         print(f"  [Title, current ]: {name}")
         print(f"  [Title, new (EN)]: {new_title}")
@@ -70,12 +81,8 @@ def _preview_change(
         print(f"  [Tagline, current  ]: {cur_tag}")
         print(f"  [Tagline, new ({tagline_lang})]: {new_tagline}")
     if new_overview is not None and overview_lang is not None:
-        cur = (item.get("Overview") or "").strip()
-        print(f"  [Overview, current     ]: {cur[:240]}{'…' if len(cur) > 240 else ''}")
-        print(
-            f"  [Overview, new ({overview_lang})]: "
-            f"{new_overview[:240]}{'…' if len(new_overview) > 240 else ''}"
-        )
+        print(f"  [Overview, current     ]: {_truncate(item.get('Overview') or '')}")
+        print(f"  [Overview, new ({overview_lang})]: {_truncate(new_overview)}")
 
 
 # Fields needed when fetching by item IDs.  The default batch field-set is
@@ -90,7 +97,7 @@ _DESC_FETCH_FIELDS = (
 # per-item helpers can mutate a shared accumulator instead of taking 6 args.
 def _new_run_stats() -> dict:
     return {
-        "found_overview": 0, "found_tagline": 0, "found_title": 0,
+        "found_overview": 0, "found_tagline": 0, "found_title": 0, "found_year": 0,
         "updated": 0, "skipped_no_data": 0, "errors": 0, "cache_hits": 0,
     }
 
@@ -226,8 +233,17 @@ def _pick_updates(
     localized: dict,
     lang_chain: tuple[str, ...],
     update_title: bool,
-) -> tuple[Optional[tuple[str, str]], Optional[tuple[str, str]], Optional[tuple[str, str]]]:
-    """Pick (overview, tagline, title) candidates for an item — any may be None."""
+) -> tuple[
+    Optional[tuple[str, str]],
+    Optional[tuple[str, str]],
+    Optional[tuple[str, str]],
+    Optional[int],
+]:
+    """Pick (overview, tagline, title, year) candidates — any may be None.
+
+    The year is only proposed when the item currently has no ``ProductionYear``;
+    an existing year is never touched.
+    """
     cur_ov = (item.get("Overview") or "").strip()
     cur_tags = item.get("Taglines") or []
     cur_tag = (cur_tags[0] if cur_tags else "").strip()
@@ -238,7 +254,8 @@ def _pick_updates(
         if update_title
         else None
     )
-    return overview_pick, tagline_pick, title_pick
+    year_pick = pick_year_from_localized(localized) if not item.get("ProductionYear") else None
+    return overview_pick, tagline_pick, title_pick, year_pick
 
 
 def _apply_or_preview(
@@ -251,6 +268,7 @@ def _apply_or_preview(
     new_tagline: Optional[str],
     tagline_lang: Optional[str],
     new_title: Optional[str],
+    new_year: Optional[int],
     args: argparse.Namespace,
     stats: dict,
 ) -> None:
@@ -258,7 +276,7 @@ def _apply_or_preview(
     if not args.doit:
         _preview_change(
             item, new_overview, overview_lang, new_title,
-            new_tagline=new_tagline, tagline_lang=tagline_lang,
+            new_tagline=new_tagline, tagline_lang=tagline_lang, new_year=new_year,
         )
         return
     try:
@@ -266,7 +284,7 @@ def _apply_or_preview(
         if update_item_metadata(
             client, base_url, item["Id"], full_item,
             new_overview=new_overview, new_title=new_title,
-            new_tagline=new_tagline, lock=args.lock,
+            new_tagline=new_tagline, new_year=new_year, lock=args.lock,
         ):
             stats["updated"] += 1
     except Exception as e:  # noqa: BLE001
@@ -305,10 +323,10 @@ def _process_item(
         stats["skipped_no_data"] += 1
         return
 
-    overview_pick, tagline_pick, title_pick = _pick_updates(
+    overview_pick, tagline_pick, title_pick, new_year = _pick_updates(
         item, localized, lang_chain, update_title,
     )
-    if overview_pick is None and tagline_pick is None and title_pick is None:
+    if overview_pick is None and tagline_pick is None and title_pick is None and new_year is None:
         stats["skipped_no_data"] += 1
         return
 
@@ -322,10 +340,12 @@ def _process_item(
         stats["found_tagline"] += 1
     if new_title is not None:
         stats["found_title"] += 1
+    if new_year is not None:
+        stats["found_year"] += 1
 
     _apply_or_preview(
         client, base_url, user_id, item,
-        new_overview, overview_lang, new_tagline, tagline_lang, new_title,
+        new_overview, overview_lang, new_tagline, tagline_lang, new_title, new_year,
         args, stats,
     )
 
@@ -335,12 +355,16 @@ def _print_fill_summary(stats: dict, doit: bool) -> None:
     print(
         f"Fill summary: {stats['found_overview']} overview translations, "
         f"{stats['found_tagline']} tagline translations, "
-        f"{stats['found_title']} title replacements proposed, "
+        f"{stats['found_title']} title replacements, "
+        f"{stats['found_year']} years proposed, "
         f"{stats['updated']} items updated, "
         f"{stats['skipped_no_data']} skipped (no TMDB data), "
         f"{stats['errors']} errors"
     )
-    if not doit and (stats["found_overview"] or stats["found_tagline"] or stats["found_title"]):
+    if not doit and (
+        stats["found_overview"] or stats["found_tagline"]
+        or stats["found_title"] or stats["found_year"]
+    ):
         print("Dry-run — re-run with --doit to apply.")
 
 
@@ -380,7 +404,8 @@ def _collect_candidates(
     )
     candidates = collect_overview_candidates(items)
     print(
-        f"Total items: {len(items)} | candidates (English overview + TMDB ID + unlocked): "
+        f"Total items: {len(items)} | candidates "
+        f"(TMDB ID + English overview/tagline or missing year): "
         f"{len(candidates)}"
     )
     limit = getattr(args, "limit", None)

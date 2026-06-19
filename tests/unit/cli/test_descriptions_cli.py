@@ -30,6 +30,7 @@ from emby_dedupe.cli.descriptions import (
     _resolve_episode_series_tmdb,
     _resolve_tmdb_key,
     _run_fill,
+    _truncate,
     _validate_args,
     run_descriptions_command,
 )
@@ -70,7 +71,7 @@ class TestNewRunStats:
         s = _new_run_stats()
         assert all(v == 0 for v in s.values())
         assert set(s.keys()) == {
-            "found_overview", "found_tagline", "found_title",
+            "found_overview", "found_tagline", "found_title", "found_year",
             "updated", "skipped_no_data", "errors", "cache_hits",
         }
 
@@ -399,12 +400,13 @@ class TestFetchLocalizedForItem:
 
 
 class TestPickUpdates:
-    def test_returns_three_picks_when_all_available(self):
+    def test_returns_picks_when_all_available(self):
         # English movie title + English overview/tagline.  TMDB has cs-CZ data.
         item = {
             "Name": "El Niño",
             "Overview": "An English overview that is the and of with this",
             "Taglines": ["English tagline of with the"],
+            "ProductionYear": 2014,  # has a year -> year pick must be None
         }
         loc = {
             "sk-SK": {"title": "", "overview": "Slovenský", "tagline": "Slovenský tag"},
@@ -412,33 +414,47 @@ class TestPickUpdates:
             "en-US": {"title": "The Kid"},
         }
         chain = ("sk-SK", "cs-CZ")
-        ov, tag, title = _pick_updates(item, loc, chain, update_title=True)
+        ov, tag, title, year = _pick_updates(item, loc, chain, update_title=True)
         assert ov == ("Slovenský", "sk-SK")
         assert tag == ("Slovenský tag", "sk-SK")
         assert title == ("The Kid", "en-US")
+        assert year is None  # item already has a ProductionYear
 
     def test_title_pick_skipped_when_disabled(self):
-        item = {"Name": "El Niño", "Overview": "x", "Taglines": ["y"]}
+        item = {"Name": "El Niño", "Overview": "x", "Taglines": ["y"], "ProductionYear": 2014}
         loc = {
             "sk-SK": {"overview": "Slovenský", "tagline": ""},
             "cs-CZ": {"overview": "", "tagline": ""},
             "en-US": {"title": "The Kid"},
         }
-        _, _, title = _pick_updates(item, loc, ("sk-SK", "cs-CZ"), update_title=False)
+        _, _, title, _ = _pick_updates(item, loc, ("sk-SK", "cs-CZ"), update_title=False)
         assert title is None
 
     def test_all_none_when_nothing_to_translate(self):
-        # Empty overview but no Slavic data; title is English (kept).
-        item = {"Name": "Fool's Paradise", "Overview": "", "Taglines": []}
+        # Empty overview but no Slavic data; title is English (kept); year present.
+        item = {"Name": "Fool's Paradise", "Overview": "", "Taglines": [], "ProductionYear": 2023}
         loc = {
-            "sk-SK": {"overview": "", "tagline": "", "title": ""},
-            "cs-CZ": {"overview": "", "tagline": "", "title": ""},
+            "sk-SK": {"overview": "", "tagline": "", "title": "", "year": ""},
+            "cs-CZ": {"overview": "", "tagline": "", "title": "", "year": ""},
         }
-        ov, tag, title = _pick_updates(item, loc, ("sk-SK", "cs-CZ"), update_title=True)
+        ov, tag, title, year = _pick_updates(item, loc, ("sk-SK", "cs-CZ"), update_title=True)
         # No EN fallback present → no overview/tagline; title is English so None.
         assert ov is None
         assert tag is None
         assert title is None
+        assert year is None
+
+    def test_year_picked_when_missing_and_tmdb_has_it(self):
+        item = {"Name": "Yearless", "Overview": "", "Taglines": []}  # no ProductionYear
+        loc = {"en-US": {"overview": "", "tagline": "", "title": "", "year": "2022"}}
+        _, _, _, year = _pick_updates(item, loc, ("sk-SK", "cs-CZ"), update_title=False)
+        assert year == 2022
+
+    def test_year_not_picked_when_item_already_has_year(self):
+        item = {"Name": "Has Year", "Overview": "", "Taglines": [], "ProductionYear": 1999}
+        loc = {"en-US": {"overview": "", "tagline": "", "title": "", "year": "2022"}}
+        _, _, _, year = _pick_updates(item, loc, ("sk-SK", "cs-CZ"), update_title=False)
+        assert year is None
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +476,7 @@ class TestApplyOrPreview:
         item = {"Id": "1", "Name": "X"}
         _apply_or_preview(
             MagicMock(), "u", "uid", item,
-            "ov", "sk-SK", None, None, None, args, stats,
+            "ov", "sk-SK", None, None, None, None, args, stats,
         )
         assert "update" not in called
         assert stats["updated"] == 0
@@ -482,7 +498,7 @@ class TestApplyOrPreview:
         item = {"Id": "1", "Name": "X"}
         _apply_or_preview(
             MagicMock(), "u", "uid", item,
-            "ov", "sk-SK", None, None, None, args, stats,
+            "ov", "sk-SK", None, None, None, None, args, stats,
         )
         assert stats["updated"] == 1
 
@@ -496,7 +512,7 @@ class TestApplyOrPreview:
         item = {"Id": "1", "Name": "X"}
         _apply_or_preview(
             MagicMock(), "u", "uid", item,
-            "ov", "sk-SK", None, None, None, args, stats,
+            "ov", "sk-SK", None, None, None, None, args, stats,
         )
         assert stats["errors"] == 1
         assert stats["updated"] == 0
@@ -515,15 +531,54 @@ class TestApplyOrPreview:
         item = {"Id": "1", "Name": "X"}
         _apply_or_preview(
             MagicMock(), "u", "uid", item,
-            "ov", "sk-SK", None, None, None, args, stats,
+            "ov", "sk-SK", None, None, None, None, args, stats,
         )
         assert stats["updated"] == 0
         assert stats["errors"] == 0
+
+    def test_doit_forwards_new_year(self, monkeypatch):
+        captured = {}
+
+        def fake_update(*a, **kw):
+            captured.update(kw)
+            return True
+
+        monkeypatch.setattr(
+            desc_cli, "fetch_full_item",
+            lambda *a, **kw: {"Name": "X", "LockedFields": []},
+        )
+        monkeypatch.setattr(desc_cli, "update_item_metadata", fake_update)
+        stats = _new_run_stats()
+        args = argparse.Namespace(doit=True, lock=True)
+        item = {"Id": "1", "Name": "X"}
+        _apply_or_preview(
+            MagicMock(), "u", "uid", item,
+            None, None, None, None, None, 2022, args, stats,
+        )
+        assert captured.get("new_year") == 2022
+        assert stats["updated"] == 1
 
 
 # ---------------------------------------------------------------------------
 # _preview_change (smoke test — pure stdout helper)
 # ---------------------------------------------------------------------------
+
+
+class TestTruncate:
+    def test_short_text_unchanged(self):
+        assert _truncate("hello") == "hello"
+
+    def test_strips_whitespace(self):
+        assert _truncate("  hi  ") == "hi"
+
+    def test_long_text_truncated_with_ellipsis(self):
+        out = _truncate("x" * 500)
+        assert out == "x" * 240 + "…"
+        assert len(out) == 241
+
+    def test_empty_and_none(self):
+        assert _truncate("") == ""
+        assert _truncate(None) == ""  # type: ignore[arg-type]
 
 
 class TestPreviewChange:
@@ -561,6 +616,14 @@ class TestPreviewChange:
         out = capsys.readouterr().out
         # No year parens
         assert "NoYear" in out
+
+    def test_year_backfill_shown(self, capsys):
+        item = {"Name": "Yearless", "Overview": ""}  # no ProductionYear
+        _preview_change(item, None, None, None, None, None, new_year=2022)
+        out = capsys.readouterr().out
+        assert "Yearless" in out
+        assert "2022" in out
+        assert "(none)" in out  # current year shown as none
 
 
 # ---------------------------------------------------------------------------

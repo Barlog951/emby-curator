@@ -5,6 +5,8 @@ from unittest.mock import MagicMock
 
 from emby_dedupe.api.descriptions import (
     LANG_CHAIN_DEFAULT,
+    _extract_tmdb_year,
+    _parse_tmdb_payload,
     build_series_tmdb_map,
     collect_overview_candidates,
     detect_title_language,
@@ -16,6 +18,7 @@ from emby_dedupe.api.descriptions import (
     pick_tagline_from_localized,
     pick_tagline_with_fallback,
     pick_title_from_localized,
+    pick_year_from_localized,
     update_item_metadata,
 )
 
@@ -278,13 +281,14 @@ class TestCollectOverviewCandidates:
         assert len(collect_overview_candidates(items)) == 1
 
     def test_skips_when_both_fields_done(self):
-        """Czech Overview + Czech Tagline = nothing to improve."""
+        """Czech Overview + Czech Tagline + year present = nothing to improve."""
         items = [
             {
                 "Name": "x",
                 "Overview": "Dvě sestry se dlouhé roky nestýkaly",
                 "Taglines": ["Neotřelá romantická komedie"],
                 "ProviderIds": {"Tmdb": "1"},
+                "ProductionYear": 2010,
             }
         ]
         assert collect_overview_candidates(items) == []
@@ -731,3 +735,144 @@ class TestFetchTmdbOverviewWrapper:
             client, limiter, "1", "movie", lang_chain=("sk-SK",),
         )
         assert result is None
+
+
+class TestExtractTmdbYear:
+    def test_movie_release_date(self):
+        assert _extract_tmdb_year({"release_date": "2022-06-11"}) == "2022"
+
+    def test_tv_first_air_date(self):
+        assert _extract_tmdb_year({"first_air_date": "1997-09-19"}) == "1997"
+
+    def test_release_date_preferred_over_first_air_date(self):
+        assert _extract_tmdb_year(
+            {"release_date": "2000-01-01", "first_air_date": "1999-01-01"}
+        ) == "2000"
+
+    def test_no_date_returns_empty(self):
+        assert _extract_tmdb_year({}) == ""
+
+    def test_blank_date_returns_empty(self):
+        assert _extract_tmdb_year({"release_date": ""}) == ""
+
+    def test_malformed_date_returns_empty(self):
+        assert _extract_tmdb_year({"release_date": "N/A"}) == ""
+
+
+class TestParseTmdbPayloadYear:
+    def test_payload_includes_year(self):
+        parsed = _parse_tmdb_payload(
+            {"title": "T", "overview": "O", "tagline": "G", "release_date": "2019-05-01"}
+        )
+        assert parsed == {"title": "T", "overview": "O", "tagline": "G", "year": "2019"}
+
+    def test_payload_year_empty_when_no_date(self):
+        parsed = _parse_tmdb_payload({"title": "T", "overview": "O"})
+        assert parsed["year"] == ""
+
+
+class TestPickYearFromLocalized:
+    def test_picks_year_from_first_entry(self):
+        loc = {"en-US": {"title": "X", "overview": "", "tagline": "", "year": "2021"}}
+        assert pick_year_from_localized(loc) == 2021
+
+    def test_skips_empty_years(self):
+        loc = {
+            "en-US": {"year": ""},
+            "cs-CZ": {"year": "2015"},
+        }
+        assert pick_year_from_localized(loc) == 2015
+
+    def test_returns_none_when_no_year_anywhere(self):
+        loc = {"en-US": {"year": ""}, "cs-CZ": {"year": ""}}
+        assert pick_year_from_localized(loc) is None
+
+    def test_returns_none_on_empty_localized(self):
+        assert pick_year_from_localized({}) is None
+
+    def test_returns_none_on_non_numeric_year(self):
+        # Defensive: a non-numeric year should not raise.
+        assert pick_year_from_localized({"en-US": {"year": "abcd"}}) is None
+
+
+class TestCollectCandidatesMissingYear:
+    def test_missing_year_with_slavic_text_is_candidate(self):
+        """An item with good Slavic text but no ProductionYear is still picked up."""
+        items = [{
+            "Name": "Film",
+            "Overview": "Toto je slovenský popis filmu, ktorý je veľmi dobrý.",
+            "Taglines": ["Slovenský slogan."],
+            "ProviderIds": {"Tmdb": "1"},
+            # no ProductionYear
+        }]
+        assert len(collect_overview_candidates(items)) == 1
+
+    def test_slavic_text_with_year_is_not_candidate(self):
+        """Good Slavic text AND a year present -> nothing to do."""
+        items = [{
+            "Name": "Film",
+            "Overview": "Toto je slovenský popis filmu, ktorý je veľmi dobrý.",
+            "Taglines": ["Slovenský slogan."],
+            "ProviderIds": {"Tmdb": "1"},
+            "ProductionYear": 2010,
+        }]
+        assert collect_overview_candidates(items) == []
+
+    def test_missing_year_without_tmdb_is_not_candidate(self):
+        """No TMDB id -> can't resolve a year, so not a candidate."""
+        items = [{
+            "Name": "Film",
+            "Overview": "Toto je slovenský popis.",
+            "ProviderIds": {"Imdb": "tt1"},
+            # no ProductionYear, no Tmdb
+        }]
+        assert collect_overview_candidates(items) == []
+
+
+class TestUpdateItemMetadataYear:
+    def test_fills_year_when_missing(self):
+        client = MagicMock()
+        client.post.return_value.is_success = True
+        full = {"Name": "n", "Overview": "o", "LockedFields": []}  # no ProductionYear
+        assert update_item_metadata(
+            client, "u", "1", full, new_year=2022,
+        ) is True
+        sent = client.post.call_args.kwargs["json"]
+        assert sent["ProductionYear"] == 2022
+
+    def test_does_not_lock_year(self):
+        """ProductionYear must NOT be added to LockedFields (enum-validity risk)."""
+        client = MagicMock()
+        client.post.return_value.is_success = True
+        full = {"Name": "n", "Overview": "o", "LockedFields": []}
+        update_item_metadata(client, "u", "1", full, new_year=2022, lock=True)
+        sent = client.post.call_args.kwargs["json"]
+        assert "ProductionYear" not in sent.get("LockedFields", [])
+
+    def test_never_overwrites_existing_year(self):
+        client = MagicMock()
+        full = {"Name": "n", "Overview": "o", "ProductionYear": 1999, "LockedFields": []}
+        assert update_item_metadata(
+            client, "u", "1", full, new_year=2022,
+        ) is False
+        client.post.assert_not_called()
+
+    def test_year_noop_when_none(self):
+        client = MagicMock()
+        full = {"Name": "n", "Overview": "o", "LockedFields": []}
+        assert update_item_metadata(
+            client, "u", "1", full, new_year=None,
+        ) is False
+        client.post.assert_not_called()
+
+    def test_year_fills_alongside_overview(self):
+        client = MagicMock()
+        client.post.return_value.is_success = True
+        full = {"Name": "n", "Overview": "old", "LockedFields": []}
+        assert update_item_metadata(
+            client, "u", "1", full, new_overview="new", new_year=2022,
+        ) is True
+        sent = client.post.call_args.kwargs["json"]
+        assert sent["Overview"] == "new"
+        assert sent["ProductionYear"] == 2022
+        assert "Overview" in sent["LockedFields"]

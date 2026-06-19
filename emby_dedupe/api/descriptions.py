@@ -159,13 +159,26 @@ def _cache_lookup(
     return False, None
 
 
+def _extract_tmdb_year(data: dict) -> str:
+    """Pull a 4-digit year from a TMDB payload's release/air date.
+
+    Movies expose ``release_date`` and TV/collections ``first_air_date``
+    (``YYYY-MM-DD``).  Returns the year as a string, or ``""`` when TMDB has
+    no usable date.
+    """
+    date_str = (data.get("release_date") or data.get("first_air_date") or "").strip()
+    head = date_str[:4]
+    return head if head.isdigit() else ""
+
+
 def _parse_tmdb_payload(data: dict) -> dict[str, str]:
-    """Normalize TMDB JSON to the {title, overview, tagline} shape."""
+    """Normalize TMDB JSON to the {title, overview, tagline, year} shape."""
     # TMDB uses "title" for movies and "name" for TV/collection.
     title = (data.get("title") or data.get("name") or "").strip()
     overview = (data.get("overview") or "").strip()
     tagline = (data.get("tagline") or "").strip()
-    return {"title": title, "overview": overview, "tagline": tagline}
+    year = _extract_tmdb_year(data)
+    return {"title": title, "overview": overview, "tagline": tagline, "year": year}
 
 
 def _collect_localized_results(
@@ -193,10 +206,14 @@ def _collect_localized_results(
 
 
 def _parse_tmdb_episode_payload(data: dict) -> dict[str, str]:
-    """Same as _parse_tmdb_payload but with an always-empty tagline (episodes have none)."""
+    """Same as _parse_tmdb_payload but with an always-empty tagline (episodes have none).
+
+    Year is intentionally left empty: episode ProductionYear is out of scope for
+    the year backfill, which targets movies/series/collections only.
+    """
     title = (data.get("name") or "").strip()
     overview = (data.get("overview") or "").strip()
-    return {"title": title, "overview": overview, "tagline": ""}
+    return {"title": title, "overview": overview, "tagline": "", "year": ""}
 
 
 def fetch_tmdb_episode_localized(
@@ -301,6 +318,22 @@ def pick_tagline_from_localized(
     return None
 
 
+def pick_year_from_localized(localized: dict) -> Optional[int]:
+    """Return the production year from any language entry, or None.
+
+    The year is language-independent (TMDB's release/air date is the same across
+    languages), so the first non-empty value wins.
+    """
+    for entry in localized.values():
+        raw = (entry or {}).get("year", "")
+        if raw:
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
 def pick_title_from_localized(
     current_title: str, localized: dict
 ) -> Optional[tuple[str, str]]:
@@ -359,10 +392,18 @@ def _is_episode_candidate(it: dict) -> bool:
 
 
 def _is_movie_or_series_candidate(it: dict) -> bool:
-    """Eligible iff has TMDB ID and Overview or Tagline still looks non-Slavic."""
+    """Eligible iff has a TMDB ID and either needs text localization or a year.
+
+    A TMDB-having item is a candidate when its Overview/Tagline still looks
+    non-Slavic (needs localization) OR it has no ``ProductionYear`` yet (needs
+    the year backfill) — so items with good Slavic text but a missing year are
+    still picked up.
+    """
     pids = it.get("ProviderIds") or {}
     if not pids.get("Tmdb"):
         return False
+    if not it.get("ProductionYear"):
+        return True
     ov = (it.get("Overview") or "").strip()
     tags = it.get("Taglines") or []
     tag = (tags[0] if tags else "").strip()
@@ -489,19 +530,25 @@ def update_item_metadata(
     new_overview: Optional[str] = None,
     new_title: Optional[str] = None,
     new_tagline: Optional[str] = None,
+    new_year: Optional[int] = None,
     lock: bool = True,
 ) -> bool:
-    """Update Overview, Name, and/or Tagline for a single Emby item via atomic POST.
+    """Update Overview, Name, Tagline, and/or ProductionYear for one Emby item.
 
     Per-field policy:
     - No-ops when the new value equals the current value.
     - Skips a field when it is already in ``LockedFields`` — respecting prior
       explicit locks (set by us or the user via the Emby UI).
     - OriginalTitle is never touched.
-    - When ``lock=True``, each updated field gets its corresponding
+    - When ``lock=True``, each updated text field gets its corresponding
       ``LockedFields`` enum appended (``"Overview"``, ``"Name"``, ``"Tagline"``
       — note Emby uses ``"Tagline"`` singular for the lock enum even though
       the data field is ``"Taglines"`` plural).
+    - ``ProductionYear`` is filled ONLY when Emby currently has none — an
+      existing year is never overwritten. It is deliberately NOT added to
+      ``LockedFields``: it isn't a guaranteed-valid lock enum and an invalid
+      enum risks the whole POST being rejected; since we only ever set it when
+      empty, churn is a non-issue.
 
     Returns:
         True when a non-empty payload was POSTed and accepted.
@@ -519,7 +566,8 @@ def update_item_metadata(
         and "Tagline" not in current_locked
         and current_tagline != new_tagline
     )
-    if not (overview_changes or title_changes or tagline_changes):
+    year_changes = new_year is not None and not full_item.get("ProductionYear")
+    if not (overview_changes or title_changes or tagline_changes or year_changes):
         return False
 
     payload = copy.deepcopy(full_item)
@@ -534,6 +582,8 @@ def update_item_metadata(
         # enum uses "Tagline" (singular). Empirically verified — "Taglines"
         # in LockedFields is silently rejected.
         _apply_field_update(payload, "Taglines", [new_tagline], "Tagline", locked)
+    if year_changes:
+        payload["ProductionYear"] = new_year
 
     return _post_metadata_update(client, base_url, item_id, payload)
 
