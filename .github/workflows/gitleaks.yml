@@ -22,5 +22,7 @@ jobs:
       - name: Run gitleaks
         uses: gitleaks/gitleaks-action@v3
         env:
+          # v3 requires GITHUB_TOKEN to scan pull_request events (breaking change from v2).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_CONFIG: .gitleaks.toml
           # gitleaks-action is free for personal/public repos (no license needed).
