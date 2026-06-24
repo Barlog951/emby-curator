@@ -214,6 +214,9 @@ Temporary Items
 scripts/consolidate-series.sh
 scripts/export-missing-episodes.py
 scripts/fix-nfo-mismatches.sh
+# Personal library-hygiene tool (specific homelab use case, ~monthly; runs on emby-gpu)
+scripts/orphan-scan.py
+tests/unit/test_orphan_scan.py
 
 # Claude Code project guidance (local only)
 CLAUDE.md
