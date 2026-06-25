@@ -223,3 +223,5 @@ CLAUDE.md
 
 # SonarQube token (provided via SONAR_TOKEN env)
 .sonar-token
+# Re-download list from the 2026-06-25 dedupe data-loss (real library paths, keep local)
+redownload-list.json
