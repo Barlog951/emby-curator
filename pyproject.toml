@@ -108,6 +108,8 @@ ignore = ["E501"]  # Ignore line length errors
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"] # Unused imports in __init__ files
 "tests/*" = ["E501"]   # Line length in tests
+# Standalone operational scripts use a deliberately compact one-line style.
+"scripts/dv/*" = ["E701", "E702"]  # allow `if x: stmt` / `a; b` in the dv tooling
 
 [tool.coverage.run]
 source = ["emby_dedupe"]

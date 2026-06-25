@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Dolby Vision P5->HDR10 worker hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target
