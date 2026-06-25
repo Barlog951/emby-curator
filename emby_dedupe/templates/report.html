@@ -151,6 +151,9 @@
                     <div class="quality-info">
                         <span class="quality-badge">Codec: {{ group.keep.quality_description.get('video', {}).get('codec', 'unknown') }}</span>
                         <span class="quality-badge">Resolution: {{ group.keep.quality_description.get('video', {}).get('resolution', 'unknown') }}</span>
+                        {% if group.keep.quality_description.get('video', {}).get('is_dovi_p5') %}
+                        <span class="quality-badge" style="background-color: rgba(255, 85, 85, 0.25); color: #ff5555;">⚠️ DV Profile 5 — green/pink</span>
+                        {% endif %}
                         <span class="quality-badge">Size: {{ group.keep.quality_description.size_formatted }}</span>
                         {% if group.keep.quality_description.get('is_ai_upscale') %}
                         <span class="quality-badge" style="background-color: rgba(255, 152, 0, 0.25); color: #ffb86c;">⚠️ AI Upscaled</span>
@@ -208,6 +211,9 @@
                         <div class="quality-info">
                             <span class="quality-badge">Codec: {{ item.quality_description.get('video', {}).get('codec', 'unknown') }}</span>
                             <span class="quality-badge">Resolution: {{ item.quality_description.get('video', {}).get('resolution', 'unknown') }}</span>
+                            {% if item.quality_description.get('video', {}).get('is_dovi_p5') %}
+                            <span class="quality-badge" style="background-color: rgba(255, 85, 85, 0.25); color: #ff5555;">⚠️ DV Profile 5 — green/pink</span>
+                            {% endif %}
                             <span class="quality-badge">Size: {{ item.quality_description.size_formatted }}</span>
                             {% if item.quality_description.get('is_ai_upscale') %}
                             <span class="quality-badge" style="background-color: rgba(255, 152, 0, 0.25); color: #ffb86c;">⚠️ AI Upscaled</span>

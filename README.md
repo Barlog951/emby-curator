@@ -44,6 +44,12 @@ The following architectures are supported in the latest Docker version:
 - Support for multiple provider IDs (IMDB, TVDB, TMDB)
 - Intelligent quality ranking to keep the best version
 - Language prioritization to keep items with preferred audio tracks
+- Dolby Vision **Profile 5** ("green/pink") awareness: detects single-layer DV P5 files
+  (which render with a green/magenta tint on non-DV players) and ranks them *below* a
+  clean HDR10 copy of the same item, so the watchable version is the one kept. The HTML
+  report flags these with a "DV Profile 5 — green/pink" badge.
+- Optional DV P5 → HDR10 converter (`scripts/dv/`, NVENC/libplacebo) to produce the clean
+  copy in the first place — see [`scripts/dv/README.md`](scripts/dv/README.md)
 - Multi-platform support (Docker and Python)
 
 ## Installation

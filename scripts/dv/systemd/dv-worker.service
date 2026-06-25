@@ -1,0 +1,19 @@
+[Unit]
+Description=Dolby Vision P5->HDR10 worker (scan + serial conversion)
+After=network-online.target emby-server.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Edit the user and paths below for your deployment.
+User=YOUR_USER
+Group=YOUR_USER
+# explicit DB + media root so it never depends on $HOME of the service user
+Environment=DV_DB=/home/YOUR_USER/dv-cache.db
+Environment=DV_ROOT=/Movies
+Environment=HOME=/home/YOUR_USER
+ExecStart=/home/YOUR_USER/emby-dedupe/scripts/dv/dv-worker.sh
+# backstop above the worker's own 6h max-runtime self-exit (DV_MAX_RUN)
+TimeoutStartSec=25200
+Nice=19
+IOSchedulingClass=idle

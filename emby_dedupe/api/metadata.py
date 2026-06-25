@@ -10,6 +10,45 @@ from typing import Any, Dict, List, Optional
 from emby_dedupe.api.quality_compare import detect_ai_upscale, detect_source_quality
 from emby_dedupe.utils.logging import logger
 
+# Dolby Vision Profile 5 ("green/pink") quality penalty.
+#
+# DV Profile 5 is single-layer (BL+RPU), encoded in the IPT-PQ-C2 / ICtCp matrix
+# with NO HDR10 fallback. On any Emby playback path that is not full-DV-P5 aware
+# (most clients, browsers, transcodes) it renders with a green/magenta tint, i.e.
+# it is effectively unwatchable. When a non-defective copy of the same item also
+# exists, we must keep that one even though the DV P5 file is usually LARGER (and
+# would otherwise win on raw size/bitrate). This multiplier collapses the P5
+# file's quality rating so a non-P5 sibling always outranks it, while staying a
+# positive multiplier (keeps the language-override ratio math intact).
+DOVI_P5_QUALITY_PENALTY = 0.0001
+
+
+def _is_dovi_profile5(video_stream: Optional[Dict[str, Any]]) -> bool:
+    """Return True if a video stream is Dolby Vision Profile 5 (green/pink risk).
+
+    Emby exposes the DV profile directly. Verified live on Emby 4.9.5.0, the P5
+    file reports ``ExtendedVideoSubType == "DoviProfile50"`` (description
+    ``"Profile 5.0"``, ``VideoRange == "DolbyVision"``). DV Profile 7/8 carry an
+    HDR10 base layer and do NOT show the tint, so they are deliberately NOT
+    flagged (their subtype is e.g. ``DoviProfile70``/``DoviProfile81``).
+
+    Args:
+        video_stream: An Emby video ``MediaStream`` dict, or None.
+
+    Returns:
+        True only for Dolby Vision Profile 5.
+    """
+    if not video_stream:
+        return False
+    subtype = str(video_stream.get("ExtendedVideoSubType") or "")
+    if subtype.startswith("DoviProfile5"):
+        return True
+    # Fallback for builds that omit ExtendedVideoSubType: Dolby Vision range
+    # plus a "Profile 5.x" description.
+    video_range = str(video_stream.get("VideoRange") or "").replace(" ", "").lower()
+    desc = str(video_stream.get("ExtendedVideoSubTypeDescription") or "").strip().lower()
+    return video_range == "dolbyvision" and desc.startswith("profile 5")
+
 
 def _format_file_size(size_bytes: int) -> str:
     """Format file size in human-readable format (KB, MB, GB).
@@ -259,6 +298,10 @@ def _extract_video_quality(video_stream: Optional[Dict[str, Any]]) -> Dict[str, 
             "bitrate": "unknown",
             "bitdepth": "unknown",
             "interlaced": "unknown",
+            "video_range": "unknown",
+            "dv_profile": "",
+            "dv_profile_desc": "",
+            "is_dovi_p5": False,
         }
     return {
         "codec": video_stream.get("Codec", "unknown"),
@@ -266,6 +309,10 @@ def _extract_video_quality(video_stream: Optional[Dict[str, Any]]) -> Dict[str, 
         "bitrate": video_stream.get("BitRate", "unknown"),
         "bitdepth": video_stream.get("BitDepth", "unknown"),
         "interlaced": video_stream.get("IsInterlaced", "unknown"),
+        "video_range": video_stream.get("VideoRange", "unknown"),
+        "dv_profile": video_stream.get("ExtendedVideoSubType", ""),
+        "dv_profile_desc": video_stream.get("ExtendedVideoSubTypeDescription", ""),
+        "is_dovi_p5": _is_dovi_profile5(video_stream),
     }
 
 
@@ -432,8 +479,19 @@ def _calculate_quality_rating(
     is_ai_upscale = detect_ai_upscale(item_path, item_name)
     ai_upscale_multiplier = 0.7 if is_ai_upscale else 1.0
 
+    # Dolby Vision Profile 5 renders green/pink on non-DV playback paths; collapse
+    # its rating so a non-defective copy of the same item is always kept instead.
+    dovi_p5_multiplier = (
+        DOVI_P5_QUALITY_PENALTY if _is_dovi_profile5(video_stream) else 1.0
+    )
+
     # Apply multipliers to get final quality rating
-    return base_quality_rating * source_multiplier * ai_upscale_multiplier
+    return (
+        base_quality_rating
+        * source_multiplier
+        * ai_upscale_multiplier
+        * dovi_p5_multiplier
+    )
 
 
 def rate_media_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
