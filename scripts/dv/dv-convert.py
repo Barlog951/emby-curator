@@ -8,8 +8,11 @@ Fixes the green/pink problem permanently. Proven pipeline:
   record ever written) -> mkvmerge muxes the ORIGINAL audio + subtitles back.
 Memory-safe (~1.8GB RSS via shared CUDA+Vulkan device), GPU-accelerated.
 
-Safe by default: writes a NEW "<name> [HDR10].mkv" beside the original and does
-NOT delete the source. --replace swaps it in only after the output verifies.
+Safe by default: writes a NEW "<name> [HDR10].mkv" and does NOT delete the source.
+Placement is chosen so the dedupe can later remove the P5 original via the Emby API
+WITHOUT fold-deleting the keeper (see dv_common.safe_output_path): episodes go loose
+in the season folder, movies go in a sibling "<name> [HDR10]/" folder, loose files
+stay beside. --replace swaps it in only after the output verifies.
 
 Usage:
   dv-convert.py INPUT [--outdir DIR] [--replace] [--mark] [--clip SECONDS] [-n|--dry-run]
@@ -80,7 +83,8 @@ def main():
     p = argparse.ArgumentParser(
         description="Convert a Dolby Vision Profile-5 file to clean HDR10 (keeps the original).")
     p.add_argument("input", help="the DV Profile-5 source file")
-    p.add_argument("--outdir", help="output directory (default: alongside the input)")
+    p.add_argument("--outdir", help="force output directory (default: safe library "
+                                     "placement via dv_common.safe_output_path)")
     p.add_argument("--replace", action="store_true",
                    help="after verifying, atomically replace the original (backs it up)")
     p.add_argument("--mark", action="store_true",
@@ -113,8 +117,17 @@ def main():
         print(f"WARN: r_frame_rate {rfr} != avg {afr} (possible VFR — verify A/V sync)")
 
     base = os.path.splitext(os.path.basename(inp))[0]
-    outdir = outdir or os.path.dirname(inp)
-    out = os.path.join(outdir, base + " [HDR10].mkv")
+    # SAFE placement: keep the converted HDR10 OUT of any folder Emby would
+    # fold-delete when the dedupe later removes the P5 original via the API
+    # (see dv_common.safe_output_path / the emby-delete-folder-rule). --outdir
+    # still forces a location for pipeline self-tests.
+    if outdir:
+        out = os.path.join(outdir, base + " [HDR10].mkv")
+    elif replace:
+        out = os.path.join(os.path.dirname(inp), base + " [HDR10].mkv")  # swapped in place anyway
+    else:
+        out = dvc.safe_output_path(inp)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
     tmp_hevc = f"/tmp/dvconv-{os.getpid()}.hevc"
 
     print(f"[convert] {inp}\n          P{dvp} compat{comp}  fps={rfr}  -> {out}", file=sys.stderr)

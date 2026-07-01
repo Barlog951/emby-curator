@@ -99,7 +99,8 @@ implicit_optional = true
 line-length = 100
 target-version = "py314"
 # Personal/local helper scripts (gitignored) are not linted
-extend-exclude = ["scripts/smoke_test_*.py", "scripts/analyze_stale_series.py", "scripts/run-*"]
+extend-exclude = ["scripts/smoke_test_*.py", "scripts/analyze_stale_series.py", "scripts/run-*",
+                  "scripts/orphan-scan.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]

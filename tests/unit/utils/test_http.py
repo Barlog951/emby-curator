@@ -45,6 +45,52 @@ class TestHttpUtils:
 
         assert result is False
 
+    def test_should_give_up_permission_denied_500(self):
+        """A 500 caused by a filesystem permission error is permanent → give up
+        immediately (regression for the 'stuck delete' caused by Emby being unable to
+        delete a file in a folder it lacks write access to)."""
+        mock_response = Mock()
+        mock_response.status_code = 500
+        mock_response.text = (
+            "System.IO.IOException: Permission denied\n   at DeleteFile(String path)"
+        )
+        error = Mock(spec=httpx.HTTPStatusError)
+        error.response = mock_response
+
+        assert should_give_up(error) is True
+
+    def test_should_give_up_transient_500_still_retries(self):
+        """A generic 500 (no permission/IO marker) stays retryable."""
+        mock_response = Mock()
+        mock_response.status_code = 500
+        mock_response.text = "Internal Server Error"
+        error = Mock(spec=httpx.HTTPStatusError)
+        error.response = mock_response
+
+        assert should_give_up(error) is False
+
+    def test_should_give_up_503_still_retries(self):
+        """Transient gateway/unavailable 5xx remain retryable."""
+        mock_response = Mock()
+        mock_response.status_code = 503
+        mock_response.text = "Service Unavailable"
+        error = Mock(spec=httpx.HTTPStatusError)
+        error.response = mock_response
+
+        assert should_give_up(error) is False
+
+    def test_should_give_up_500_unreadable_body_does_not_crash(self):
+        """If the 500 body can't be read, default to retryable (don't raise)."""
+        mock_response = Mock()
+        mock_response.status_code = 500
+        type(mock_response).text = property(
+            lambda self: (_ for _ in ()).throw(RuntimeError("stream consumed"))
+        )
+        error = Mock(spec=httpx.HTTPStatusError)
+        error.response = mock_response
+
+        assert should_give_up(error) is False
+
     def test_handle_giveup_generic(self):
         """Test handle_giveup with a generic exception."""
         details = {'tries': 5, 'exception': RuntimeError("timeout")}

@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from emby_dedupe.api.metadata import (
     _build_tv_metadata,
+    _calculate_quality_rating,
     _extract_premiere_date,
     _format_file_size,
     _parse_iso_date,
@@ -708,3 +709,57 @@ class TestMetadataHelpers:
         item = {"Name": "Test", "Size": 1000}
         result = _try_any_date_field(item)
         assert result is None
+
+
+def _rate(height, width, bitrate, *, hdr=False, size=4_000_000_000, date="2026-06-20T00:00:00Z",
+          channels=6, p5=False, path="/Movies/x/x.mkv"):
+    """Build a minimal item + streams and return its quality rating."""
+    video = {"Type": "Video", "Height": height, "Width": width, "BitRate": bitrate,
+             "VideoRange": ("DolbyVision" if p5 else ("HDR 10" if hdr else "SDR"))}
+    if p5:
+        video["ExtendedVideoSubType"] = "DoviProfile50"
+    item = {"Name": "x", "Path": path, "DateCreated": date, "Size": size, "Bitrate": bitrate}
+    audio = {"Type": "Audio", "Channels": channels}
+    return _calculate_quality_rating(item, video, audio)
+
+
+class TestQualityRatingRegression:
+    """Regression tests for the normalized quality rating — resolution + HDR must dominate,
+    file_size/date must NOT (the Last Frontier S01E07 bug), with a Phase-2 starved-bitrate floor."""
+
+    def test_4k_hdr10_beats_higher_bitrate_1080p_sdr(self):
+        # Exact incident: efficient 4K HDR10 (10.2 Mbps, smaller, newer) vs high-bitrate 1080p SDR.
+        fourk = _rate(2160, 3840, 10_219_727, hdr=True, size=3_800_000_000, date="2026-06-25T14:46:00Z")
+        hd = _rate(1080, 1920, 10_619_067, hdr=False, size=4_000_000_000, date="2026-06-20T00:00:00Z")
+        assert fourk > hd
+
+    def test_file_size_does_not_dominate(self):
+        # A hugely bigger 1080p must NOT outrank a small 4K (file_size was the magnitude bomb).
+        big_hd = _rate(1080, 1920, 12_000_000, size=80_000_000_000)
+        small_4k = _rate(2160, 3840, 12_000_000, size=8_000_000_000)
+        assert small_4k > big_hd
+
+    def test_date_does_not_dominate(self):
+        # An OLDER 4K must still beat a NEWER 1080p (date was a ~1.8e9 magnitude bomb).
+        old_4k = _rate(2160, 3840, 12_000_000, date="2020-01-01T00:00:00Z")
+        new_hd = _rate(1080, 1920, 12_000_000, date="2026-06-25T00:00:00Z")
+        assert old_4k > new_hd
+
+    def test_hdr_beats_sdr_same_resolution(self):
+        assert _rate(2160, 3840, 12_000_000, hdr=True) > _rate(2160, 3840, 12_000_000, hdr=False)
+
+    def test_starved_high_res_can_lose_to_good_lower_res(self):
+        # Phase 2: a 4K far below its bitrate floor loses to a well-encoded 1080p.
+        starved_4k = _rate(2160, 3840, 1_500_000, hdr=True)   # 1.5 Mbps 4K (floor 6)
+        good_hd = _rate(1080, 1920, 12_000_000, hdr=False)
+        assert good_hd > starved_4k
+
+    def test_efficient_4k_above_floor_not_penalised(self):
+        # A cq18 HDR10 at 10 Mbps is ABOVE the 6 Mbps 4K floor → full resolution credit, beats 1080p.
+        assert _rate(2160, 3840, 10_000_000, hdr=True) > _rate(1080, 1920, 15_000_000, hdr=False)
+
+    def test_dovi_p5_penalty_still_collapses_below_any_real_item(self):
+        # The DV P5 penalty must still rank a 4K P5 below even a 1080p SDR.
+        p5_4k = _rate(2160, 3840, 25_000_000, p5=True)
+        sdr_hd = _rate(1080, 1920, 5_000_000, hdr=False)
+        assert p5_4k < sdr_hd

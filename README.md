@@ -50,6 +50,10 @@ The following architectures are supported in the latest Docker version:
   report flags these with a "DV Profile 5 — green/pink" badge.
 - Optional DV P5 → HDR10 converter (`scripts/dv/`, NVENC/libplacebo) to produce the clean
   copy in the first place — see [`scripts/dv/README.md`](scripts/dv/README.md)
+- **Fold-delete safety guard:** Emby's `DELETE /Items/{id}` removes a media file's *owning
+  folder* (a movie folder or per-episode subfolder), not just the file. The deletion path
+  refuses any delete that would fold-delete a folder containing the item being **kept**, so
+  a duplicate co-located with its keeper is never destroyed together with it.
 - Multi-platform support (Docker and Python)
 
 ## Installation

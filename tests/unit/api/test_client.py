@@ -300,6 +300,42 @@ class TestClient:
         # Verify API calls
         assert mock_make_http_request.call_count == 2
 
+    @patch('emby_dedupe.api.client.PAGE_SIZE', 2)
+    @patch('emby_dedupe.api.client.make_http_request')
+    def test_fetch_all_media_paths_paginates(self, mock_make_http_request):
+        """fetch_all_media_paths walks every page and returns each item's verbatim Path.
+
+        Feeds the deletion safety guard real folder visibility (see deletion_guard)."""
+        from emby_dedupe.api.client import fetch_all_media_paths
+
+        page1 = Mock()
+        page1.json.return_value = {"Items": [
+            {"Id": "1", "Path": "/Movies/A/A.mkv"},
+            {"Id": "2", "Path": "/Movies/B/B.mkv"},   # full page (==PAGE_SIZE) → fetch again
+        ]}
+        page2 = Mock()
+        page2.json.return_value = {"Items": [
+            {"Id": "3", "Path": "/Movies/C/C.mkv"},
+            {"Id": "4"},                               # no Path → skipped, not crashing
+        ]}                                             # also full (==PAGE_SIZE) → fetch again
+        page3 = Mock()
+        page3.json.return_value = {"Items": []}        # empty trailing page → stop
+        mock_make_http_request.side_effect = [page1, page2, page3]
+
+        result = fetch_all_media_paths(Mock(), "http://emby")
+
+        assert result == ["/Movies/A/A.mkv", "/Movies/B/B.mkv", "/Movies/C/C.mkv"]
+        assert mock_make_http_request.call_count == 3
+
+    @patch('emby_dedupe.api.client.make_http_request')
+    def test_fetch_all_media_paths_degrades_to_empty_on_failure(self, mock_make_http_request):
+        """A fetch failure must degrade to [] so the guard falls back to over-refusing
+        (safe) rather than ever under-refusing."""
+        from emby_dedupe.api.client import fetch_all_media_paths
+
+        mock_make_http_request.side_effect = httpx.RequestError("boom")
+        assert fetch_all_media_paths(Mock(), "http://emby") == []
+
     @patch('emby_dedupe.api.client.make_http_request')
     @patch('emby_dedupe.api.client.ensure_authenticated_for_delete')
     def test_delete_item_success(self, mock_ensure_auth, mock_make_http_request):

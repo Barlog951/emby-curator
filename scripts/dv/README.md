@@ -6,10 +6,18 @@ playback path. Profiles 7/8 carry a real HDR10 base layer and play fine — they
 touched. The fix re-encodes P5 → clean **HDR10** (libplacebo applies the DV RPU, NVENC
 encodes 10-bit), keeping both files so the dedupe pass can remove the P5 original.
 
+> **Safe placement (important):** the converted `[HDR10]` file is written so the dedupe
+> can later delete the P5 original via the Emby API **without** fold-deleting the keeper.
+> Emby's delete removes a media file's *owning folder* (a movie folder / per-episode
+> subfolder), so the keeper is placed **outside** it: episodes go **loose in the season
+> folder**, movies go in a **sibling `<name> [HDR10]/` folder**, and files already loose in
+> a shared folder stay beside the original. See `dv_common.safe_output_path`. (The dedupe
+> also has a matching safety guard that refuses any delete that would take a co-located keeper.)
+
 ## Components
 | File | Role |
 |---|---|
-| `dv_common.py` | Shared helpers — single source of truth for ffprobe access and the `dv_profile == 5` criterion (imported by `dv-scan`/`dv-convert` so they can't drift apart). |
+| `dv_common.py` | Shared helpers — single source of truth for ffprobe access, the `dv_profile == 5` criterion, and `safe_output_path()` (where to write the `[HDR10]` file so the dedupe can delete the P5 without destroying the keeper). Imported by `dv-scan`/`dv-convert` so they can't drift apart. |
 | `dv-scan.py` | SQLite cache + queue. Fingerprints every video by size+mtime → re-runs only probe new/changed files. Flags `dv_profile == 5`. CLI: `--pile --pile-paths --good --new --removed --runs --stats --mark <status> <path> --fail <path>`. DB: `~/dv-cache.db`. |
 | `dv-convert.py` | One P5 → HDR10. `--mark` (keep both files + mark original `converted`), `--supervise` (GPU-priority), `--replace` (swap + back up original). Quality via `DV_CQ` (18) / `DV_PRESET` (p7) — VMAF-verified transparent. Appends `~/dv-convert-history.jsonl`. |
 | `dv-load.py` | GPU-priority gate. `nvidia-smi pmon` per-process pressure; `--supervise <pid>` SIGSTOP/SIGCONT-pauses conversions whenever Emby/Ollama actually need the GPU. |

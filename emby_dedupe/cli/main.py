@@ -21,6 +21,7 @@ import httpx
 import emby_dedupe.api.client as _client_mod
 from emby_dedupe.api.client import (
     check_emby_connection,
+    fetch_all_media_paths,
     fetch_and_process_media_items,
     get_library_id,
     handle_host_and_port,
@@ -320,8 +321,21 @@ def _run_deduplication_pipeline(client, base_url, all_provider_tables, excluded_
         "excluded_titles": exclusion_metadata.get("excluded_titles", {})
     }
 
+    # Give the deletion safety guard full folder visibility by fetching every library
+    # media path (not just the duplicated ones), so it stops over-refusing safe deletes
+    # in single-duplicate folders. Only needed when something will actually be deleted;
+    # skip the extra fetch for no-op runs.
+    has_deletes = any(decision.get("delete") for decision in decisions)
+    library_paths = None
+    if has_deletes:
+        library_paths = fetch_all_media_paths(client, base_url)
+        logger.info(
+            f"Fetched {len(library_paths)} library paths for the deletion safety guard."
+        )
+
     markdown_report = process_deletion_and_generate_report(
-        client, base_url, decisions, doit, username, password, api_key, report_metadata
+        client, base_url, decisions, doit, username, password, api_key,
+        report_metadata, library_paths,
     )
 
     dump_object_to_file(decisions, "testing/deletions") if logger.isEnabledFor(

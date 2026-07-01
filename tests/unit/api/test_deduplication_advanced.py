@@ -286,8 +286,9 @@ class TestAdvancedDeduplication:
         assert decision["delete"][0]["id"] == "single_lang_sk"
 
     def test_smart_language_priority_normal_behavior(self):
-        """Test smart language priority - quality wins when both have priority langs and quality is 2x+ better."""
-        # Create items where both have multiple languages but quality gap is massive (4K vs 1080p)
+        """A single-tier quality jump (4K vs 1080p, both with a priority language) does NOT
+        override language: the higher-priority-language item is kept (ratio ~3x < 4x threshold)."""
+        # Both have a priority-language track; the gap is one resolution tier (4K vs 1080p)
         items = [
             {
                 "Id": "multi_lang_cz_en",  # Multi-language CZ/EN, much higher quality (4K)
@@ -321,10 +322,11 @@ class TestAdvancedDeduplication:
         # Run determination with language priorities
         decision = determine_items_to_delete(["multi_lang_cz_en", "multi_lang_sk_en"], items, lang_priorities)
 
-        # Quality override: 4K CZ/EN is 2x+ better than 1080p SK/EN, so quality wins
-        assert decision["keep"]["id"] == "multi_lang_cz_en"
+        # Single-tier gap (~3x) is below the 4x both-priority-language threshold, so
+        # language holds → keep the Slovak item (slo = priority 0, above cze = priority 1).
+        assert decision["keep"]["id"] == "multi_lang_sk_en"
         assert len(decision["delete"]) == 1
-        assert decision["delete"][0]["id"] == "multi_lang_sk_en"
+        assert decision["delete"][0]["id"] == "multi_lang_cz_en"
 
     def test_smart_language_priority_small_quality_gap(self):
         """Test language priority wins when both have priority langs but quality gap is small (< 2x)."""
@@ -407,8 +409,9 @@ class TestAdvancedDeduplication:
         assert decision["keep"]["selected_by_language_priority"]
 
     def test_smart_language_priority_reverse_scenario(self):
-        """Test smart language priority - quality wins when gap is massive (4K vs 1080p)."""
-        # 4K English-only vs 1080p Slovak/Czech — quality gap is >3x
+        """Quality wins only on a MASSIVE multi-tier gap (4K @25Mbps vs 720p @5Mbps, ratio >4x):
+        the high-quality non-preferred-language item overrides language priority."""
+        # 4K English-only vs 720p Slovak/Czech — a multi-tier gap (>4x) that DOES override
         items = [
             {
                 "Id": "single_lang_high_quality",  # Single language but highest quality
@@ -422,11 +425,11 @@ class TestAdvancedDeduplication:
                 "Bitrate": 30000000
             },
             {
-                "Id": "multi_lang_lower_quality",  # Multi-language but much lower quality
+                "Id": "multi_lang_lower_quality",  # Multi-language but FAR lower quality (720p)
                 "Name": "Movie Slovak Czech",
                 "Path": "/movies/movie_sk_cz.mkv",
                 "MediaStreams": [
-                    {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920, "BitRate": 5000000},
+                    {"Type": "Video", "Codec": "h264", "Height": 720, "Width": 1280, "BitRate": 5000000},
                     {"Type": "Audio", "Codec": "aac", "Channels": 6, "Language": "slo"},
                     {"Type": "Audio", "Codec": "aac", "Channels": 6, "Language": "cze"}
                 ],
@@ -440,7 +443,7 @@ class TestAdvancedDeduplication:
 
         decision = determine_items_to_delete(["single_lang_high_quality", "multi_lang_lower_quality"], items, lang_priorities)
 
-        # Quality override: 4K English is 2x+ better than 1080p Slovak/Czech
+        # Massive multi-tier gap (>4x: 4K@25 vs 720p@5) overrides language → keep the 4K
         assert decision["keep"]["id"] == "single_lang_high_quality"
         assert len(decision["delete"]) == 1
         assert decision["delete"][0]["id"] == "multi_lang_lower_quality"

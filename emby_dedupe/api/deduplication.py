@@ -11,6 +11,11 @@ import httpx
 from tqdm import tqdm
 
 from emby_dedupe.api.client import delete_item, fetch_items_details
+from emby_dedupe.api.deletion_guard import (
+    collect_delete_paths,
+    collect_known_paths,
+    is_delete_safe,
+)
 from emby_dedupe.api.metadata import get_image_url, rate_media_items
 from emby_dedupe.models.disjoint_set import DisjointSet
 from emby_dedupe.utils.constants import LANGUAGE_NORMALIZATION_MAP
@@ -1342,6 +1347,35 @@ def process_duplicate_groups(
     return decisions, exclusion_metadata
 
 
+def _warn_unsafe_deletions(
+    decisions: list, known_paths: list, delete_paths: list = None
+) -> None:
+    """Dry-run visibility: log any deletion the safety guard would refuse under
+    ``--doit`` (keeper co-located in a folder Emby would fold-delete), so the user
+    sees it before running for real.
+    """
+    unsafe = 0
+    for decision in decisions:
+        keeper_path = (decision.get("keep") or {}).get("path")
+        for item in decision.get("delete", []):
+            safe, reason = is_delete_safe(
+                keeper_path, item.get("path"), known_paths, delete_paths
+            )
+            if not safe:
+                unsafe += 1
+                logger.warning(
+                    "SAFETY GUARD would SKIP deletion of id=%s under --doit — %s "
+                    "(delete=%r keeper=%r).",
+                    item["id"], reason, item.get("path"), keeper_path,
+                )
+    if unsafe:
+        logger.warning(
+            "%d deletion(s) would be SKIPPED by the safety guard to protect co-located "
+            "keepers. Fix the file layout (move the keeper out of the duplicate's folder) "
+            "before --doit if you want them removed.", unsafe,
+        )
+
+
 def _mark_items_as_not_attempted(decisions: list, progress_bar) -> None:
     """
     Mark all items in decisions as not attempted (for dry-run mode).
@@ -1462,6 +1496,52 @@ def _generate_report_with_metadata(base_url: str, decisions: list, metadata: dic
         return format_markdown_table(base_url, decisions)
 
 
+def _execute_one_deletion(
+    client, base_url, item, keeper_path, decisions, known_paths, delete_paths,
+    doit, username, password, api_key, progress_bar,
+) -> None:
+    """Delete a single item unless the safety guard refuses it, then restore the item's
+    display data (lost during deletion) and advance the progress bar. Extracted from the
+    deletion loop to keep the caller's cognitive complexity in check.
+    """
+    progress_bar.set_description(f"Deleting ID: {item['id']}")
+
+    # Store the original item data before deletion, incl. a resolved image URL.
+    original_item_data = _extract_original_item_data(item)
+    try:
+        item_group = _find_item_group(item, decisions)
+        resolved_url = _resolve_image_url_for_deleted_item(item, item_group)
+        if resolved_url:
+            original_item_data["image_url"] = resolved_url
+    except Exception as e:
+        logger.warning(f"Error setting image URL for deleted item: {e}")
+
+    # SAFETY GUARD: never issue an Emby delete that would fold-delete a folder holding
+    # the keeper (the data-loss bug). Refuse and skip — keep both files.
+    safe, reason = is_delete_safe(keeper_path, item.get("path"), known_paths, delete_paths)
+    if not safe:
+        # Pre-format into ONE message with no positional args, so logging never runs
+        # ``msg % args`` (immune to stray % in paths or an arg-count mismatch — this line
+        # crashed twice before via stale bytecode).
+        logger.error(
+            "SAFETY GUARD blocked deletion of id=%s — %s "
+            "(delete=%r keeper=%r). Both files kept; resolve the layout manually."
+            % (item["id"], reason, item.get("path"), keeper_path)
+        )
+        item["deletion_result"] = {
+            "id": item["id"], "status": "skipped_unsafe", "error": reason,
+        }
+    else:
+        item["deletion_result"] = delete_item(
+            client, base_url, item["id"], doit, username, password, api_key
+        )
+
+    # Restore all the original data that might have been lost during deletion.
+    for key, value in original_item_data.items():
+        item[key] = value
+    progress_bar.update(1)
+
+
 def process_deletion_and_generate_report(
     client: httpx.Client,
     base_url: str,
@@ -1470,7 +1550,8 @@ def process_deletion_and_generate_report(
     username: str,
     password: str,
     api_key: str,
-    metadata: dict = None
+    metadata: dict = None,
+    library_paths: list = None,
 ) -> str:
     """
     Processes deletions based on the decisions and generates a markdown report.
@@ -1485,6 +1566,10 @@ def process_deletion_and_generate_report(
         password (str): The password for authentication.
         api_key (str): The API key for non-DELETE requests.
         metadata (dict, optional): Additional metadata such as excluded IDs and language priorities.
+        library_paths (list, optional): Every media path in the library, used to give the
+            deletion safety guard true folder visibility (so it tells a dedicated folder
+            from a shared one). When omitted, the guard sees only the decision paths and
+            may over-refuse safe deletes (the Dutton/Proud false positives). Defaults to None.
 
     Returns:
         str: The generated markdown report.
@@ -1492,10 +1577,29 @@ def process_deletion_and_generate_report(
     # Calculate total deletions
     total_deletions = sum(len(decision.get("delete", [])) for decision in decisions)
 
+    # Index every keep+delete path so the safety guard can tell a dedicated folder
+    # (Emby fold-deletes it) from a shared one (Emby deletes only the file). The decision
+    # paths alone miss non-duplicate neighbours (e.g. the other episodes in a season
+    # folder), making a single-duplicate folder look "dedicated" and over-refusing a safe
+    # file-only delete. Union in every library path to give the guard real folder
+    # visibility. Both sources are Emby's verbatim ``Path`` field, so identical items
+    # produce byte-identical strings that dedupe exactly (a mismatch could mask the
+    # keeper → an under-refusal, which is why the union must never normalise paths).
+    known_paths = collect_known_paths(decisions)
+    if library_paths:
+        known_paths = list(set(known_paths) | set(library_paths))
+
+    # Every path being removed this run. A sibling that is itself being deleted must not
+    # vouch that a folder is "shared" (it won't survive) — this is what makes the guard
+    # refuse a delete co-located with the keeper when the only neighbours are also going
+    # away (the Marty Supreme multi-version-folder fold-delete).
+    delete_paths = collect_delete_paths(decisions)
+
     if not doit:
         deletion_progress_bar = tqdm(
             total=total_deletions, desc="Skipping deletion", unit="item"
         )
+        _warn_unsafe_deletions(decisions, known_paths, delete_paths)
         _mark_items_as_not_attempted(decisions, deletion_progress_bar)
         deletion_progress_bar.close()
         return _generate_report_with_metadata(base_url, decisions, metadata)
@@ -1505,31 +1609,12 @@ def process_deletion_and_generate_report(
     )
 
     for decision in decisions:
+        keeper_path = (decision.get("keep") or {}).get("path")
         for item in decision.get("delete", []):
-            deletion_progress_bar.set_description(f"Deleting ID: {item['id']}")
-
-            # Store the original item data before deletion
-            original_item_data = _extract_original_item_data(item)
-
-            # Resolve image URL for deleted item
-            try:
-                item_group = _find_item_group(item, decisions)
-                resolved_url = _resolve_image_url_for_deleted_item(item, item_group)
-                if resolved_url:
-                    original_item_data["image_url"] = resolved_url
-            except Exception as e:
-                logger.warning(f"Error setting image URL for deleted item: {e}")
-
-            # Perform the deletion
-            item["deletion_result"] = delete_item(
-                client, base_url, item["id"], doit, username, password, api_key
+            _execute_one_deletion(
+                client, base_url, item, keeper_path, decisions, known_paths,
+                delete_paths, doit, username, password, api_key, deletion_progress_bar,
             )
-
-            # Restore all the original data that might have been lost during deletion
-            for key, value in original_item_data.items():
-                item[key] = value
-
-            deletion_progress_bar.update(1)
 
     deletion_progress_bar.close()
     return _generate_report_with_metadata(base_url, decisions, metadata)

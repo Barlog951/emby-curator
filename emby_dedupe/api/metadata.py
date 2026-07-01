@@ -425,6 +425,54 @@ def get_image_url(base_url: str, item_id: str, item_image_tags: dict, server_id:
     return image_url
 
 
+# --- Quality rating model --------------------------------------------------------
+# Factors are NORMALISED (megapixels, Mbps, channels) so the WEIGHTS express intent,
+# instead of raw magnitudes deciding the outcome. Resolution dominates; HDR is a real
+# bonus; video bitrate is a within-resolution tiebreaker; the added-date only resolves
+# otherwise-identical items. (Previously file_size [bytes ~1e9] and date_added [unix ts
+# ~1.8e9] swamped resolution [pixels ~1e7], so a slightly bigger/newer low-res file beat
+# a 4K. See the Last Frontier S01E07 regression.)
+_RES_WEIGHT = 10.0       # resolution (megapixels) — primary
+_HDR_WEIGHT = 5.0        # HDR (HDR10/HDR10+/Dolby Vision) over SDR
+_BITRATE_WEIGHT = 1.0    # video bitrate (Mbps) — tiebreaker within a resolution tier
+_AUDIO_WEIGHT = 0.5      # audio channels — minor
+_DATE_WEIGHT = 0.01      # added-date — only breaks exact ties (normalised tiny)
+
+
+def _bitrate_floor_mbps(height: int) -> float:
+    """Bitrate (Mbps) below which a file is 'starved' for its resolution — see
+    _calculate_quality_rating's Phase-2 demotion. Tunable defaults."""
+    if height >= 2000:   # 2160p / 4K
+        return 6.0
+    if height >= 1000:   # 1080p
+        return 2.5
+    if height >= 700:    # 720p
+        return 1.2
+    return 0.0           # SD: no floor
+
+
+def _resolution_megapixels(video_stream: Optional[Dict[str, Any]]) -> float:
+    if not video_stream:
+        return 0.0
+    return ((video_stream.get("Height", 0) or 0) * (video_stream.get("Width", 0) or 0)) / 1_000_000.0
+
+
+def _video_bitrate_mbps(item: Dict[str, Any], video_stream: Optional[Dict[str, Any]]) -> float:
+    """Video bitrate in Mbps — from the video stream (preferred) or the item total."""
+    br = (video_stream or {}).get("BitRate") or item.get("Bitrate") or 0
+    try:
+        return max(0.0, float(br) / 1_000_000.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _hdr_bonus(video_stream: Optional[Dict[str, Any]]) -> float:
+    """1.0 for any real HDR (HDR10/HDR10+/Dolby Vision/HLG), 0.0 for SDR/unknown.
+    The Dolby Vision Profile-5 penalty is applied separately."""
+    vr = str((video_stream or {}).get("VideoRange") or "").replace(" ", "").lower()
+    return 1.0 if vr and vr not in ("sdr", "unknown") else 0.0
+
+
 def _calculate_quality_rating(
     item: Dict[str, Any],
     video_stream: Optional[Dict],
@@ -449,26 +497,32 @@ def _calculate_quality_rating(
         except (ValueError, TypeError) as e:
             logger.warning(f"Error parsing DateCreated for rating: {e}")
 
-    # Define quality factors and their corresponding weights
-    quality_factors = {
-        "resolution": (
-            video_stream.get("Height", 0) * video_stream.get("Width", 0)
-            if video_stream
-            else 0,
-            1,
-        ),
-        "audio_channels": (
-            audio_stream.get("Channels", 0) if audio_stream else 0,
-            0.5,
-        ),
-        "bitrate": (item.get("Bitrate", 0), 0.2),
-        "file_size": (item.get("Size", 0), 0.3),
-        "date_added": (date_rating, 0.8),
-    }
+    # Normalised factors (see the weight constants above): resolution in megapixels,
+    # bitrate in Mbps, audio in channels, date as a tiny tiebreaker.
+    res_mp = _resolution_megapixels(video_stream)
+    bitrate_mbps = _video_bitrate_mbps(item, video_stream)
+    channels = (audio_stream.get("Channels", 0) or 0) if audio_stream else 0
+    hdr = _hdr_bonus(video_stream)
 
-    # Calculate the base weighted quality rating
-    base_quality_rating = sum(
-        value * weight for value, weight in quality_factors.values()
+    # Phase 2 — starved-bitrate demotion: if a file's bitrate is below the adequacy
+    # floor for its resolution, reduce its resolution credit proportionally so a badly
+    # under-bitrate high-res file can lose to a well-encoded lower-res one. At/above the
+    # floor, full resolution credit (efficient encodes like our cq18 HDR10 are NOT
+    # penalised — their bitrate is above the floor).
+    height = (video_stream.get("Height", 0) or 0) if video_stream else 0
+    floor = _bitrate_floor_mbps(height)
+    res_credit = res_mp
+    if floor and 0 < bitrate_mbps < floor:
+        res_credit = res_mp * (bitrate_mbps / floor)
+
+    # Weighted, normalised base rating (resolution dominates; HDR bonus; bitrate
+    # tiebreaker; date only resolves exact ties).
+    base_quality_rating = (
+        res_credit * _RES_WEIGHT
+        + hdr * _HDR_WEIGHT
+        + bitrate_mbps * _BITRATE_WEIGHT
+        + channels * _AUDIO_WEIGHT
+        + (date_rating / 1_000_000_000.0) * _DATE_WEIGHT
     )
 
     # Apply source quality and AI upscale multipliers

@@ -299,8 +299,10 @@ class TestRemuxVsWebDLWithLanguagePriority:
       but REMUX quality is 3.5x better — quality should override.
     """
 
-    def test_remux_beats_webdl_despite_lower_language_priority(self):
-        """REMUX with Czech should beat WEB-DL with Slovak when quality is 2x+ better."""
+    def test_remux_keeps_language_over_single_tier_quality(self):
+        """A same-resolution REMUX-vs-WEB-DL is a single-tier source jump (~2-3x): per the
+        language policy it does NOT override a preferred Slovak track (needs a >4x multi-tier
+        jump). The REMUX scores higher, but it's skipped to keep the Slovak audio."""
         proposed = ProposedQuality(
             resolution="2160p",
             codec="x265",
@@ -328,9 +330,10 @@ class TestRemuxVsWebDLWithLanguagePriority:
 
         result = compare_quality(proposed, existing_items, lang_priorities=["sk", "cs", "en"])
 
-        assert result.recommendation == "download"
-        assert result.reason == "better_quality"
-        assert result.proposed_score > result.existing_score * 2  # At least 2x better
+        # Single-tier source jump (~2-3x) does NOT clear the 4x both-priority-language bar →
+        # keep the Slovak WEB-DL even though the REMUX scores higher.
+        assert result.recommendation == "skip"
+        assert result.proposed_score > result.existing_score * 2  # REMUX is genuinely higher quality
 
     def test_webdl_keeps_when_quality_gap_small(self):
         """WEB-DL with Slovak should be kept when proposed quality is only marginally better."""

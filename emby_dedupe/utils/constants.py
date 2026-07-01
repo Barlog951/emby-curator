@@ -128,6 +128,17 @@ LOGGING_LEVELS = {
 }
 
 
+# Quality-ratio thresholds for letting quality override a preferred-language track.
+# Calibrated to the NORMALISED quality rating (see metadata._calculate_quality_rating):
+# a single resolution/source tier ≈ 2.5-3x, so these are set high enough that a one-tier
+# upgrade (4K-vs-1080p OR REMUX-vs-WEB-DL) does NOT cost a preferred-language track —
+# only a massive multi-tier jump (≈5x+) does. (Pre-normalization these were 1.5/3.0/2.0,
+# tuned to the old file-size-dominated scale.) Tunable.
+OVERRIDE_RATIO_SINGLE_VS_MULTI_LANG = 2.5   # scenario 1: lang item has 1 track, quality item 2+
+OVERRIDE_RATIO_NO_PRIORITY_LANG = 5.0       # scenario 2: quality item lacks the priority language
+OVERRIDE_RATIO_BOTH_PRIORITY_LANG = 4.0     # scenario 3: both have a priority language
+
+
 def should_quality_override_language(
     quality_ratio: float,
     lang_item_has_priority_lang: bool,
@@ -141,15 +152,18 @@ def should_quality_override_language(
     comparison workflows. Quality can win over language priority in three scenarios:
 
     1. Single-lang vs multi-lang: When the language-priority item has only one audio
-       track but the quality item has multiple tracks (2+) and is 1.5x better quality.
+       track but the quality item has multiple tracks (2+) and is 2.5x+ better quality.
 
     2. No priority language: When the quality item lacks the priority language but is
-       3x better quality than the language-priority item.
+       5x+ better quality than the language-priority item.
 
     3. Both have priority languages: When both items have a priority language (e.g.,
-       existing has Slovak, proposed has Czech) but quality is 2x+ better. A massive
-       quality upgrade (e.g., REMUX vs WEB-DL) justifies losing a higher-ranked
-       language track.
+       existing has Slovak, proposed has Czech) but quality is 4x+ better. Only a massive
+       multi-tier upgrade (e.g., 4K REMUX vs 1080p WEB-DL) justifies losing a
+       higher-ranked language track — a single-tier jump keeps the preferred language.
+
+    Thresholds are calibrated to the normalised quality rating (a single resolution or
+    source tier ≈ 2.5-3x); see the OVERRIDE_RATIO_* constants.
 
     Args:
         quality_ratio: Ratio of quality_score / lang_score (must be > 0)
@@ -160,18 +174,19 @@ def should_quality_override_language(
     Returns:
         True if quality should override language priority, False otherwise
     """
-    # Scenario 1: Single-lang vs multi-lang (1.5x threshold)
-    if is_single_lang_scenario and quality_ratio > 1.5:
+    # Scenario 1: Single-lang vs multi-lang
+    if is_single_lang_scenario and quality_ratio > OVERRIDE_RATIO_SINGLE_VS_MULTI_LANG:
         return True
 
-    # Scenario 2: Quality item lacks priority language but is 3x+ better
-    if lang_item_has_priority_lang and not quality_item_has_priority_lang and quality_ratio > 3.0:
+    # Scenario 2: Quality item lacks the priority language — needs a massive jump
+    if (lang_item_has_priority_lang and not quality_item_has_priority_lang
+            and quality_ratio > OVERRIDE_RATIO_NO_PRIORITY_LANG):
         return True
 
-    # Scenario 3: Both have priority languages but quality is 2x+ better
-    # e.g., existing WEB-DL has Slovak (priority 0) vs proposed REMUX has Czech (priority 1)
-    # A 2x quality upgrade justifies losing a higher-ranked language track
-    if lang_item_has_priority_lang and quality_item_has_priority_lang and quality_ratio > 2.0:
+    # Scenario 3: Both have a priority language (e.g. Slovak vs Czech) — only a multi-tier
+    # quality jump (≈5x+, e.g. 4K REMUX vs 1080p WEB-DL) justifies losing the higher-ranked track
+    if (lang_item_has_priority_lang and quality_item_has_priority_lang
+            and quality_ratio > OVERRIDE_RATIO_BOTH_PRIORITY_LANG):
         return True
 
     return False

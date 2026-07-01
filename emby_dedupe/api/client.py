@@ -420,6 +420,69 @@ def _fetch_paginated_items(
         progress_bar.close()
 
 
+def fetch_all_media_paths(client: httpx.Client, base_url: str) -> list:
+    """Fetch the filesystem ``Path`` of every media item on the server.
+
+    The deletion safety guard tells a *dedicated* folder (Emby fold-deletes it when the
+    file is removed) from a *shared* one (Emby deletes only the file) by checking which
+    other media files share the folder. The dedup *decision* paths only know about the
+    duplicated items, so a season/collection folder holding a single duplicated episode
+    looks "dedicated" and the guard over-refuses a perfectly safe file-only delete
+    (the Dutton/Proud false positives). Feeding it every library path restores that
+    folder visibility.
+
+    Both this and the decision paths read Emby's verbatim ``Path`` field, so identical
+    items produce byte-identical strings that dedupe exactly — a mismatch could hide the
+    keeper from the guard, which is why nothing here normalises the path.
+
+    Restricted to ``Movie,Episode`` on purpose: only primary media may count as
+    same-folder evidence of a *shared* folder. Trailers/extras/samples/theme audio can
+    sit directly in a dedicated movie folder and, if counted, would make the guard think
+    the folder is shared → allow the delete → Emby fold-deletes the folder → the keeper is
+    destroyed (the exact catastrophic under-refusal this guard exists to prevent). The
+    keeper/delete items are themselves Movie/Episode and are added separately from the
+    decision paths, so this filter only ever removes spurious "shared" votes (→ over-refuse,
+    which is safe), never hides a keeper.
+
+    Args:
+        client: The httpx client configured for the Emby server.
+        base_url: Base URL of the Emby server.
+
+    Returns:
+        A flat list of every media item's ``Path``. Degrades to ``[]`` on any fetch
+        failure — the guard then falls back to decision-only paths and may over-refuse
+        (safe), but never under-refuses.
+    """
+    paths: list = []
+    start_index = 0
+    try:
+        while True:
+            url = f"{base_url}/Items"
+            params = {
+                "StartIndex": str(start_index),
+                "Limit": str(PAGE_SIZE),
+                "Recursive": "True",
+                "IncludeItemTypes": "Movie,Episode",
+                "Fields": "Path",
+                "IsFolder": "False",
+                "EnableImages": "False",
+            }
+            response = make_http_request(client, "GET", url, params=params)
+            items = response.json().get("Items", [])
+            paths.extend(item["Path"] for item in items if item.get("Path"))
+            if len(items) < PAGE_SIZE:
+                break
+            start_index += len(items)
+    except (httpx.HTTPStatusError, httpx.RequestError, KeyError, ValueError) as exc:
+        logger.warning(
+            "Could not fetch full library paths for the deletion safety guard (%s); "
+            "falling back to decision-only folder detection (may over-refuse, never "
+            "under-refuses).",
+            exc,
+        )
+    return paths
+
+
 def delete_item(
     client: httpx.Client,
     base_url: str,

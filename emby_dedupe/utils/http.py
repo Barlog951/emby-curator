@@ -12,6 +12,17 @@ from httpx import HTTPStatusError, ReadTimeout, RequestError
 from emby_dedupe.utils.constants import HTTP_TIMEOUT, MAX_BACKOFF_TIME, MAX_RETRIES
 from emby_dedupe.utils.logging import logger
 
+# Substrings found in a 500 response body that mean a PERMANENT server-side failure —
+# e.g. Emby cannot delete a media file because the `emby` user lacks write permission on
+# the containing folder. Retrying just hammers the same error (20x over ~10 min, which
+# looks like a hang), so we give up immediately and let the caller skip+log the item.
+_PERMANENT_500_MARKERS = (
+    "permission denied",
+    "access is denied",
+    "unauthorizedaccess",
+    "ioexception",
+)
+
 
 def should_give_up(e: Exception) -> bool:
     """
@@ -22,11 +33,23 @@ def should_give_up(e: Exception) -> bool:
     Returns:
         bool: True if the exception indicates we should stop retrying.
     """
-    # Client errors (4xx) should not be retried
-    is_client_error = (
-        isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500
-    )
-    return is_client_error
+    if not isinstance(e, httpx.HTTPStatusError):
+        return False  # timeouts / connection errors are transient → keep retrying
+    status_code = e.response.status_code
+    # Client errors (4xx) are never retried.
+    if status_code < 500:
+        return True
+    # A 500 caused by a filesystem permission/IO error (a DELETE Emby can't perform
+    # because it lacks write access to the folder) is permanent — give up instead of
+    # retrying it ~20 times. Other 5xx (502/503/504) stay retryable (transient).
+    if status_code == 500:
+        try:
+            body = str(e.response.text or "").lower()
+            if any(marker in body for marker in _PERMANENT_500_MARKERS):
+                return True
+        except Exception:
+            pass
+    return False
 
 
 def handle_giveup(details: Details) -> None:
