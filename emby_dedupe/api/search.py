@@ -8,15 +8,16 @@ Provides search capabilities for:
 """
 
 import re
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
 from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.logging import logger
+from emby_dedupe.utils.providers import iter_provider_ids
 
 # Standard fields to fetch when searching for media items
-SEARCH_FIELDS = "ProviderIds,Path,MediaStreams,DateCreated,DateModified,PremiereDate,ProductionYear,Tags,Overview,ParentId,SeriesName,ParentIndexNumber,IndexNumber"
+SEARCH_FIELDS = "ProviderIds,Path,MediaStreams,DateCreated,DateModified,PremiereDate,ProductionYear,Tags,Overview,ParentId,SeriesName,ParentIndexNumber,IndexNumber,RunTimeTicks"
 
 
 def normalize_title(title: str) -> str:
@@ -71,9 +72,9 @@ def search_by_name(
     host: str,
     api_key: str,
     name: str,
-    year: Optional[int] = None,
-    media_type: Optional[str] = None,
-    library_ids: Optional[list[str]] = None,
+    year: int | None = None,
+    media_type: str | None = None,
+    library_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Search for media items by name.
 
@@ -136,7 +137,7 @@ def search_by_provider_id(
     api_key: str,
     provider_id: str,
     provider_type: str = "Imdb",
-    library_ids: Optional[list[str]] = None,
+    library_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Search for media items by provider ID.
 
@@ -192,7 +193,7 @@ def search_tv_episode(
     series_name: str,
     season: int,
     episode: int,
-    library_ids: Optional[list[str]] = None,
+    library_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Search for a TV episode by series, season, and episode number.
 
@@ -347,7 +348,7 @@ def _search_provider_id_across_libraries(
     api_key: str,
     provider_id: str,
     provider_type: str,
-    library_ids: Optional[list[str]],
+    library_ids: list[str] | None,
 ) -> list[dict[str, Any]]:
     """Search for provider ID across multiple libraries (one at a time to avoid timeouts).
 
@@ -387,11 +388,11 @@ def _try_provider_id_searches(
     client: httpx.Client,
     host: str,
     api_key: str,
-    imdb: Optional[str],
-    tmdb: Optional[str],
-    tvdb: Optional[str],
-    library_ids: Optional[list[str]],
-) -> Optional[list[dict[str, Any]]]:
+    imdb: str | None,
+    tmdb: str | None,
+    tvdb: str | None,
+    library_ids: list[str] | None,
+) -> list[dict[str, Any]] | None:
     """Try searching by provider IDs (IMDB, TMDB, TVDB).
 
     Args:
@@ -406,23 +407,9 @@ def _try_provider_id_searches(
     Returns:
         Results if found, None otherwise.
     """
-    if imdb:
+    for provider, pid in iter_provider_ids(imdb, tmdb, tvdb):
         results = _search_provider_id_across_libraries(
-            client, host, api_key, imdb, "Imdb", library_ids
-        )
-        if results:
-            return results
-
-    if tmdb:
-        results = _search_provider_id_across_libraries(
-            client, host, api_key, tmdb, "Tmdb", library_ids
-        )
-        if results:
-            return results
-
-    if tvdb:
-        results = _search_provider_id_across_libraries(
-            client, host, api_key, tvdb, "Tvdb", library_ids
+            client, host, api_key, pid, provider.capitalize(), library_ids
         )
         if results:
             return results
@@ -435,10 +422,10 @@ def _search_by_name_with_type(
     host: str,
     api_key: str,
     name: str,
-    year: Optional[int],
-    season: Optional[int],
-    episode: Optional[int],
-    library_ids: Optional[list[str]],
+    year: int | None,
+    season: int | None,
+    episode: int | None,
+    library_ids: list[str] | None,
 ) -> list[dict[str, Any]]:
     """Search by name with appropriate media type.
 
@@ -470,14 +457,14 @@ def search_media(
     client: httpx.Client,
     host: str,
     api_key: str,
-    name: Optional[str] = None,
-    year: Optional[int] = None,
-    imdb: Optional[str] = None,
-    tmdb: Optional[str] = None,
-    tvdb: Optional[str] = None,
-    season: Optional[int] = None,
-    episode: Optional[int] = None,
-    library_names: Optional[list[str]] = None,
+    name: str | None = None,
+    year: int | None = None,
+    imdb: str | None = None,
+    tmdb: str | None = None,
+    tvdb: str | None = None,
+    season: int | None = None,
+    episode: int | None = None,
+    library_names: list[str] | None = None,
     skip_provider_search: bool = False,
 ) -> list[dict[str, Any]]:
     """Search for media using various criteria.

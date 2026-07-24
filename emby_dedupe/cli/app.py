@@ -11,10 +11,19 @@ routing layer so that existing internal functions and their tests are undisturbe
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
-from typing import Optional
+from pathlib import Path
 
 import typer
+from dotenv import load_dotenv
+
+# Load .env BEFORE any typer option resolution: click reads envvar= values while
+# parsing parameters, so this must happen at import time (the console-script entry
+# point imports this module directly — nothing else runs first).
+_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+if _env_path.exists():
+    load_dotenv(_env_path)
 
 # CRITICAL: invoke_without_command=True ensures @app.callback() fires BEFORE
 # subcommands — without it ctx.obj is never set when a subcommand runs.
@@ -44,9 +53,9 @@ _TMDB_KEY_HELP = "TMDB API key."
 
 @dataclass
 class AppConfig:
-    host: Optional[str] = None
-    port: Optional[int] = None
-    api_key: Optional[str] = None
+    host: str | None = None
+    port: int | None = None
+    api_key: str | None = None
     libraries: list[str] = field(default_factory=list)
     verbosity: int = 0
     lock: bool = True
@@ -56,21 +65,23 @@ class AppConfig:
 @app.callback()
 def common(
     ctx: typer.Context,
-    host: Optional[str] = typer.Option(
+    host: str | None = typer.Option(
         None, "--host", "-H", envvar="DEDUPE_EMBY_HOST", help="Emby server URL."
     ),
-    port: Optional[int] = typer.Option(
+    port: int | None = typer.Option(
         None, "--port", "-p", envvar="DEDUPE_EMBY_PORT", help="Emby server port."
     ),
-    api_key: Optional[str] = typer.Option(
+    api_key: str | None = typer.Option(
         None, "--api-key", "-a", envvar="DEDUPE_EMBY_API_KEY", help="Emby API key."
     ),
-    library: Optional[list[str]] = typer.Option(
+    library: list[str] | None = typer.Option(
         None,
         "--library",
         "-l",
-        envvar="DEDUPE_EMBY_LIBRARY",
-        help="Library name (repeatable).",
+        # NO envvar= here: click whitespace-splits list envvars, which destroys the
+        # documented comma format (DEDUPE_EMBY_LIBRARY="Movies,TV Shows" would become
+        # ['Movies,TV', 'Shows']). The env fallback is read manually below instead.
+        help="Library name (repeatable; env: DEDUPE_EMBY_LIBRARY, comma-separated).",
     ),
     verbose: int = typer.Option(
         0, "--verbose", "-v", count=True, help="Verbosity (-v, -vv, -vvv)."
@@ -88,33 +99,102 @@ def common(
         host=host,
         port=port,
         api_key=api_key,
-        libraries=library or [],
+        libraries=list(library) if library else _libraries_from_env(),
         verbosity=verbose,
         lock=lock,
         doit=doit,
     )
 
 
+def _libraries_from_env() -> list[str]:
+    """Read DEDUPE_EMBY_LIBRARY as a comma-separated list (README-documented format).
+
+    Handled manually instead of typer ``envvar=`` because click whitespace-splits
+    list envvars — "Movies,TV Shows" must resolve to ["Movies", "TV Shows"].
+    """
+    raw = os.environ.get("DEDUPE_EMBY_LIBRARY", "")
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
 # ---------------------------------------------------------------------------
 # dedupe subcommand
 # ---------------------------------------------------------------------------
 
+def _run_fold_safe_delete(client, base_url, decisions, doit, ssh_host) -> None:
+    """Remove guard-refused co-located duplicates by file-deleting them on the media host.
+
+    Previews (verify-only) when ``doit`` is False; actually removes when True. After any
+    real removal, best-effort triggers an Emby library refresh so the now-missing items
+    drop from the DB.
+    """
+    from emby_dedupe.api.fold_safe_delete import (
+        execute_fold_safe_deletes,
+        plan_fold_safe_deletes,
+    )
+    from emby_dedupe.utils.logging import logger
+
+    plans = plan_fold_safe_deletes(decisions)
+    if not plans:
+        logger.info("Fold-safe delete: no guard-refused duplicates to remove.")
+        return
+
+    if not ssh_host:
+        logger.error(
+            "Fold-safe delete: no media host configured — %d guard-refused duplicate(s) left "
+            "in place. Pass --fold-safe-host user@host (or set DEDUPE_FOLD_SAFE_HOST).",
+            len(plans),
+        )
+        return
+
+    review_count = sum(1 for p in plans if p.get("status") == "needs_review")
+    logger.info(
+        "Fold-safe delete: %d guard-refused duplicate(s) to %s on %s (%d held for review)",
+        len(plans) - review_count, "remove" if doit else "preview", ssh_host, review_count,
+    )
+    results = execute_fold_safe_deletes(plans, ssh_host=ssh_host, doit=doit)
+
+    for r in results:
+        logger.info("  [%s] %s", r["status"], r["delete"])
+
+    held = [r for r in results if r["status"] == "needs_review"]
+    if held:
+        logger.warning(
+            "Fold-safe delete: %d item(s) NOT removed — failed the same-content sanity "
+            "check (see review_reason above); resolve them manually.", len(held),
+        )
+
+    removed = sum(1 for r in results if r["status"] == "removed")
+    if removed:
+        try:
+            client.post(f"{base_url}/Library/Refresh")
+            logger.info(
+                "Fold-safe delete: removed %d file(s); triggered Emby library refresh "
+                "to drop the stale items.", removed,
+            )
+        except Exception as e:  # noqa: BLE001 — refresh is best-effort
+            logger.warning(
+                "Fold-safe delete: removed %d file(s), but the Emby refresh call failed "
+                "(%s). Emby will drop the stale items on its next scheduled scan.",
+                removed, e,
+            )
+
+
 @app.command("dedupe")
 def dedupe_cmd(
     ctx: typer.Context,
-    username: Optional[str] = typer.Option(
+    username: str | None = typer.Option(
         None, "--username", envvar="DEDUPE_EMBY_USERNAME", help="Emby username for auth."
     ),
-    password: Optional[str] = typer.Option(
+    password: str | None = typer.Option(
         None, "--password", envvar="DEDUPE_EMBY_PASSWORD", help="Emby password for auth."
     ),
-    lang_prio: Optional[str] = typer.Option(
+    lang_prio: str | None = typer.Option(
         None,
         "--lang-prio",
         envvar="DEDUPE_LANG_PRIO",
         help="Comma-separated language priority (e.g. 'sk,cs,en').",
     ),
-    exclude_ids: Optional[str] = typer.Option(
+    exclude_ids: str | None = typer.Option(
         None,
         "--exclude-ids",
         envvar="DEDUPE_EXCLUDE_IDS",
@@ -128,6 +208,27 @@ def dedupe_cmd(
     ),
     no_open: bool = typer.Option(
         False, "--no-open", help="Don't open HTML report in browser."
+    ),
+    fold_safe_delete: bool = typer.Option(
+        False,
+        "--fold-safe-delete",
+        "-F",
+        envvar="DEDUPE_FOLD_SAFE_DELETE",
+        help=(
+            "After the run, remove duplicates the safety guard refused (keeper co-located "
+            "in a folder Emby would fold-delete) by deleting the single FILE on the media "
+            "host over SSH — never via the Emby API, never the directory. Previews unless "
+            "combined with --doit."
+        ),
+    ),
+    fold_safe_host: str = typer.Option(
+        "",
+        "--fold-safe-host",
+        envvar="DEDUPE_FOLD_SAFE_HOST",
+        help=(
+            "user@host of the media host for --fold-safe-delete SSH file removal. "
+            "Required when --fold-safe-delete is used (no default — it runs rm on that host)."
+        ),
     ),
 ) -> None:
     """Find and optionally remove duplicate media items."""
@@ -167,32 +268,37 @@ def dedupe_cmd(
     )
 
     from emby_dedupe.utils.logging import logger
-    (resolved_host, resolved_port, resolved_api_key, library, doit,
-     lang_priorities, excluded_ids, resolved_username, resolved_password,
-     resolved_html_report, resolved_html_only, resolved_no_open) = _resolve_configuration(args)
+    resolved = _resolve_configuration(args)
 
     validate_required_arguments(
-        resolved_host, resolved_api_key, library, doit, resolved_username, resolved_password
+        resolved.host, resolved.api_key, resolved.library, resolved.doit,
+        resolved.username, resolved.password,
     )
+    # validate_required_arguments exits the process when host/api_key are missing.
+    assert resolved.host is not None and resolved.api_key is not None
 
-    validated_host, validated_port = handle_host_and_port(resolved_host, resolved_port)
+    validated_host, validated_port = handle_host_and_port(resolved.host, resolved.port)
 
     try:
         base_url = f"{validated_host}:{validated_port}"
-        client = httpx.Client(headers={"X-Emby-Token": resolved_api_key})
+        client = httpx.Client(headers={"X-Emby-Token": resolved.api_key})
 
-        all_provider_tables = _connect_and_fetch_libraries(client, base_url, library)
+        all_provider_tables = _connect_and_fetch_libraries(client, base_url, resolved.library)
 
         decisions, exclusion_metadata, markdown_report = _run_deduplication_pipeline(
-            client, base_url, all_provider_tables, excluded_ids, lang_priorities,
-            resolved_api_key, doit, resolved_username, resolved_password,
+            client, base_url, all_provider_tables, resolved.excluded_ids,
+            resolved.lang_priorities, resolved.api_key, resolved.doit,
+            resolved.username, resolved.password,
         )
 
         _generate_reports(
-            base_url, decisions, exclusion_metadata, excluded_ids,
-            lang_priorities, markdown_report,
-            resolved_html_report, resolved_html_only, resolved_no_open,
+            base_url, decisions, exclusion_metadata, resolved.excluded_ids,
+            resolved.lang_priorities, markdown_report,
+            resolved.html_report, resolved.html_only, resolved.no_open,
         )
+
+        if fold_safe_delete:
+            _run_fold_safe_delete(client, base_url, decisions, resolved.doit, fold_safe_host)
 
     except EmbyServerConnectionError as e:
         logger.error(str(e))
@@ -207,7 +313,7 @@ def dedupe_cmd(
         logger.error(f"An unexpected error occurred: {str(e)}")
         raise typer.Exit(1)
     finally:
-        if _client_mod.auth_state.token_for_delete and doit:
+        if _client_mod.auth_state.token_for_delete and resolved.doit:
             logout(client, base_url, _client_mod.auth_state.token_for_delete)
 
 
@@ -218,25 +324,25 @@ def dedupe_cmd(
 @app.command("check")
 def check_cmd(
     ctx: typer.Context,  # NOSONAR — typer CLI requires one param per CLI option; cannot reduce
-    name: Optional[str] = typer.Option(None, "--name", help="Media name to search for."),
-    year: Optional[int] = typer.Option(None, "--year", help="Release year (movies)."),
-    imdb: Optional[str] = typer.Option(None, "--imdb", help="IMDB ID (e.g. tt1375666)."),
-    tmdb: Optional[str] = typer.Option(None, "--tmdb", help="TMDB ID."),
-    tvdb: Optional[str] = typer.Option(None, "--tvdb", help="TVDB ID."),
-    season: Optional[int] = typer.Option(None, "--season", help="Season number."),
-    episode: Optional[int] = typer.Option(None, "--episode", help="Episode number."),
-    resolution: Optional[str] = typer.Option(None, "--resolution", help="Resolution (2160p, 1080p …)."),
-    codec: Optional[str] = typer.Option(None, "--codec", help="Video codec (x265, x264 …)."),
-    hdr: Optional[str] = typer.Option(None, "--hdr", help="HDR type (HDR, DV, SDR …)."),
-    audio: Optional[str] = typer.Option(None, "--audio", help="Audio type (Atmos, DTS-HD …)."),
-    audio_lang: Optional[str] = typer.Option(None, "--audio-lang", help="Comma-separated audio languages."),
-    size_mb: Optional[int] = typer.Option(None, "--size-mb", help="File size in MB."),
-    bitrate_kbps: Optional[int] = typer.Option(None, "--bitrate-kbps", help="Video bitrate in kbps."),
+    name: str | None = typer.Option(None, "--name", help="Media name to search for."),
+    year: int | None = typer.Option(None, "--year", help="Release year (movies)."),
+    imdb: str | None = typer.Option(None, "--imdb", help="IMDB ID (e.g. tt1375666)."),
+    tmdb: str | None = typer.Option(None, "--tmdb", help="TMDB ID."),
+    tvdb: str | None = typer.Option(None, "--tvdb", help="TVDB ID."),
+    season: int | None = typer.Option(None, "--season", help="Season number."),
+    episode: int | None = typer.Option(None, "--episode", help="Episode number."),
+    resolution: str | None = typer.Option(None, "--resolution", help="Resolution (2160p, 1080p …)."),
+    codec: str | None = typer.Option(None, "--codec", help="Video codec (x265, x264 …)."),
+    hdr: str | None = typer.Option(None, "--hdr", help="HDR type (HDR, DV, SDR …)."),
+    audio: str | None = typer.Option(None, "--audio", help="Audio type (Atmos, DTS-HD …)."),
+    audio_lang: str | None = typer.Option(None, "--audio-lang", help="Comma-separated audio languages."),
+    size_mb: int | None = typer.Option(None, "--size-mb", help="File size in MB."),
+    bitrate_kbps: int | None = typer.Option(None, "--bitrate-kbps", help="Video bitrate in kbps."),
     simple: bool = typer.Option(False, "--simple", help="Simple output: 'download' or 'skip'."),
     exit_code: bool = typer.Option(False, "--exit-code", help="Exit code only: 0=download, 1=skip."),
     all_libraries: bool = typer.Option(False, "--all-libraries", help="Search all libraries."),
-    lang_prio: Optional[str] = typer.Option(None, "--lang-prio", envvar="DEDUPE_LANG_PRIO"),
-    exclude_ids: Optional[str] = typer.Option(None, "--exclude-ids", envvar="DEDUPE_EXCLUDE_IDS"),
+    lang_prio: str | None = typer.Option(None, "--lang-prio", envvar="DEDUPE_LANG_PRIO"),
+    exclude_ids: str | None = typer.Option(None, "--exclude-ids", envvar="DEDUPE_EXCLUDE_IDS"),
     cache: bool = typer.Option(True, "--cache/--no-cache", help="Use cached library data."),
 ) -> None:
     """Check whether media should be downloaded based on existing library."""
@@ -289,13 +395,13 @@ def missing_episodes_cmd(
         "--format",
         help="Output format: console, html, json, structured_json.",
     ),
-    output: Optional[str] = typer.Option(
+    output: str | None = typer.Option(
         None, "--output", help="Output file path for JSON formats."
     ),
-    username: Optional[str] = typer.Option(
+    username: str | None = typer.Option(
         None, "--username", envvar="DEDUPE_EMBY_USERNAME", help="Emby username."
     ),
-    password: Optional[str] = typer.Option(
+    password: str | None = typer.Option(
         None, "--password", envvar="DEDUPE_EMBY_PASSWORD", help="Emby password."
     ),
     html_report: bool = typer.Option(False, "--html-report", envvar="DEDUPE_HTML_REPORT"),
@@ -332,22 +438,22 @@ def missing_episodes_cmd(
 @app.command("cleanup")
 def cleanup_cmd(
     ctx: typer.Context,
-    username: Optional[str] = typer.Option(
+    username: str | None = typer.Option(
         None, "--username", envvar="DEDUPE_EMBY_USERNAME",
         help="Emby username (recommended for accurate actor protection; required with --doit)."
     ),
-    password: Optional[str] = typer.Option(
+    password: str | None = typer.Option(
         None, "--password", envvar="DEDUPE_EMBY_PASSWORD",
         help="Emby password (required with --doit)."
     ),
     min_age_years: int = typer.Option(3, "--min-age-years", help="Minimum age in years to be eligible for cleanup."),
-    protect_path: Optional[list[str]] = typer.Option(
+    protect_path: list[str] | None = typer.Option(
         None, "--protect-path", help="Path substring to protect (repeatable, default: /Dokumenty/)."
     ),
     base_rating: float = typer.Option(6.0, "--base-rating", help="Rating threshold at minimum age."),
     decay_step: float = typer.Option(0.5, "--decay-step", help="Rating increase per year over minimum age."),
     max_rating: float = typer.Option(8.0, "--max-rating", help="Maximum rating threshold cap."),
-    exclude_ids: Optional[str] = typer.Option(
+    exclude_ids: str | None = typer.Option(
         None, "--exclude-ids", envvar="DEDUPE_EXCLUDE_IDS",
         help="Comma-separated provider IDs to always protect (IMDB tt*, TMDB IDs)."
     ),
@@ -407,11 +513,11 @@ def genres_audit(
     suggest: bool = typer.Option(
         False, "--suggest", help="Flag non-canonical genres and suggest mappings."
     ),
-    output_json: Optional[str] = typer.Option(
+    output_json: str | None = typer.Option(
         None, "--output-json", help="Save audit results as JSON to this path."
     ),
     all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
-    item_ids: Optional[str] = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
+    item_ids: str | None = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
 ) -> None:
     """Audit genre health across libraries (read-only)."""
     _run_genres_subcommand(
@@ -433,7 +539,7 @@ def genres_normalize(
         False, "--repair-dupes", help="Also fix duplicate genres caused by normalization collisions."
     ),
     all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
-    item_ids: Optional[str] = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
+    item_ids: str | None = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
 ) -> None:
     """Fix variant genre names (Sci-Fi→Science Fiction, dada→Comedy …)."""
     _run_genres_subcommand(
@@ -455,7 +561,7 @@ def genres_process(
     validate: bool = typer.Option(
         False, "--validate", help="Compare existing genres against TMDB/OMDb and add missing ones."
     ),
-    tmdb_api_key: Optional[str] = typer.Option(
+    tmdb_api_key: str | None = typer.Option(
         None, "--tmdb-api-key", envvar="DEDUPE_TMDB_API_KEY", help=_TMDB_KEY_HELP
     ),
     item_ids: str = typer.Option(..., "--item-ids", help="Comma-separated Emby item IDs (required)."),
@@ -485,11 +591,11 @@ def genres_fix(
     validate: bool = typer.Option(
         False, "--validate", help="Compare existing genres against TMDB/OMDb and add missing ones."
     ),
-    tmdb_api_key: Optional[str] = typer.Option(
+    tmdb_api_key: str | None = typer.Option(
         None, "--tmdb-api-key", envvar="DEDUPE_TMDB_API_KEY", help=_TMDB_KEY_HELP
     ),
     all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
-    item_ids: Optional[str] = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
+    item_ids: str | None = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
 ) -> None:
     """Fetch genres from TMDB/OMDb and fill gaps or validate existing genres."""
     _run_genres_subcommand(
@@ -557,7 +663,7 @@ def descriptions_fill(
     lock: bool = typer.Option(
         True, _LOCK_OPT, help="Lock Overview after update to prevent agent revert."
     ),
-    overview_langs: Optional[str] = typer.Option(
+    overview_langs: str | None = typer.Option(
         None,
         "--overview-langs",
         help="Comma-separated BCP47 codes in priority order. Default: sk-SK,cs-CZ",
@@ -570,22 +676,22 @@ def descriptions_fill(
             "otherwise replace with EN. OriginalTitle is never touched."
         ),
     ),
-    tmdb_api_key: Optional[str] = typer.Option(
+    tmdb_api_key: str | None = typer.Option(
         None, "--tmdb-api-key", envvar="DEDUPE_TMDB_API_KEY", help=_TMDB_KEY_HELP
     ),
-    limit: Optional[int] = typer.Option(
+    limit: int | None = typer.Option(
         None, "--limit", help="Cap the number of items processed (useful for dry-run sampling)."
     ),
     no_cache: bool = typer.Option(
         False, "--no-cache",
         help="Bypass the on-disk TMDB cache and re-query every item (force refresh).",
     ),
-    cache_ttl_days: Optional[int] = typer.Option(
+    cache_ttl_days: int | None = typer.Option(
         None, "--cache-ttl-days",
         help="How many days a cached TMDB entry stays fresh (default 30).",
     ),
     all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
-    item_ids: Optional[str] = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
+    item_ids: str | None = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
 ) -> None:
     """Replace English Overviews with SK/CZ from TMDB (configurable chain).
 

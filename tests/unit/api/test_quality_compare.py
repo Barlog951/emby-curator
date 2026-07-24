@@ -58,7 +58,7 @@ class TestProposedQuality:
         assert proposed.get_bitrate() == 5000 * 1000
 
     def test_calculate_score(self):
-        """Test quality score calculation."""
+        """Test quality score calculation (unified normalised model)."""
         proposed = ProposedQuality(
             resolution="2160p",
             audio="atmos",
@@ -67,8 +67,11 @@ class TestProposedQuality:
         )
         score = proposed.calculate_score()
         assert score > 0
-        # 4K should have high resolution score
-        assert score > 1000000
+        # Resolution dominates: the 4K item outscores an otherwise-identical 1080p one.
+        hd = ProposedQuality(
+            resolution="1080p", audio="atmos", size_mb=10000, bitrate_kbps=15000
+        )
+        assert score > hd.calculate_score()
 
     def test_get_source_quality_multiplier_bluray(self):
         """Test source quality multiplier detection for BluRay."""
@@ -743,8 +746,13 @@ class TestCompareQuality:
         assert result.existing.id == "2"
 
     def test_bluray_native_exception_1080p_beats_ai_4k(self):
-        """Test that native BluRay 1080p beats AI upscaled 4K when 1.5x+ larger."""
-        # Proposed: AI upscaled 4K, 15GB
+        """Test that native BluRay 1080p beats AI upscaled 4K when 1.5x+ larger.
+
+        Under the unified model the AI-upscaled 4K would win on resolution, so this
+        is exactly the case the BluRay-native exception exists for: once the native
+        1080p is >=1.5x larger, the exception overrides and keeps the native file.
+        """
+        # Proposed: AI upscaled 4K, 15GB (~14.65 GiB)
         proposed = ProposedQuality(
             resolution="2160p",
             audio="5.1",
@@ -753,7 +761,7 @@ class TestCompareQuality:
             name="Movie AI Upscaled"
         )
 
-        # Existing: Native BluRay 1080p, 23GB (1.53x larger)
+        # Existing: Native BluRay 1080p, 25GB (~1.59x larger → exception fires)
         existing_items = [{
             "Id": "native123",
             "Name": "Movie BluRay",
@@ -762,7 +770,7 @@ class TestCompareQuality:
                 {"Type": "Video", "Width": 1920, "Height": 1080, "Codec": "h264"},
                 {"Type": "Audio", "Channels": 6},
             ],
-            "Size": 23000000000,  # 23GB
+            "Size": 25000000000,  # 25GB, ~1.59x the AI 4K
             "Bitrate": 20000000,
         }]
 
@@ -773,7 +781,12 @@ class TestCompareQuality:
         assert result.reason == "same_or_worse"
 
     def test_ai_4k_wins_when_size_similar(self):
-        """Test that native BluRay is preferred when AI 4K size difference is < 1.5x."""
+        """AI 4K wins over 1080p BluRay when the size gap is < 1.5x.
+
+        The BluRay-native exception only fires at >=1.5x. Below that, the unified
+        (resolution-dominant) model lets the 4K win even after the 0.7x AI penalty.
+        (The retired raw-magnitude model kept the 1080p here on bits-per-pixel.)
+        """
         # Proposed: AI upscaled 4K, 20GB (AI penalty: 0.7x, unknown source: 0.95x)
         proposed = ProposedQuality(
             resolution="2160p",
@@ -783,7 +796,7 @@ class TestCompareQuality:
             name="Movie AI Upscaled"
         )
 
-        # Existing: Native BluRay 1080p, 25GB (BluRay: 1.15x, only 1.25x larger)
+        # Existing: Native BluRay 1080p, 25GB (only 1.25x larger → exception dormant)
         existing_items = [{
             "Id": "native123",
             "Name": "Movie BluRay",
@@ -798,9 +811,8 @@ class TestCompareQuality:
 
         result = compare_quality(proposed, existing_items)
 
-        # Should recommend skip - BluRay 1080p still preferred due to source quality
-        # even though size ratio < 1.5x, the exception doesn't trigger
-        assert result.recommendation == "skip"
+        # Size ratio < 1.5x → exception dormant → 4K resolution wins.
+        assert result.recommendation == "download"
 
     def test_exception_only_applies_to_bluray(self):
         """Test that exception logic only checks BluRay/REMUX sources."""

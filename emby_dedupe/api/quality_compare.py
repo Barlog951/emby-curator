@@ -1,23 +1,55 @@
 """
 Quality comparison module for comparing proposed media with existing items.
 
-Reuses the same scoring logic as the deduplication module to ensure
-consistent recommendations.
+The quality scoring here is now UNIFIED with the deduplication path: both
+``ExistingQuality.calculate_score`` (this module) and
+``metadata._calculate_quality_rating`` delegate to the single normalised model in
+``emby_dedupe.api.scoring`` (megapixels + HDR + Mbps + channels, with a
+codec-adjusted starved-bitrate demotion and the Dolby Vision Profile-5 penalty). A
+``check`` recommendation and a dedupe keep/delete decision therefore agree on the
+ordering of the same pair of files.
 """
 
 import time
-from dataclasses import dataclass
-from typing import Any, Optional, TypedDict
+from dataclasses import dataclass, field
+from typing import Any, Literal, TypedDict
 
+# rank-torrent-name is a hard runtime dependency (pyproject); a missing install must
+# fail loudly, not silently switch detection behavior. Runtime parse failures on odd
+# filenames are still caught around each rtn_parse() CALL.
+from RTN import parse as rtn_parse
+
+from emby_dedupe.api.scoring import (
+    _is_dovi_profile5,
+    codec_efficiency_ratio,
+    compute_quality_breakdown,
+    duration_minutes_from_ticks,
+    hdr_bonus_from_string,
+)
 from emby_dedupe.utils.constants import LANGUAGE_NORMALIZATION_MAP, should_quality_override_language
 from emby_dedupe.utils.logging import logger
 
-try:
-    from RTN import parse as rtn_parse
-    RTN_AVAILABLE = True
-except ImportError:
-    RTN_AVAILABLE = False
-    logger.warning("RTN library not available, falling back to regex-based detection")
+
+def _round_breakdown(breakdown: dict[str, Any], ndigits: int = 2) -> dict[str, Any]:
+    """Round the numeric values of a score breakdown for compact JSON output.
+
+    Rounds top-level floats and the nested ``multipliers`` floats; leaves booleans
+    (e.g. ``starved_demotion``) and other types untouched.
+    """
+    rounded: dict[str, Any] = {}
+    for key, value in breakdown.items():
+        if isinstance(value, bool):
+            rounded[key] = value
+        elif isinstance(value, (int, float)):
+            rounded[key] = round(value, ndigits)
+        elif isinstance(value, dict):
+            rounded[key] = {
+                k: (round(v, ndigits) if isinstance(v, (int, float)) and not isinstance(v, bool) else v)
+                for k, v in value.items()
+            }
+        else:
+            rounded[key] = value
+    return rounded
 
 
 class SourceQualityTier(TypedDict, total=False):
@@ -132,7 +164,7 @@ AI_UPSCALE_PATTERNS = [
 ]
 
 
-def detect_source_quality(path: Optional[str], name: Optional[str]) -> float:
+def detect_source_quality(path: str | None, name: str | None) -> float:
     """
     Detect source quality from path/name and return multiplier.
 
@@ -171,7 +203,7 @@ def detect_source_quality(path: Optional[str], name: Optional[str]) -> float:
     return SOURCE_QUALITY_TIERS["unknown"]["bonus"]
 
 
-def detect_ai_upscale(path: Optional[str], name: Optional[str]) -> bool:
+def detect_ai_upscale(path: str | None, name: str | None) -> bool:
     """
     Detect if content is AI upscaled.
 
@@ -258,23 +290,16 @@ def calculate_bpp(
     return bitrate / total_pixels_per_second
 
 
-def _get_codec_efficiency_ratio(codec: Optional[str]) -> float:
+def _get_codec_efficiency_ratio(codec: str | None) -> float:
     """Return the codec compression efficiency ratio vs H.264 baseline.
 
-    HEVC achieves ~35% better compression than H.264, AV1 ~50% better.
-    Used to normalize BPP and bitrate thresholds across codecs.
+    Thin wrapper over ``scoring.codec_efficiency_ratio`` (the single source of the
+    HEVC=0.65 / AV1=0.5 ratios), kept as a local name for the BPP/bitrate call sites.
     """
-    if not codec:
-        return 1.0
-    codec_lower = codec.lower()
-    if any(x in codec_lower for x in ("hevc", "x265", "h265")):
-        return 0.65
-    if "av1" in codec_lower:
-        return 0.5
-    return 1.0
+    return codec_efficiency_ratio(codec)
 
 
-def get_bpp_multiplier(bpp: float, codec: Optional[str] = None) -> float:
+def get_bpp_multiplier(bpp: float, codec: str | None = None) -> float:
     """Get quality multiplier based on bits per pixel.
 
     Adjusts for codec efficiency: HEVC/AV1 achieve the same visual quality
@@ -309,7 +334,7 @@ def has_quality_red_flags(
     resolution_height: int,
     bitrate: int,
     bpp: float,
-    codec: Optional[str] = None
+    codec: str | None = None
 ) -> tuple[bool, str]:
     """Detect severe quality issues that should auto-reject.
 
@@ -346,7 +371,7 @@ def has_quality_red_flags(
     return (False, "")
 
 
-def _check_quality_type_from_rtn(quality_lower: str, filename: str) -> Optional[float]:
+def _check_quality_type_from_rtn(quality_lower: str, filename: str) -> float | None:
     """Check quality type and return appropriate multiplier.
 
     Args:
@@ -384,7 +409,7 @@ def _check_quality_type_from_rtn(quality_lower: str, filename: str) -> Optional[
     return None
 
 
-def detect_source_quality_with_rtn(path: Optional[str], name: Optional[str]) -> float:
+def detect_source_quality_with_rtn(path: str | None, name: str | None) -> float:
     """Detect source quality using RTN library for better accuracy.
 
     Args:
@@ -395,9 +420,6 @@ def detect_source_quality_with_rtn(path: Optional[str], name: Optional[str]) -> 
         Quality multiplier (0.9-1.3)
     """
     # Try to parse with RTN first
-    if not RTN_AVAILABLE:
-        return detect_source_quality(path, name)
-
     try:
         filename = path if path else name
         if not filename:
@@ -418,7 +440,7 @@ def detect_source_quality_with_rtn(path: Optional[str], name: Optional[str]) -> 
     return detect_source_quality(path, name)
 
 
-def _try_rtn_codec_detection(path: str) -> Optional[float]:
+def _try_rtn_codec_detection(path: str) -> float | None:
     """Try to detect codec using RTN parsing.
 
     Args:
@@ -427,9 +449,6 @@ def _try_rtn_codec_detection(path: str) -> Optional[float]:
     Returns:
         Multiplier if detected, None otherwise.
     """
-    if not RTN_AVAILABLE:
-        return None
-
     try:
         parsed = rtn_parse(path)
         if parsed.codec:
@@ -444,7 +463,7 @@ def _try_rtn_codec_detection(path: str) -> Optional[float]:
     return None
 
 
-def get_codec_multiplier_with_rtn(codec: Optional[str], path: Optional[str] = None) -> float:
+def get_codec_multiplier_with_rtn(codec: str | None, path: str | None = None) -> float:
     """Get efficiency multiplier for video codec using RTN.
 
     Args:
@@ -481,22 +500,26 @@ class MediaQualityFields:
     inherited __init__ ordering is not relied upon.
     """
 
-    resolution: Optional[str] = None
-    codec: Optional[str] = None
-    hdr: Optional[str] = None
-    audio: Optional[str] = None
-    audio_languages: Optional[list[str]] = None
-    size_mb: Optional[int] = None
-    bitrate_kbps: Optional[int] = None
-    path: Optional[str] = None
-    source_quality_tier: Optional[str] = None
+    resolution: str | None = None
+    codec: str | None = None
+    hdr: str | None = None
+    audio: str | None = None
+    audio_languages: list[str] | None = None
+    size_mb: int | None = None
+    bitrate_kbps: int | None = None
+    path: str | None = None
+    source_quality_tier: str | None = None
+    # Runtime in minutes — lets the shared scorer estimate bitrate from size when the
+    # bitrate is unknown. Defaults to None and is keyword-safe (the external torrents
+    # consumer never passes it); when unknown the bitrate-adequacy check stays neutral.
+    duration_minutes: float | None = None
 
 
 @dataclass
 class ProposedQuality(MediaQualityFields):
     """Quality information for a proposed (torrent) item."""
 
-    name: Optional[str] = None
+    name: str | None = None
     is_ai_upscale: bool = False
 
     def get_resolution_pixels(self) -> int:
@@ -596,67 +619,22 @@ class ProposedQuality(MediaQualityFields):
         return detect_ai_upscale(self.path, self.name)
 
     def calculate_score(self) -> float:
-        """Calculate quality score with comprehensive quality assessment.
+        """Calculate the proposed item's quality score (unified model).
 
-        Implements research-based quality scoring with:
-        - Bitrate estimation from file size when not available
-        - RED FLAG detection for severe quality issues (auto-reject)
-        - Bits per pixel (BPP) validation
-        - Source quality multipliers (REMUX > BluRay > WEB-DL > HDTV)
-        - Codec efficiency multipliers (AV1 > HEVC > H.264)
-        - Updated weights: bitrate 0.8, file_size 0.1
+        Delegates to the shared normalised scorer via ``_create_proposed_as_existing``
+        so a proposed (torrent) item is scored exactly like an existing Emby item —
+        there is only one formula. HDR is keyed off the ``hdr`` string; a proposed
+        item is never penalised as Dolby Vision Profile 5 (the string cannot
+        distinguish a defective P5 from a harmless P7/P8).
         """
-        # Get video properties
-        width, height = self.get_resolution_pixels_tuple()
-        bitrate = self.get_bitrate()
+        return _create_proposed_as_existing(self).calculate_score()
 
-        # Estimate bitrate from file size if not available
-        if bitrate == 0 and self.get_size_bytes() > 0:
-            bitrate = estimate_bitrate_from_size(self.get_size_bytes())
-            logger.debug(f"Using estimated bitrate: {bitrate / 1_000_000:.1f} Mbps")
-
-        # RED FLAG DETECTION FIRST - auto-reject severe quality issues
-        bpp = calculate_bpp(bitrate, width, height, fps=24)
-        has_flag, flag_reason = has_quality_red_flags(height, bitrate, bpp, self.codec)
-
-        if has_flag:
-            logger.warning(f"Quality RED FLAG: {flag_reason}")
-            return 0.0  # Auto-reject
-
-        # Calculate base score with updated weights
-        # NOTE: file_size uses KB (not bytes) to stay in the same magnitude as
-        # resolution (millions of pixels) and bitrate (millions of bps).
-        # Raw bytes at 0.1 weight was 200x larger than resolution, dominating
-        # the score despite the "reduced" weight.
-        base_score = 0.0
-        base_score += (width * height) * QUALITY_WEIGHTS["resolution"]
-        base_score += self.get_audio_channels() * QUALITY_WEIGHTS["audio_channels"]
-        base_score += bitrate * QUALITY_WEIGHTS["bitrate"]
-        base_score += (self.get_size_bytes() / 1024) * QUALITY_WEIGHTS["file_size"]
-        base_score += int(time.time()) * QUALITY_WEIGHTS["date_added"]
-
-        # Calculate multipliers using RTN-enhanced detection
-        source_multiplier = detect_source_quality_with_rtn(self.path, self.name)
-        bpp_multiplier = get_bpp_multiplier(bpp, self.codec)
-        codec_multiplier = get_codec_multiplier_with_rtn(self.codec, self.path)
-        ai_multiplier = 0.7 if self.is_ai_upscaled() else 1.0
-
-        # Log quality metrics
-        logger.debug(
-            f"Quality metrics: BPP={bpp:.4f}, "
-            f"Bitrate={bitrate/1_000_000:.1f}Mbps, "
-            f"Source={source_multiplier}x, "
-            f"BPP_mult={bpp_multiplier}x, "
-            f"Codec={codec_multiplier}x"
-        )
-
-        # Final score with all multipliers
-        final_score = base_score * source_multiplier * bpp_multiplier * codec_multiplier * ai_multiplier
-
-        return final_score
+    def score_breakdown(self) -> dict[str, Any]:
+        """Return the per-factor breakdown behind ``calculate_score`` (explainability)."""
+        return _create_proposed_as_existing(self).score_breakdown()
 
 
-def _detect_resolution_from_dimensions(width: int, height: int) -> Optional[str]:
+def _detect_resolution_from_dimensions(width: int, height: int) -> str | None:
     """Detect resolution string from width/height dimensions.
 
     Uses OR logic for aspect ratio compatibility - movies with non-standard
@@ -712,26 +690,37 @@ class ExistingQuality:
 
     id: str
     name: str
-    resolution: Optional[str] = None
+    resolution: str | None = None
     width: int = 0
     height: int = 0
-    codec: Optional[str] = None
-    hdr: Optional[str] = None
+    codec: str | None = None
+    hdr: str | None = None
     audio_channels: int = 0
-    audio_languages: Optional[list[str]] = None
+    audio_languages: list[str] | None = None
     size_bytes: int = 0
     bitrate: int = 0
-    path: Optional[str] = None
-    provider_ids: Optional[dict[str, str]] = None
-    season: Optional[int] = None
-    episode: Optional[int] = None
+    path: str | None = None
+    provider_ids: dict[str, str] | None = None
+    season: int | None = None
+    episode: int | None = None
     date_rating: int = 0
     raw_score: float = 0.0
-    source_quality_tier: Optional[str] = None
+    source_quality_tier: str | None = None
     is_ai_upscale: bool = False
+    # Video range + DV-P5 flag drive the HDR bonus and the DV Profile-5 penalty in the
+    # unified scorer; duration lets it estimate bitrate from size when bitrate is 0.
+    video_range: str | None = None
+    is_dovi_p5: bool = False
+    duration_minutes: float | None = None
+    # Lazily-computed per-factor breakdown (explainability), cached on first
+    # calculate_score/score_breakdown so sorting doesn't re-run the RTN-parsing source
+    # detection. Excluded from equality/repr — it's a derived cache, not identity.
+    _breakdown_cache: dict[str, Any] | None = field(
+        default=None, compare=False, repr=False
+    )
 
     @staticmethod
-    def _extract_streams(item: dict[str, Any]) -> tuple[Optional[dict], Optional[dict], list[str]]:
+    def _extract_streams(item: dict[str, Any]) -> tuple[dict | None, dict | None, list[str]]:
         """Extract video, audio streams and languages from item.
 
         Args:
@@ -757,7 +746,7 @@ class ExistingQuality:
         return video_stream, audio_stream, audio_languages
 
     @staticmethod
-    def _detect_source_quality_tier(item_path: Optional[str], item_name: str) -> Optional[str]:
+    def _detect_source_quality_tier(item_path: str | None, item_name: str) -> str | None:
         """Detect source quality tier from path/name.
 
         Args:
@@ -774,7 +763,7 @@ class ExistingQuality:
         return "unknown"
 
     @staticmethod
-    def _classify_audio_codec(audio_codec: Optional[str]) -> tuple[bool, bool]:
+    def _classify_audio_codec(audio_codec: str | None) -> tuple[bool, bool]:
         """Classify audio codec as lossless or webdl-indicating.
 
         Args:
@@ -818,8 +807,8 @@ class ExistingQuality:
 
     @staticmethod
     def _infer_source_quality_from_streams(
-        bitrate: int, height: int, audio_codec: Optional[str]
-    ) -> Optional[str]:
+        bitrate: int, height: int, audio_codec: str | None
+    ) -> str | None:
         """Infer source quality tier from stream metadata when path/name gives no signal.
 
         Uses bitrate ranges per resolution and audio codec as heuristics:
@@ -864,7 +853,7 @@ class ExistingQuality:
         return None
 
     @classmethod
-    def from_emby_item(cls, item: dict[str, Any]) -> 'ExistingQuality':
+    def from_emby_item(cls, item: dict[str, Any]) -> ExistingQuality:
         """Create ExistingQuality from an Emby item dict."""
         # Extract streams
         video_stream, audio_stream, audio_languages = cls._extract_streams(item)
@@ -915,71 +904,65 @@ class ExistingQuality:
             date_rating=date_rating,
             source_quality_tier=source_quality_tier,
             is_ai_upscale=is_ai_upscale,
+            video_range=video_stream.get("VideoRange") if video_stream else None,
+            is_dovi_p5=_is_dovi_profile5(video_stream),
+            duration_minutes=duration_minutes_from_ticks(item.get("RunTimeTicks")),
         )
 
-    def calculate_score(self) -> float:
-        """Calculate quality score with comprehensive quality assessment.
+    def _score_inputs(self) -> dict[str, Any]:
+        """Assemble the normalised scoring inputs for this item.
 
-        Implements research-based quality scoring with:
-        - Bitrate estimation from file size when not available
-        - RED FLAG detection for severe quality issues (penalize heavily)
-        - Bits per pixel (BPP) validation
-        - Source quality multipliers (REMUX > BluRay > WEB-DL > HDTV)
-        - Codec efficiency multipliers (AV1 > HEVC > H.264)
-        - Updated weights: bitrate 0.8, file_size 0.1
+        Shared by ``calculate_score`` and ``score_breakdown`` so the (potentially
+        RTN-parsing) source detection and factor extraction happen in one place.
         """
-        # Estimate bitrate from file size if not available
-        bitrate = self.bitrate
-        if bitrate == 0 and self.size_bytes > 0:
-            bitrate = estimate_bitrate_from_size(self.size_bytes)
-            logger.debug(
-                f"Existing item '{self.name}' - using estimated bitrate: "
-                f"{bitrate / 1_000_000:.1f} Mbps (from {self.size_bytes / (1024**3):.1f} GB)"
-            )
-
-        # RED FLAG DETECTION FIRST
-        bpp = calculate_bpp(bitrate, self.width, self.height, fps=24)
-        has_flag, flag_reason = has_quality_red_flags(self.height, bitrate, bpp, self.codec)
-
-        if has_flag:
-            logger.warning(f"Existing item RED FLAG: {flag_reason} - {self.name}")
-            # Don't reject existing items, but penalize heavily
-            base_score = 1.0  # Minimal score
-        else:
-            # Calculate base score with updated weights
-            # NOTE: file_size uses KB (not bytes) — see ProposedQuality.calculate_score
-            base_score = 0.0
-            base_score += (self.width * self.height) * QUALITY_WEIGHTS["resolution"]
-            base_score += self.audio_channels * QUALITY_WEIGHTS["audio_channels"]
-            base_score += bitrate * QUALITY_WEIGHTS["bitrate"]
-            base_score += (self.size_bytes / 1024) * QUALITY_WEIGHTS["file_size"]
-            base_score += self.date_rating * QUALITY_WEIGHTS["date_added"]
-
         # Use stored tier if available (e.g. inferred from streams),
-        # otherwise fall back to path/name detection
+        # otherwise fall back to path/name detection.
         if self.source_quality_tier and self.source_quality_tier != "unknown":
             source_multiplier = SOURCE_QUALITY_TIERS.get(
                 self.source_quality_tier, SOURCE_QUALITY_TIERS["unknown"]
             )["bonus"]
         else:
             source_multiplier = detect_source_quality_with_rtn(self.path, self.name)
-        bpp_multiplier = get_bpp_multiplier(bpp, self.codec)
-        codec_multiplier = get_codec_multiplier_with_rtn(self.codec, self.path)
-        ai_multiplier = 0.7 if self.is_ai_upscale else 1.0
 
-        # Log quality metrics
-        logger.debug(
-            f"Existing quality: BPP={bpp:.4f}, "
-            f"Bitrate={bitrate/1_000_000:.1f}Mbps, "
-            f"Source={source_multiplier}x, "
-            f"BPP_mult={bpp_multiplier}x"
-        )
+        return {
+            "res_megapixels": (self.width * self.height) / 1_000_000.0,
+            "height": self.height,
+            "hdr_bonus": hdr_bonus_from_string(self.video_range),
+            "video_bitrate_mbps": self.bitrate / 1_000_000.0 if self.bitrate else 0.0,
+            "audio_channels": self.audio_channels,
+            "date_rating": self.date_rating,
+            "codec": self.codec,
+            "source_multiplier": source_multiplier,
+            "ai_multiplier": 0.7 if self.is_ai_upscale else 1.0,
+            "is_dovi_p5": self.is_dovi_p5,
+            "size_bytes": self.size_bytes,
+            "duration_minutes": self.duration_minutes,
+        }
 
-        # Final score with all multipliers
-        final_score = base_score * source_multiplier * bpp_multiplier * codec_multiplier * ai_multiplier
-        self.raw_score = final_score
+    def calculate_score(self) -> float:
+        """Calculate the item's quality score using the unified normalised model.
 
-        return final_score
+        Delegates to ``scoring.compute_quality_score`` (shared with the dedupe path).
+        Resolution dominates; HDR (keyed off ``video_range``) is a bonus; video
+        bitrate is a within-resolution tiebreaker; a bitrate below the codec-adjusted
+        adequacy floor demotes the resolution credit proportionally; a Dolby Vision
+        Profile-5 file is collapsed by the DV-P5 penalty. When bitrate is unknown it
+        is estimated from size + duration, or left neutral if neither is available.
+
+        The per-factor breakdown is computed once and cached (``score_breakdown``):
+        sorting (``apply_language_priority`` / smart-override) re-scores the same
+        instances many times and the source detection can run RTN parsing, so this
+        avoids repeating it.
+        """
+        return float(self.score_breakdown()["total"])
+
+    def score_breakdown(self) -> dict[str, Any]:
+        """Return (and lazily cache) the per-factor breakdown behind the score."""
+        if self._breakdown_cache is None:
+            self._breakdown_cache = compute_quality_breakdown(**self._score_inputs())
+            # Keep the legacy ``raw_score`` slot populated for any external reader.
+            self.raw_score = self._breakdown_cache["total"]
+        return self._breakdown_cache
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON output."""
@@ -1000,18 +983,32 @@ class ExistingQuality:
             "path": self.path,
             "season": self.season,
             "episode": self.episode,
+            # Per-factor breakdown behind this item's score (explainability).
+            "score_breakdown": _round_breakdown(self.score_breakdown()),
         }
 
 
 @dataclass
 class ComparisonResult:
-    """Result of comparing proposed vs existing quality."""
+    """Result of comparing proposed vs existing quality.
 
-    recommendation: str  # "download" or "skip"
-    reason: str  # "not_found", "better_quality", "same_or_worse"
-    status: str  # "found" or "not_found"
-    existing: Optional[ExistingQuality] = None
-    proposed: Optional[ProposedQuality] = None
+    This is a PUBLIC, stable contract (the torrents repo consumes it): the field set,
+    the Literal value sets below, and the ExistingQuality fields (including
+    ``source_quality_tier`` and ``is_ai_upscale``) may grow but will not change
+    meaning or disappear without a deprecation path.
+
+    Value sets:
+        recommendation: "download" | "skip"
+        status: "found" | "not_found" | "excluded" (the item's provider ID was in the
+            checker's exclude list — flows through ``status != "not_found"`` branches)
+        reason: "not_found" | "better_quality" | "same_or_worse" | "excluded_id"
+    """
+
+    recommendation: Literal["download", "skip"]
+    reason: Literal["not_found", "better_quality", "same_or_worse", "excluded_id"]
+    status: Literal["found", "not_found", "excluded"]
+    existing: ExistingQuality | None = None
+    proposed: ProposedQuality | None = None
     existing_score: float = 0.0
     proposed_score: float = 0.0
     score_diff: float = 0.0
@@ -1046,13 +1043,18 @@ class ComparisonResult:
                 "proposed_score": round(self.proposed_score, 2),
                 "score_diff": round(self.score_diff, 2),
                 "winner": "proposed" if self.proposed_score > self.existing_score else "existing",
+                # Per-factor breakdown of each score (explainability): which factor
+                # (resolution/hdr/bitrate/audio) and which multiplier drove the result.
+                # Rounded to 2 decimals for compact JSON.
+                "existing_breakdown": _round_breakdown(self.existing.score_breakdown()) if self.existing else None,
+                "proposed_breakdown": _round_breakdown(self.proposed.score_breakdown()) if self.proposed else None,
             }
 
         return result
 
 
 def _get_best_lang_priority(
-    item_languages: Optional[list[str]],
+    item_languages: list[str] | None,
     normalized_priorities: list[str],
     lang_mapping: dict[str, str],
 ) -> int:
@@ -1085,7 +1087,7 @@ def _get_best_lang_priority(
 
 def apply_language_priority(
     items: list[ExistingQuality],
-    lang_priorities: Optional[list[str]] = None,
+    lang_priorities: list[str] | None = None,
 ) -> list[ExistingQuality]:
     """Sort items by language priority, then by quality score.
 
@@ -1152,13 +1154,19 @@ def _create_proposed_as_existing(proposed: ProposedQuality) -> ExistingQuality:
         path=proposed.path,
         source_quality_tier=proposed_source_tier,
         is_ai_upscale=proposed_is_ai_upscale,
+        # HDR bonus is keyed off the free-form ``hdr`` string for proposed items.
+        # A proposed item is NEVER penalised as DV Profile 5: the string ("DV") can't
+        # tell a defective P5 from a harmless P7/P8, so is_dovi_p5 stays False.
+        video_range=proposed.hdr,
+        is_dovi_p5=False,
+        duration_minutes=proposed.duration_minutes,
     )
 
 
 def _apply_smart_override_if_needed(
     all_items: list[ExistingQuality],
     sorted_items: list[ExistingQuality],
-    lang_priorities: Optional[list[str]],
+    lang_priorities: list[str] | None,
 ) -> list[ExistingQuality]:
     """Apply smart override logic if quality significantly better than language priority.
 
@@ -1227,8 +1235,8 @@ def _apply_smart_override_if_needed(
 def _apply_bluray_native_exception(
     proposed_as_existing: ExistingQuality,
     best_existing: ExistingQuality,
-    current_recommendation: str,
-) -> str:
+    current_recommendation: Literal["download", "skip"],
+) -> Literal["download", "skip"]:
     """Apply BluRay native exception rule.
 
     If comparing native BluRay 1080p vs AI upscaled 4K, and native is 1.5x+ larger,
@@ -1281,7 +1289,7 @@ def _apply_bluray_native_exception(
 def compare_quality(
     proposed: ProposedQuality,
     existing_items: list[dict[str, Any]],
-    lang_priorities: Optional[list[str]] = None,
+    lang_priorities: list[str] | None = None,
 ) -> ComparisonResult:
     """Compare proposed quality against existing items.
 
@@ -1326,27 +1334,27 @@ def compare_quality(
     best_item = sorted_items[0]
 
     # If the best item is the proposed one, recommend download
+    recommendation: Literal["download", "skip"]
+    reason: Literal["not_found", "better_quality", "same_or_worse", "excluded_id"]
     if best_item.id == "proposed":
         recommendation = "download"
-        reason = "better_quality"
         best_existing = sorted_items[1] if len(sorted_items) > 1 else existing[0]
     else:
         recommendation = "skip"
-        reason = "same_or_worse"
         best_existing = best_item
 
-    # Apply BluRay native exception rule using helper
+    # Apply BluRay native exception rule using helper. It can flip the recommendation
+    # (e.g. a large native 1080p BluRay overriding an AI-upscaled 4K); keep ``reason``
+    # consistent with the flipped recommendation so a "skip" never reports
+    # "better_quality" (and vice-versa).
     recommendation = _apply_bluray_native_exception(
         proposed_as_existing, best_existing, recommendation
     )
+    reason = "better_quality" if recommendation == "download" else "same_or_worse"
 
-    # NOTE: Resolution dominance override REMOVED
-    # The new comprehensive quality scoring system handles this correctly through:
-    # - RED FLAG detection (auto-rejects over-compressed 4K)
-    # - Bits per pixel validation (prevents accepting poor quality 4K)
-    # - Source quality multipliers (REMUX > WEB-DL)
-    # - Codec efficiency multipliers (AV1 > HEVC > H.264)
-    # No need for manual override - the scoring is now research-based and accurate
+    # Resolution dominance is now handled by the unified normalised scoring model
+    # (resolution-dominant, with a codec-adjusted starved-bitrate demotion and the
+    # Dolby Vision Profile-5 penalty) — no manual override needed here.
 
     # Calculate scores for reporting
     best_existing_score = best_existing.calculate_score()

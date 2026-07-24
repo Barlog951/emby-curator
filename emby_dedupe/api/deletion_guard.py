@@ -19,14 +19,14 @@ import posixpath
 logger = logging.getLogger(__name__)
 
 
-def _norm(path: "str | None") -> str:
+def _norm(path: str | None) -> str:
     """Normalise a path for comparison (forward slashes, no trailing slash)."""
     if not path:
         return ""
     return path.replace("\\", "/").rstrip("/")
 
 
-def _under(path: "str | None", folder: "str | None") -> bool:
+def _under(path: str | None, folder: str | None) -> bool:
     """True if the file at ``path`` lives directly in or under ``folder``."""
     path, folder = _norm(path), _norm(folder)
     if not path or not folder:
@@ -35,8 +35,8 @@ def _under(path: "str | None", folder: "str | None") -> bool:
 
 
 def is_delete_safe(
-    keeper_path: "str | None", delete_path: "str | None", known_paths, delete_paths=None
-) -> "tuple[bool, str]":
+    keeper_path: str | None, delete_path: str | None, known_paths, delete_paths=None
+) -> tuple[bool, str]:
     """Decide whether deleting the item at ``delete_path`` via Emby can destroy the
     keeper at ``keeper_path``.
 

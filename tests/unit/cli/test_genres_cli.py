@@ -226,27 +226,29 @@ class TestCommandRouting:
 
 
 class TestNoLockCLIParsing:
-    def test_no_lock_flag_sets_lock_false(self):
+    """--lock/--no-lock semantics through the typer CLI (the only CLI)."""
+
+    def _normalize_args(self, mocker, extra_args):
+        from typer.testing import CliRunner
+
+        from emby_dedupe.cli.app import app
+
+        mock_run = mocker.patch("emby_dedupe.cli.genres.run_genres_command")
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            ["--host", "http://emby", "--api-key", "k", "genres", "normalize", *extra_args],
+        )
+        assert result.exit_code == 0, result.output
+        return mock_run.call_args[0][0]
+
+    def test_no_lock_flag_sets_lock_false(self, mocker):
         """--no-lock must actually set lock=False."""
-        import argparse
-
-        from emby_dedupe.cli.genres import add_genres_arguments
-
-        parser = argparse.ArgumentParser()
-        add_genres_arguments(parser)
-
-        args = parser.parse_args(["normalize", "--no-lock"])
+        args = self._normalize_args(mocker, ["--no-lock"])
         assert args.lock is False
 
-    def test_lock_default_is_true(self):
-        import argparse
-
-        from emby_dedupe.cli.genres import add_genres_arguments
-
-        parser = argparse.ArgumentParser()
-        add_genres_arguments(parser)
-
-        args = parser.parse_args(["normalize"])
+    def test_lock_default_is_true(self, mocker):
+        args = self._normalize_args(mocker, [])
         assert args.lock is True
 
 

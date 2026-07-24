@@ -8,7 +8,6 @@ focusing on provider ID lookups, caching, quality checking, and configuration ma
 import json
 import time
 from dataclasses import dataclass
-from typing import Optional
 from unittest.mock import Mock, patch
 
 import httpx
@@ -26,22 +25,22 @@ class CheckConfig:
     This solves SonarQube S107 issues (too many parameters) by grouping related
     parameters into a single config object.
     """
-    name: Optional[str] = None
-    year: Optional[int] = None
-    imdb: Optional[str] = None
-    tmdb: Optional[str] = None
-    tvdb: Optional[str] = None
-    season: Optional[int] = None
-    episode: Optional[int] = None
-    resolution: Optional[str] = None
-    codec: Optional[str] = None
-    hdr: Optional[str] = None
-    audio: Optional[str] = None
-    audio_languages: Optional[list[str]] = None
-    size_mb: Optional[int] = None
-    bitrate_kbps: Optional[int] = None
-    path: Optional[str] = None
-    source_quality_tier: Optional[str] = None
+    name: str | None = None
+    year: int | None = None
+    imdb: str | None = None
+    tmdb: str | None = None
+    tvdb: str | None = None
+    season: int | None = None
+    episode: int | None = None
+    resolution: str | None = None
+    codec: str | None = None
+    hdr: str | None = None
+    audio: str | None = None
+    audio_languages: list[str] | None = None
+    size_mb: int | None = None
+    bitrate_kbps: int | None = None
+    path: str | None = None
+    source_quality_tier: str | None = None
 
 
 class TestEmbyChecker:
@@ -216,7 +215,7 @@ class TestEmbyChecker:
         assert cache_path.exists()
 
         # Verify content
-        with open(cache_path, 'r') as f:
+        with open(cache_path) as f:
             data = json.load(f)
         assert "timestamp" in data
         assert data["items"] == items
@@ -323,7 +322,7 @@ class TestEmbyChecker:
         assert cache_path.exists()
 
         # Verify content
-        with open(cache_path, 'r') as f:
+        with open(cache_path) as f:
             data = json.load(f)
         assert "timestamp" in data
         assert data["tables"]["imdb"]["tt1234567"] == [{"id": "item1"}]
@@ -941,3 +940,201 @@ class TestEmbyChecker:
         assert result is not None
         assert len(result) == 1
         assert result[0]["Id"] == "ep1"
+
+
+class TestFromConfigErrorContract:
+    """Regression (code review 2026-07-10): from_config() must fail loudly, not build a
+    checker with host=None that only errors on the first check()."""
+
+    def test_missing_config_file_raises_filenotfound_compatible(self, tmp_path, monkeypatch):
+        from emby_dedupe.utils.exceptions import EmbyConfigMissingError, EmbyDedupeError
+
+        monkeypatch.setattr("emby_dedupe.utils.config.CONFIG_FILE", tmp_path / "nope.yaml")
+        # Consumers (torrents repo) wrap from_config() in `except FileNotFoundError` —
+        # that branch must actually fire.
+        with pytest.raises(FileNotFoundError) as exc:
+            EmbyChecker.from_config()
+        assert "nope.yaml" in str(exc.value)
+        assert isinstance(exc.value, EmbyConfigMissingError)
+        assert isinstance(exc.value, EmbyDedupeError)
+
+    def test_incomplete_config_file_raises_valueerror_compatible(self, tmp_path, monkeypatch):
+        from emby_dedupe.utils.exceptions import EmbyConfigError, EmbyConfigMissingError
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("host: http://emby:8096\n")  # api_key missing
+        monkeypatch.setattr("emby_dedupe.utils.config.CONFIG_FILE", cfg)
+        with pytest.raises(ValueError) as exc:
+            EmbyChecker.from_config()
+        assert isinstance(exc.value, EmbyConfigError)
+        assert not isinstance(exc.value, EmbyConfigMissingError)  # file exists
+        assert "api_key" in str(exc.value)
+
+    def test_overrides_alone_suffice_without_config_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("emby_dedupe.utils.config.CONFIG_FILE", tmp_path / "nope.yaml")
+        checker = EmbyChecker.from_config(host="http://emby:8096", api_key="k")
+        assert checker.host == "http://emby:8096"
+        assert checker.api_key == "k"
+
+    def test_check_config_error_is_still_a_valueerror(self):
+        from emby_dedupe.utils.exceptions import EmbyConfigError
+
+        checker = EmbyChecker(host=None, api_key=None)
+        with pytest.raises(ValueError) as exc:  # pinned pre-existing contract
+            checker.check(name="Test")
+        assert isinstance(exc.value, EmbyConfigError)
+
+
+class TestCheckKwargContract:
+    """Regression (code review 2026-07-10): check() routes kwargs through CheckConfig,
+    so an unknown/typo'd kwarg now raises TypeError instead of being silently dropped."""
+
+    def test_unknown_kwarg_raises_typeerror(self):
+        checker = EmbyChecker(host="http://emby", api_key="key")
+        with pytest.raises(TypeError):
+            checker.check(name="Inception", bogus_field="x")
+
+    def test_valid_kwargs_still_accepted(self):
+        from emby_dedupe.api.quality_compare import ComparisonResult
+
+        checker = EmbyChecker(host="http://emby", api_key="key")
+        with patch.object(checker, "_lookup_by_any_provider_id", return_value=None), \
+             patch.object(checker, "_search_by_name", return_value=[]):
+            result = checker.check(
+                name="Inception", year=2010, resolution="2160p", codec="hevc",
+                hdr="HDR10", size_mb=15000, audio_languages=["eng"],
+            )
+        assert isinstance(result, ComparisonResult)
+        assert result.status == "not_found"
+
+    def test_check_batch_forwards_item_kwargs(self):
+        checker = EmbyChecker(host="http://emby", api_key="key")
+        with patch.object(checker, "_lookup_by_any_provider_id", return_value=None), \
+             patch.object(checker, "_search_by_name", return_value=[]):
+            results = checker.check_batch([
+                {"name": "A", "resolution": "1080p"},
+                {"name": "B", "resolution": "2160p"},
+            ])
+        assert len(results) == 2
+
+
+class TestTestConnection:
+    """EmbyChecker.test_connection() — a real connectivity probe (code review 2026-07-10)."""
+
+    def test_connection_success(self):
+        checker = EmbyChecker(host="http://emby", api_key="key")
+        with patch("emby_dedupe.api.checker.check_emby_connection", return_value=True) as mock_conn:
+            assert checker.test_connection() is True
+        # probes /System/Info on the configured host
+        args = mock_conn.call_args[0]
+        assert args[1] == "http://emby/System/Info"
+
+    def test_connection_propagates_server_error(self):
+        from emby_dedupe.utils.exceptions import EmbyServerConnectionError
+
+        checker = EmbyChecker(host="http://emby", api_key="key")
+        with patch(
+            "emby_dedupe.api.checker.check_emby_connection",
+            side_effect=EmbyServerConnectionError("down"),
+        ):
+            with pytest.raises(EmbyServerConnectionError):
+                checker.test_connection()
+
+    def test_connection_requires_config(self):
+        from emby_dedupe.utils.exceptions import EmbyConfigError
+
+        checker = EmbyChecker(host=None, api_key=None)
+        with pytest.raises(EmbyConfigError):
+            checker.test_connection()
+
+
+class TestCheckEpisodes:
+    """EmbyChecker.check_episodes() aggregate API (code review 2026-07-10)."""
+
+    def _checker_with_verdicts(self, verdicts):
+        """verdicts: dict[(season,episode)] -> ('download'|'skip'|'missing')."""
+        from emby_dedupe.api.quality_compare import ComparisonResult, ExistingQuality
+
+        checker = EmbyChecker(host="http://emby", api_key="key")
+
+        def fake_check(config=None, **kwargs):
+            s, e = config.season, config.episode
+            verdict = verdicts[(s, e)]
+            if verdict == "missing":
+                return ComparisonResult(recommendation="download", reason="not_found",
+                                        status="not_found", existing=None)
+            existing = ExistingQuality(id=f"{s}-{e}", name="ep", width=1920, height=1080)
+            if verdict == "download":
+                return ComparisonResult(recommendation="download", reason="better_quality",
+                                        status="found", existing=existing)
+            return ComparisonResult(recommendation="skip", reason="same_or_worse",
+                                    status="found", existing=existing)
+
+        checker.check = fake_check  # type: ignore[method-assign]
+        return checker
+
+    def test_range_all_present_same_or_better_skips(self):
+        v = {(1, 8): "skip", (1, 9): "skip", (1, 10): "skip"}
+        checker = self._checker_with_verdicts(v)
+        res = checker.check_episodes({1: [8, 9, 10]}, resolution="1080p")
+        assert res.episodes_checked == 3
+        assert res.episodes_found == 3
+        assert res.all_same_or_better is True
+        assert res.should_download is False
+        assert res.episodes_to_download == {}
+        assert res.first_existing is not None
+
+    def test_range_one_missing_triggers_download(self):
+        v = {(1, 8): "skip", (1, 9): "missing", (1, 10): "skip"}
+        checker = self._checker_with_verdicts(v)
+        res = checker.check_episodes({1: [8, 9, 10]}, resolution="1080p")
+        assert res.episodes_found == 2
+        assert res.should_download is True
+        assert res.episodes_to_download == {1: [9]}
+
+    def test_range_one_upgradeable_triggers_download(self):
+        v = {(1, 8): "skip", (1, 9): "download", (1, 10): "skip"}
+        checker = self._checker_with_verdicts(v)
+        res = checker.check_episodes({1: [8, 9, 10]}, resolution="2160p")
+        assert res.episodes_found == 3  # all exist...
+        assert res.all_same_or_better is False  # ...but one is upgradeable
+        assert res.episodes_to_download == {1: [9]}
+        assert res.should_download is True
+
+    def test_multi_season(self):
+        v = {(1, 1): "skip", (1, 2): "missing", (2, 1): "skip"}
+        checker = self._checker_with_verdicts(v)
+        res = checker.check_episodes({1: [1, 2], 2: [1]}, resolution="1080p")
+        assert res.episodes_checked == 3
+        assert res.episodes_to_download == {1: [2]}
+        assert res.should_download is True
+
+    def test_per_episode_size_override_and_callback(self):
+        seen_sizes = {}
+        collected = []
+
+        from emby_dedupe.api.quality_compare import ComparisonResult, ExistingQuality
+        checker = EmbyChecker(host="http://emby", api_key="key")
+
+        def fake_check(config=None, **kwargs):
+            seen_sizes[(config.season, config.episode)] = config.size_mb
+            return ComparisonResult(recommendation="skip", reason="same_or_worse",
+                                    status="found",
+                                    existing=ExistingQuality(id="x", name="e", width=1, height=1))
+        checker.check = fake_check  # type: ignore[method-assign]
+
+        res = checker.check_episodes(
+            {1: [1, 2]},
+            resolution="1080p", size_mb=1000,
+            episode_sizes={(1, 1): 500, (1, 2): 900},
+            on_episode=lambda er: collected.append((er.season, er.episode)),
+        )
+        assert seen_sizes == {(1, 1): 500, (1, 2): 900}  # per-episode overrides applied
+        assert collected == [(1, 1), (1, 2)]  # callback fired per episode
+        assert len(res.results) == 2
+
+    def test_empty_episode_set_does_not_recommend_download(self):
+        checker = self._checker_with_verdicts({})
+        res = checker.check_episodes({}, resolution="1080p")
+        assert res.episodes_checked == 0
+        assert res.should_download is False

@@ -27,27 +27,33 @@ Usage:
 import hashlib
 import json
 import time
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
 from emby_dedupe.api.client import (
+    check_emby_connection,
     fetch_and_process_media_items,
     fetch_items_details,
     get_library_id,
 )
 from emby_dedupe.api.quality_compare import (
     ComparisonResult,
+    ExistingQuality,
     MediaQualityFields,
     ProposedQuality,
     compare_quality,
 )
 from emby_dedupe.api.search import SEARCH_FIELDS, search_media
-from emby_dedupe.utils.config import Config, ensure_cache_dir
+from emby_dedupe.utils.config import Config, ensure_cache_dir, get_config_path
+from emby_dedupe.utils.exceptions import EmbyConfigError, EmbyConfigMissingError
 from emby_dedupe.utils.http import make_http_request
+from emby_dedupe.utils.json_cache import load_json_cache, save_json_cache
 from emby_dedupe.utils.logging import logger
+from emby_dedupe.utils.providers import iter_provider_ids
 
 
 @dataclass
@@ -59,13 +65,71 @@ class CheckConfig(MediaQualityFields):
     only the identification fields are declared here.
     """
 
-    name: Optional[str] = None
-    year: Optional[int] = None
-    imdb: Optional[str] = None
-    tmdb: Optional[str] = None
-    tvdb: Optional[str] = None
-    season: Optional[int] = None
-    episode: Optional[int] = None
+    name: str | None = None
+    year: int | None = None
+    imdb: str | None = None
+    tmdb: str | None = None
+    tvdb: str | None = None
+    season: int | None = None
+    episode: int | None = None
+
+
+@dataclass
+class EpisodeCheckResult:
+    """One episode's check within a :meth:`EmbyChecker.check_episodes` call."""
+
+    season: int
+    episode: int
+    result: ComparisonResult
+
+
+@dataclass
+class EpisodeSetResult:
+    """Aggregate outcome of checking a set of TV episodes.
+
+    Returned by :meth:`EmbyChecker.check_episodes`. ``should_download`` is True when
+    any requested episode is missing OR a proposed upgrade beats the existing copy.
+    """
+
+    episodes_checked: int
+    episodes_found: int
+    all_same_or_better: bool
+    episodes_to_download: dict[int, list[int]]
+    first_existing: ExistingQuality | None = None
+    results: list[EpisodeCheckResult] = field(default_factory=list)
+
+    @property
+    def should_download(self) -> bool:
+        """True if the set is worth downloading (missing episodes or an upgrade).
+
+        An empty set (nothing requested) is not worth downloading → False.
+        """
+        return not (
+            self.all_same_or_better
+            and self.episodes_found == self.episodes_checked
+        )
+
+
+def _iter_episode_pairs(
+    episodes: Mapping[int, Sequence[int]],
+) -> "Iterator[tuple[int, int]]":
+    """Yield every ``(season, episode)`` pair, flattening the season→episodes mapping."""
+    for season in episodes:
+        for episode in episodes[season]:
+            yield season, episode
+
+
+def _episode_config(
+    base: "CheckConfig",
+    season: int,
+    episode: int,
+    episode_sizes: Mapping[tuple[int, int], int] | None,
+) -> "CheckConfig":
+    """Return ``base`` with this episode's season/episode (and per-episode size, if given)."""
+    overrides: dict[str, Any] = {"season": season, "episode": episode}
+    if episode_sizes and (season, episode) in episode_sizes:
+        overrides["size_mb"] = episode_sizes[(season, episode)]
+    return replace(base, **overrides)
 
 
 class EmbyChecker:
@@ -73,14 +137,14 @@ class EmbyChecker:
 
     def __init__(
         self,
-        host: Optional[str] = None,
-        api_key: Optional[str] = None,
-        libraries: Optional[list[str]] = None,
-        lang_priorities: Optional[list[str]] = None,
-        exclude_ids: Optional[list[str]] = None,
+        host: str | None = None,
+        api_key: str | None = None,
+        libraries: list[str] | None = None,
+        lang_priorities: list[str] | None = None,
+        exclude_ids: list[str] | None = None,
         use_cache: bool = True,
         cache_ttl_minutes: int = 10,
-        config: Optional[Config] = None,
+        config: Config | None = None,
     ):
         """Initialize EmbyChecker.
 
@@ -111,12 +175,12 @@ class EmbyChecker:
             self.use_cache = use_cache
             self.cache_ttl_minutes = cache_ttl_minutes
 
-        self._client: Optional[httpx.Client] = None
-        self._cache_dir: Optional[Path] = None
-        self._provider_tables: Optional[dict] = None  # Cached provider ID tables
+        self._client: httpx.Client | None = None
+        self._cache_dir: Path | None = None
+        self._provider_tables: dict | None = None  # Cached provider ID tables
 
     @classmethod
-    def from_config(cls, **overrides) -> 'EmbyChecker':
+    def from_config(cls, **overrides) -> EmbyChecker:
         """Create EmbyChecker from config file.
 
         Args:
@@ -124,15 +188,35 @@ class EmbyChecker:
 
         Returns:
             EmbyChecker instance.
+
+        Raises:
+            EmbyConfigMissingError: The config file does not exist and the overrides
+                did not supply host + api_key. (Also a FileNotFoundError.)
+            EmbyConfigError: The config file exists but is missing host or api_key.
+                (Also a ValueError.)
         """
         config = Config.from_config_file(**overrides)
+        # Fail HERE, loudly, instead of building a checker that only errors on the
+        # first check() with a message that never mentions the config file.
+        if not config.host or not config.api_key:
+            config_path = get_config_path()
+            missing = [k for k in ("host", "api_key") if not getattr(config, k)]
+            if not config_path.exists():
+                raise EmbyConfigMissingError(
+                    f"Emby config file not found: {config_path}. Create it with 'host' "
+                    f"and 'api_key' keys, or pass them as overrides to from_config()."
+                )
+            raise EmbyConfigError(
+                f"Emby config file {config_path} is incomplete: missing "
+                f"{', '.join(missing)}."
+            )
         return cls(config=config)
 
     def _ensure_config(self) -> tuple[str, str]:
         """Ensure host and api_key are configured and return them."""
         if not self.host or not self.api_key:
             msg = "EmbyChecker requires host and api_key to be configured"
-            raise ValueError(msg)
+            raise EmbyConfigError(msg)
         return self.host, self.api_key
 
     def _get_client(self) -> httpx.Client:
@@ -163,48 +247,52 @@ class EmbyChecker:
             self._cache_dir = ensure_cache_dir()
         return self._cache_dir / "provider_tables.json"
 
-    def _load_provider_tables(self) -> Optional[dict]:
-        """Load cached provider ID tables."""
+    def _cache_read(self, path: Path, payload_key: str, default: Any) -> Any:
+        """Read a TTL-checked payload from a timestamped JSON cache.
+
+        The single read path behind every cache getter (built on ``utils.json_cache``,
+        which has no TTL logic — this method owns the timestamp check). Returns None
+        when caching is disabled, the file is missing/corrupt, or the entry has expired;
+        otherwise the payload stored under ``payload_key`` (``default`` if absent).
+        """
         if not self.use_cache:
             return None
-
-        cache_path = self._get_provider_tables_cache_path()
-        if not cache_path.exists():
+        data = load_json_cache(path, label="cache")
+        if not data:
             return None
+        ttl_seconds = self.cache_ttl_minutes * 60
+        if time.time() - data.get("timestamp", 0) > ttl_seconds:
+            logger.debug(f"Cache expired: {path.name}")
+            return None
+        return data.get(payload_key, default)
 
-        try:
-            with open(cache_path, 'r') as f:
-                data = json.load(f)
+    def _cache_write(self, path: Path, payload_key: str, data: Any) -> None:
+        """Write ``data`` under ``payload_key`` to a timestamped JSON cache.
 
-            # Check TTL
-            cached_time = data.get("timestamp", 0)
-            ttl_seconds = self.cache_ttl_minutes * 60
-            if time.time() - cached_time > ttl_seconds:
-                logger.debug("Provider tables cache expired")
-                return None
+        The single write path behind every cache setter — atomic (sibling ``.tmp`` +
+        rename) via ``utils.json_cache.save_json_cache``. No-op when caching is disabled.
+        Written compact (``indent=None``) — these are machine-only caches and the
+        provider-ID tables for a large library are big enough that ``indent=2`` would
+        roughly double the file; this matches the pre-refactor compact writes.
+        """
+        if not self.use_cache:
+            return
+        save_json_cache(
+            path, {"timestamp": time.time(), payload_key: data}, label="cache", compact=True
+        )
 
+    def _load_provider_tables(self) -> dict | None:
+        """Load cached provider ID tables (TTL-checked); None if absent/expired."""
+        tables = self._cache_read(self._get_provider_tables_cache_path(), "tables", None)
+        if tables is not None:
             logger.info("Using cached provider ID tables for instant IMDB lookups")
-            return data.get("tables")
-
-        except Exception as e:
-            logger.warning(f"Error loading provider tables cache: {e}")
-            return None
+        return tables
 
     def _save_provider_tables(self, tables: dict) -> None:
         """Save provider ID tables to cache."""
-        if not self.use_cache:
-            return
-
-        cache_path = self._get_provider_tables_cache_path()
-        try:
-            with open(cache_path, 'w') as f:
-                json.dump({
-                    "timestamp": time.time(),
-                    "tables": tables,
-                }, f)
+        self._cache_write(self._get_provider_tables_cache_path(), "tables", tables)
+        if self.use_cache:
             logger.info("Saved provider ID tables to cache")
-        except Exception as e:
-            logger.warning(f"Error saving provider tables cache: {e}")
 
     def _get_library_names(self, client) -> list:
         """Get list of library names to process."""
@@ -308,48 +396,18 @@ class EmbyChecker:
         items = fetch_items_details(client, host, item_ids)
         return items
 
-    def _get_from_cache(self, cache_key: str) -> Optional[list[dict]]:
-        """Get data from cache if valid."""
-        if not self.use_cache:
-            return None
-
-        cache_path = self._get_cache_path(cache_key)
-        if not cache_path.exists():
-            return None
-
-        try:
-            with open(cache_path, 'r') as f:
-                data = json.load(f)
-
-            # Check TTL
-            cached_time = data.get("timestamp", 0)
-            ttl_seconds = self.cache_ttl_minutes * 60
-            if time.time() - cached_time > ttl_seconds:
-                logger.debug(f"Cache expired for {cache_key}")
-                return None
-
+    def _get_from_cache(self, cache_key: str) -> list[dict] | None:
+        """Get data from cache if valid (TTL-checked); None on miss/expiry."""
+        items = self._cache_read(self._get_cache_path(cache_key), "items", [])
+        if items is not None:
             logger.debug(f"Cache hit for {cache_key}")
-            return data.get("items", [])
-
-        except Exception as e:
-            logger.warning(f"Error reading cache: {e}")
-            return None
+        return items
 
     def _save_to_cache(self, cache_key: str, items: list[dict]) -> None:
         """Save data to cache."""
-        if not self.use_cache:
-            return
-
-        cache_path = self._get_cache_path(cache_key)
-        try:
-            with open(cache_path, 'w') as f:
-                json.dump({
-                    "timestamp": time.time(),
-                    "items": items,
-                }, f)
+        self._cache_write(self._get_cache_path(cache_key), "items", items)
+        if self.use_cache:
             logger.debug(f"Saved to cache: {cache_key}")
-        except Exception as e:
-            logger.warning(f"Error saving to cache: {e}")
 
     def _make_cache_key(self, **params) -> str:
         """Generate a cache key from search parameters."""
@@ -395,34 +453,20 @@ class EmbyChecker:
 
         logger.info("Provider ID index rebuilt successfully")
 
-    def _lookup_by_any_provider_id(self, imdb: Optional[str], tmdb: Optional[str], tvdb: Optional[str]) -> Optional[list]:
+    def _lookup_by_any_provider_id(self, imdb: str | None, tmdb: str | None, tvdb: str | None) -> list | None:
         """Try to lookup items by provider ID (IMDB > TMDB > TVDB priority)."""
-        if imdb:
-            logger.debug(f"Looking up IMDB ID: {imdb}")
-            items = self._lookup_by_provider_id(imdb, "imdb")
+        for provider, pid in iter_provider_ids(imdb, tmdb, tvdb):
+            logger.debug(f"Looking up {provider.upper()} ID: {pid}")
+            items = self._lookup_by_provider_id(pid, provider)
             if items:
-                logger.debug(f"Found {len(items)} items via IMDB lookup")
-                return items
-
-        if tmdb:
-            logger.debug(f"Looking up TMDB ID: {tmdb}")
-            items = self._lookup_by_provider_id(tmdb, "tmdb")
-            if items:
-                logger.debug(f"Found {len(items)} items via TMDB lookup")
-                return items
-
-        if tvdb:
-            logger.debug(f"Looking up TVDB ID: {tvdb}")
-            items = self._lookup_by_provider_id(tvdb, "tvdb")
-            if items:
-                logger.debug(f"Found {len(items)} items via TVDB lookup")
+                logger.debug(f"Found {len(items)} items via {provider.upper()} lookup")
                 return items
 
         return None
 
     def _find_validated_series(
         self, client: httpx.Client, host: str, pid: str, ptype: str,
-    ) -> Optional[dict]:
+    ) -> dict | None:
         """Search Emby for a series matching the given provider ID.
 
         Emby may ignore the AnyXxxId filter for Series items and return
@@ -498,12 +542,12 @@ class EmbyChecker:
 
     def _lookup_episode_via_series(
         self,
-        imdb: Optional[str],
-        tmdb: Optional[str],
-        tvdb: Optional[str],
+        imdb: str | None,
+        tmdb: str | None,
+        tvdb: str | None,
         season: int,
         episode: int,
-    ) -> Optional[list[dict]]:
+    ) -> list[dict] | None:
         """Find episode by searching for the parent series via provider ID.
 
         The cached provider tables only index non-folder items (episodes).
@@ -526,10 +570,8 @@ class EmbyChecker:
         client = self._get_client()
         host, _ = self._ensure_config()
 
-        for pid, ptype in [(imdb, "Imdb"), (tmdb, "Tmdb"), (tvdb, "Tvdb")]:
-            if not pid:
-                continue
-
+        for provider, pid in iter_provider_ids(imdb, tmdb, tvdb):
+            ptype = provider.capitalize()  # Emby API param form: Imdb/Tmdb/Tvdb
             logger.debug(f"Series fallback: searching for series via {ptype} ID: {pid}")
 
             try:
@@ -553,7 +595,7 @@ class EmbyChecker:
 
         return None  # No series found via any provider ID
 
-    def _search_by_name(self, name: str, year: Optional[int], season: Optional[int], episode: Optional[int]) -> list:
+    def _search_by_name(self, name: str, year: int | None, season: int | None, episode: int | None) -> list:
         """Search for existing media by name with caching."""
         logger.debug(f"Provider ID not found or not provided, searching by name: {name}")
 
@@ -583,7 +625,7 @@ class EmbyChecker:
 
     def check(
         self,
-        config: Optional[CheckConfig] = None,
+        config: CheckConfig | None = None,
         **kwargs
     ) -> ComparisonResult:
         """Check if media should be downloaded.
@@ -596,51 +638,25 @@ class EmbyChecker:
 
         Returns:
             ComparisonResult with recommendation.
+
+        Raises:
+            EmbyConfigError: host/api_key are not configured. (Also a ValueError,
+                so existing ``except ValueError`` handlers keep working.)
+            TypeError: an unknown keyword argument was passed (previously such typos
+                were silently ignored; CheckConfig now rejects them).
         """
-        # Use config object if provided, otherwise use individual parameters from kwargs
-        if config:
-            name = config.name
-            year = config.year
-            imdb = config.imdb
-            tmdb = config.tmdb
-            tvdb = config.tvdb
-            season = config.season
-            episode = config.episode
-            resolution = config.resolution
-            codec = config.codec
-            hdr = config.hdr
-            audio = config.audio
-            audio_languages = config.audio_languages
-            size_mb = config.size_mb
-            bitrate_kbps = config.bitrate_kbps
-            path = config.path
-            source_quality_tier = config.source_quality_tier
-        else:
-            # Extract from kwargs
-            name = kwargs.get('name')
-            year = kwargs.get('year')
-            imdb = kwargs.get('imdb')
-            tmdb = kwargs.get('tmdb')
-            tvdb = kwargs.get('tvdb')
-            season = kwargs.get('season')
-            episode = kwargs.get('episode')
-            resolution = kwargs.get('resolution')
-            codec = kwargs.get('codec')
-            hdr = kwargs.get('hdr')
-            audio = kwargs.get('audio')
-            audio_languages = kwargs.get('audio_languages')
-            size_mb = kwargs.get('size_mb')
-            bitrate_kbps = kwargs.get('bitrate_kbps')
-            path = kwargs.get('path')
-            source_quality_tier = kwargs.get('source_quality_tier')
+        # Single source of parameter values: build a CheckConfig from kwargs when one
+        # was not supplied. Unknown kwargs now raise TypeError instead of being
+        # silently dropped (the old hand-copied kwargs.get() footgun).
+        config = config if config is not None else CheckConfig(**kwargs)
 
         # Validate configuration
         errors = self.validate()
         if errors:
-            raise ValueError(f"Invalid configuration: {', '.join(errors)}")
+            raise EmbyConfigError(f"Invalid configuration: {', '.join(errors)}")
 
         # Check if provider ID is excluded
-        for provider_id in [imdb, tmdb, tvdb]:
+        for provider_id in [config.imdb, config.tmdb, config.tvdb]:
             if provider_id and provider_id in self.exclude_ids:
                 logger.info(f"Skipping excluded provider ID: {provider_id}")
                 return ComparisonResult(
@@ -649,36 +665,33 @@ class EmbyChecker:
                     status="excluded",
                 )
 
-        # Create proposed quality object
+        # Create proposed quality object from the shared media-quality fields
+        # (single field list — MediaQualityFields is the one declaration).
         proposed = ProposedQuality(
-            resolution=resolution,
-            codec=codec,
-            hdr=hdr,
-            audio=audio,
-            audio_languages=audio_languages,
-            size_mb=size_mb,
-            bitrate_kbps=bitrate_kbps,
-            path=path,
-            name=name,
-            source_quality_tier=source_quality_tier,
+            name=config.name,
+            **{f.name: getattr(config, f.name) for f in fields(MediaQualityFields)},
         )
 
         # Try provider ID lookup first (instant with cached tables)
-        existing_items = self._lookup_by_any_provider_id(imdb, tmdb, tvdb)
+        existing_items = self._lookup_by_any_provider_id(
+            config.imdb, config.tmdb, config.tvdb
+        )
 
         # Fallback for TV episodes: cached tables only index episodes (IsFolder=False),
         # so series-level provider IDs (e.g., IMDB on the Series item) won't be found.
         # Search the Emby API directly for the series by provider ID, then find the episode.
-        if not existing_items and season is not None and episode is not None:
+        if not existing_items and config.season is not None and config.episode is not None:
             series_result = self._lookup_episode_via_series(
-                imdb, tmdb, tvdb, season, episode
+                config.imdb, config.tmdb, config.tvdb, config.season, config.episode
             )
             if series_result is not None:
                 existing_items = series_result
 
         # Fall back to name search only if no provider-based result found
-        if existing_items is None and name:
-            existing_items = self._search_by_name(name, year, season, episode)
+        if existing_items is None and config.name:
+            existing_items = self._search_by_name(
+                config.name, config.year, config.season, config.episode
+            )
         if not existing_items:
             existing_items = []
 
@@ -687,7 +700,7 @@ class EmbyChecker:
 
     def should_download(
         self,
-        config: Optional[CheckConfig] = None,
+        config: CheckConfig | None = None,
         **kwargs
     ) -> bool:
         """Check if media should be downloaded (simple boolean interface).
@@ -707,18 +720,89 @@ class EmbyChecker:
         Returns:
             True if should download, False otherwise.
         """
-        # Use config if provided, otherwise pass kwargs to check
-        if config:
-            result = self.check(config=config)
-        else:
-            result = self.check(**kwargs)
-        return result.should_download
+        return self.check(config=config, **kwargs).should_download
+
+    def check_episodes(
+        self,
+        episodes: Mapping[int, Sequence[int]],
+        config: CheckConfig | None = None,
+        *,
+        episode_sizes: Mapping[tuple[int, int], int] | None = None,
+        on_episode: Callable[[EpisodeCheckResult], None] | None = None,
+        **kwargs,
+    ) -> EpisodeSetResult:
+        """Check a set of TV episodes and aggregate the per-episode decisions.
+
+        This is the batch API for episode ranges / season packs / multi-season packs:
+        it runs :meth:`check` for every ``(season, episode)`` and folds the results
+        into one :class:`EpisodeSetResult` (found count, per-season download list,
+        whether every existing episode is same-or-better). It owns the loop so
+        consumers no longer hand-roll it.
+
+        Args:
+            episodes: Mapping of season number to the episode numbers to check,
+                e.g. ``{1: [8, 9, 10]}`` or ``{1: [...], 2: [...]}``.
+            config: Base quality descriptor (resolution/codec/size_mb/…) shared by
+                every episode. Its ``season``/``episode`` are ignored (set per item).
+            episode_sizes: Optional per-episode size override in MB, keyed by
+                ``(season, episode)`` — lets each episode be sized independently.
+            on_episode: Optional callback invoked with each EpisodeCheckResult as it
+                completes (for progress/diagnostic logging), preserving per-episode
+                visibility a plain loop would give.
+            **kwargs: Base quality fields, as an alternative to ``config``.
+
+        Returns:
+            EpisodeSetResult with the aggregated decision.
+        """
+        base = config if config is not None else CheckConfig(**kwargs)
+
+        episodes_checked = 0
+        episodes_found = 0
+        all_same_or_better = True
+        first_existing: ExistingQuality | None = None
+        to_download: dict[int, list[int]] = {}
+        results: list[EpisodeCheckResult] = []
+
+        for season, episode in _iter_episode_pairs(episodes):
+            episodes_checked += 1
+            item_config = _episode_config(base, season, episode, episode_sizes)
+
+            result = self.check(config=item_config)
+            episode_result = EpisodeCheckResult(season, episode, result)
+            results.append(episode_result)
+
+            if result.existing is not None:
+                episodes_found += 1
+                if first_existing is None:
+                    first_existing = result.existing
+
+            if result.should_download:
+                all_same_or_better = False
+                to_download.setdefault(season, []).append(episode)
+
+            if on_episode is not None:
+                on_episode(episode_result)
+
+        return EpisodeSetResult(
+            episodes_checked=episodes_checked,
+            episodes_found=episodes_found,
+            all_same_or_better=all_same_or_better,
+            episodes_to_download=to_download,
+            first_existing=first_existing,
+            results=results,
+        )
 
     def check_batch(
         self,
         items: list[dict[str, Any]],
     ) -> list[ComparisonResult]:
         """Check multiple items at once.
+
+        .. deprecated::
+            Use :meth:`check` in a loop for arbitrary items, or
+            :meth:`check_episodes` for TV episode sets (which aggregates the
+            per-episode decisions). ``check_batch`` is a bare loop kept only for
+            backward compatibility and may be removed in a future major release.
 
         Args:
             items: List of dicts with check parameters.
@@ -732,13 +816,30 @@ class EmbyChecker:
             results.append(result)
         return results
 
+    def test_connection(self) -> bool:
+        """Verify the Emby server is reachable and the API key is valid.
+
+        A lightweight probe (``GET /System/Info``) — unlike a fabricated ``check()``
+        it performs a real network round-trip every call (no result cache), so it
+        cannot pass against a server that is actually down.
+
+        Returns:
+            True if the server responds successfully.
+
+        Raises:
+            EmbyConfigError: host/api_key are not configured.
+            EmbyServerConnectionError: the server is unreachable or rejected the key.
+        """
+        host, _ = self._ensure_config()
+        return check_emby_connection(self._get_client(), f"{host}/System/Info")
+
     def close(self) -> None:
         """Close the HTTP client."""
         if self._client:
             self._client.close()
             self._client = None
 
-    def __enter__(self) -> 'EmbyChecker':
+    def __enter__(self) -> EmbyChecker:
         """Context manager entry."""
         return self
 

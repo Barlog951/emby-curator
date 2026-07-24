@@ -5,7 +5,7 @@ Core deduplication logic for identifying and processing duplicate media items.
 import logging
 import os
 import re
-from typing import Any, Dict, List
+from typing import Any
 
 import httpx
 from tqdm import tqdm
@@ -18,8 +18,11 @@ from emby_dedupe.api.deletion_guard import (
 )
 from emby_dedupe.api.metadata import get_image_url, rate_media_items
 from emby_dedupe.models.disjoint_set import DisjointSet
+from emby_dedupe.reports import markdown
 from emby_dedupe.utils.constants import LANGUAGE_NORMALIZATION_MAP
+from emby_dedupe.utils.formatting import format_file_size
 from emby_dedupe.utils.logging import logger
+from emby_dedupe.utils.providers import PROVIDER_PRIORITY, normalize_provider_ids
 
 
 def _extract_episode_key_from_path(filename: str) -> tuple[str | None, str | None]:
@@ -99,7 +102,7 @@ def _check_group_exclusion(items_details, exclusion_map) -> tuple[bool, str | No
 
         if provider_ids:
             # Use case-insensitive lookup (Emby API returns inconsistent casing)
-            provider_ids_lower = {k.lower(): v for k, v in provider_ids.items()}
+            provider_ids_lower = normalize_provider_ids(provider_ids)
             imdb_id = provider_ids_lower.get("imdb", "").lower()
             tmdb_id = provider_ids_lower.get("tmdb", "")
             tvdb_id = provider_ids_lower.get("tvdb", "")
@@ -116,17 +119,8 @@ def _check_group_exclusion(items_details, exclusion_map) -> tuple[bool, str | No
 
 
 def _format_file_size(size_bytes: int) -> str:
-    """Format file size in bytes to human-readable string."""
-    if not size_bytes:
-        return "Unknown"
-    if size_bytes < 1024:
-        return f"{size_bytes} B"
-    elif size_bytes < 1024 * 1024:
-        return f"{size_bytes / 1024:.1f} KB"
-    elif size_bytes < 1024 * 1024 * 1024:
-        return f"{size_bytes / (1024 * 1024):.1f} MB"
-    else:
-        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+    """Format file size in bytes to human-readable string (unknown/zero → "Unknown")."""
+    return format_file_size(size_bytes, zero_label="Unknown")
 
 
 def _determine_resolution(width: int, height: int) -> str:
@@ -291,14 +285,11 @@ def _extract_primary_provider_id(provider_ids: dict) -> str | None:
     Returns:
         Primary provider ID or None if none found
     """
-    provider_ids_lower = {k.lower(): v for k, v in provider_ids.items()}
+    provider_ids_lower = normalize_provider_ids(provider_ids)
 
-    if "imdb" in provider_ids_lower:
-        return provider_ids_lower["imdb"]
-    elif "tmdb" in provider_ids_lower:
-        return provider_ids_lower["tmdb"]
-    elif "tvdb" in provider_ids_lower:
-        return provider_ids_lower["tvdb"]
+    for provider in PROVIDER_PRIORITY:  # IMDB > TMDB > TVDB
+        if provider in provider_ids_lower:
+            return provider_ids_lower[provider]
 
     return None
 
@@ -560,8 +551,19 @@ def _group_items_by_episode_path(all_items_details) -> tuple[list, bool]:
     return all_items if all_items else all_items_details, is_movie_group
 
 
-def _deduplicate_movies_by_path(items_details) -> list:
-    """Remove duplicate paths from movie items using dict tracking."""
+def _deduplicate_by_path(items_details) -> list:
+    """
+    Remove items with duplicate file paths (keep the first item per unique path).
+
+    Movies and TV share one strategy — the earlier movie/TV split was behaviourally
+    identical apart from a debug line. Pathless items are skipped.
+
+    Args:
+        items_details: List of items to deduplicate
+
+    Returns:
+        List of items with unique paths
+    """
     unique_items = []
     seen_paths: dict = {}
 
@@ -580,46 +582,6 @@ def _deduplicate_movies_by_path(items_details) -> list:
         seen_paths[item_path] = item_id
 
     return unique_items
-
-
-def _deduplicate_tv_by_path(items_details) -> list:
-    """Remove duplicate paths from TV items using set tracking."""
-    unique_items = []
-    seen_paths = set()
-
-    for item in items_details:
-        item_path = item.get("Path")
-        if not item_path:
-            continue
-
-        if item_path not in seen_paths:
-            seen_paths.add(item_path)
-            unique_items.append(item)
-        else:
-            logger.debug(f"Skipping item with duplicate path: {item_path} (ID: {item.get('Id', 'unknown')})")
-
-    return unique_items
-
-
-def _deduplicate_by_path(items_details, is_movie_group) -> list:
-    """
-    Remove items with duplicate file paths.
-
-    Uses different strategies for movies vs TV:
-    - Movies: Dict tracking (allows different paths for multi-version detection)
-    - TV: Set tracking (strict path uniqueness)
-
-    Args:
-        items_details: List of items to deduplicate
-        is_movie_group: True if this is a movie group
-
-    Returns:
-        List of items with unique paths
-    """
-    if is_movie_group:
-        return _deduplicate_movies_by_path(items_details)
-    else:
-        return _deduplicate_tv_by_path(items_details)
 
 
 def _calculate_language_scores(rated_items, lang_priorities) -> None:
@@ -672,7 +634,8 @@ def _log_override_decision(override: bool, is_single_lang: bool, best_quality_it
                       f"over single-language higher-priority item {best_lang_item['id']} " +
                       f"(language: {best_lang_langs}, quality: {best_lang_item['rating']:.1f})")
         else:
-            logger.info(f"Quality override (no-priority-lang): Keeping better quality item {best_quality_item['id']} " +
+            scenario = "both-priority-lang" if best_quality_item.get("has_priority_lang") else "no-priority-lang"
+            logger.info(f"Quality override ({scenario}): Keeping better quality item {best_quality_item['id']} " +
                       f"(languages: {best_quality_langs}, quality: {best_quality_item['rating']:.1f}, ratio: {quality_ratio:.2f}x) " +
                       f"over priority language item {best_lang_item['id']} " +
                       f"(languages: {best_lang_langs}, quality: {best_lang_item['rating']:.1f})")
@@ -707,9 +670,10 @@ def _apply_smart_override_and_sort(rated_items, lang_priorities, default_top_ite
     """
     Apply smart language override logic and sort items (mutates in-place).
 
-    Implements smart override using should_quality_override_language():
-    - Single-lang vs multi-lang: 1.5x threshold
-    - No priority lang: 3.0x threshold
+    Implements smart override using should_quality_override_language(), which
+    evaluates all three scenarios (single-vs-multi-lang, no-priority-lang,
+    both-priority-lang) against the OVERRIDE_RATIO_* thresholds in
+    utils/constants.py.
 
     Adds selection metadata to top item after sorting.
 
@@ -726,8 +690,7 @@ def _apply_smart_override_and_sort(rated_items, lang_priorities, default_top_ite
     if best_lang_items:
         best_lang_item = min(best_lang_items, key=lambda x: (x["lang_priority"], -x["rating"]))
 
-        if (best_quality_item["id"] != best_lang_item["id"] and
-            best_quality_item["has_priority_lang"]):
+        if best_quality_item["id"] != best_lang_item["id"]:
 
             best_quality_langs = _get_clean_languages(best_quality_item)
             best_lang_langs = _get_clean_languages(best_lang_item)
@@ -857,10 +820,6 @@ def _union_episode_groups(ds, tv_episode_groups) -> int:
     Returns:
         Count of union operations performed
     """
-    import logging
-
-    from emby_dedupe.utils.logging import logger
-
     update_count = 0
 
     if logger.isEnabledFor(logging.DEBUG):
@@ -890,10 +849,6 @@ def _union_movie_groups(ds, movie_items) -> int:
     Returns:
         Count of union operations performed
     """
-    import logging
-
-    from emby_dedupe.utils.logging import logger
-
     update_count = 0
 
     # Group movies by provider ID
@@ -978,84 +933,24 @@ def _initialize_items_in_disjoint_set(ds, provider_items, items_progress):
             items_progress.update(1)
 
 
-def _count_single_item_groups(tv_episode_groups, movie_items):
-    """
-    Count single-item groups for TV episodes and movies.
-
-    Args:
-        tv_episode_groups: Dictionary of TV episode groups
-        movie_items: List of movie items
-
-    Returns:
-        Tuple of (single_tv_count, single_movie_count)
-    """
-    single_tv_count = sum(1 for group in tv_episode_groups.values() if len(group) == 1)
-
-    # Recreate movie groups by provider for counting
-    movie_groups_by_provider = {}
-    for item in movie_items:
-        item_provider_id = item.get("provider_id", "unknown")
-        if item_provider_id not in movie_groups_by_provider:
-            movie_groups_by_provider[item_provider_id] = []
-        movie_groups_by_provider[item_provider_id].append(item)
-
-    single_movie_count = sum(1 for group in movie_groups_by_provider.values() if len(group) == 1)
-
-    return single_tv_count, single_movie_count
-
-
-def _finalize_progress_bar(items_progress, total_items):
-    """
-    Force completion of progress bar and handle any remaining items.
-
-    Args:
-        items_progress: tqdm progress bar instance
-        total_items: Expected total number of items
-
-    Returns:
-        None
-    """
-    try:
-        current = getattr(items_progress, 'n', 0)
-        remaining = max(0, total_items - current)
-        logger.debug(f"Progress completion: current={current}, total={total_items}, remaining={remaining}")
-        if remaining > 0:
-            items_progress.update(remaining)
-    except (TypeError, AttributeError, ValueError) as e:
-        logger.debug(f"Using fallback progress update due to: {str(e)}")
-        items_progress.update(1)
-
-
 def _process_provider_items(ds, provider_items):
     """
-    Process all items for a single provider.
+    Classify and union all related items for a provider (mutates ``ds`` in place).
 
     Args:
         ds: DisjointSet instance
         provider_items: Dictionary mapping provider_id to list of items
 
     Returns:
-        Tuple of (tv_updates, movie_updates, single_tv, single_movie)
+        Total number of union (merge) operations performed.
     """
-    tv_episodes_count = 0
-    movie_groups_count = 0
-    single_tv_count = 0
-    single_movie_count = 0
-
-    # Classify and union items for each provider_id
-    for provider_id, items in provider_items.items():
+    merge_count = 0
+    for items in provider_items.values():
         tv_episode_groups, movie_items = _classify_items_by_type(items, ds)
+        merge_count += _union_episode_groups(ds, tv_episode_groups)
+        merge_count += _union_movie_groups(ds, movie_items)
 
-        # Union groups
-        tv_episodes_count += _union_episode_groups(ds, tv_episode_groups)
-        movie_groups_count += _union_movie_groups(ds, movie_items)
-
-        # Count singles
-        tv_singles, movie_singles = _count_single_item_groups(tv_episode_groups, movie_items)
-        single_tv_count += tv_singles
-        single_movie_count += movie_singles
-
-    return tv_episodes_count, movie_groups_count, single_tv_count, single_movie_count
+    return merge_count
 
 
 def build_disjoint_set(media_items_by_provider):
@@ -1073,45 +968,25 @@ def build_disjoint_set(media_items_by_provider):
     ds, total_items = _initialize_disjoint_set_and_calculate_total(media_items_by_provider)
     logger.debug(f"Building sets: processing {total_items} total items")
 
-    # Track statistics
-    tv_episodes_update_count = 0
-    movie_groups_update_count = 0
-    single_tv_update_count = 0
-    single_movie_update_count = 0
-
+    merge_count = 0
     with tqdm(total=total_items, desc="Building sets", unit="item") as items_progress:
-        # Process each provider
         for provider in media_items_by_provider:
             if provider == "library_name":
                 continue
 
             provider_items = media_items_by_provider[provider]
 
-            # Initialize all items in disjoint set first
+            # Initialize all items in disjoint set first, then union related ones.
             _initialize_items_in_disjoint_set(ds, provider_items, items_progress)
+            merge_count += _process_provider_items(ds, provider_items)
 
-            # Process and union items, collect statistics
-            tv_count, movie_count, tv_singles, movie_singles = _process_provider_items(ds, provider_items)
-            tv_episodes_update_count += tv_count
-            movie_groups_update_count += movie_count
-            single_tv_update_count += tv_singles
-            single_movie_update_count += movie_singles
-
-        # Finalize progress bar
-        _finalize_progress_bar(items_progress, total_items)
-
-    items_progress.close()
-
-    # Log statistics
-    logger.debug(f"Progress updates: TV episodes merges: {tv_episodes_update_count}, Movie group merges: {movie_groups_update_count}, " +
-                f"Single TV items: {single_tv_update_count}, Single movie items: {single_movie_update_count}, " +
-                f"Total updates: {tv_episodes_update_count + movie_groups_update_count + single_tv_update_count + single_movie_update_count} vs. Total expected: {total_items}")
+    logger.debug(f"Building sets complete: {merge_count} merges across {total_items} items")
 
     return ds
 
 
-def _verify_and_categorize_group(root: str, items: List[str], all_items_dict: Dict[str, Any],
-                                  verified_groups: Dict[str, List[str]]) -> None:
+def _verify_and_categorize_group(root: str, items: list[str], all_items_dict: dict[str, Any],
+                                  verified_groups: dict[str, list[str]]) -> None:
     """Verify group type (movie or TV) and categorize appropriately."""
     if len(items) <= 1:
         return  # Skip single-item groups
@@ -1194,10 +1069,10 @@ def determine_items_to_delete(duplicate_ids: list, all_items_details: list, lang
     from emby_dedupe.utils.logging import logger
 
     # Step 1: Group items by episode path, handle multi-episode false groupings
-    filtered_items, is_movie_group = _group_items_by_episode_path(all_items_details)
+    filtered_items, _ = _group_items_by_episode_path(all_items_details)
 
-    # Step 2: Deduplicate by path (different strategies for movies vs TV)
-    unique_path_items = _deduplicate_by_path(filtered_items, is_movie_group)
+    # Step 2: Deduplicate by path (keep first item per unique path)
+    unique_path_items = _deduplicate_by_path(filtered_items)
 
     # If filtering left only 0 or 1 items, this isn't a real duplicate group
     if len(unique_path_items) <= 1:
@@ -1347,6 +1222,19 @@ def process_duplicate_groups(
     return decisions, exclusion_metadata
 
 
+def _mark_guard_refused(item: dict, keeper_path: str | None, reason: str) -> None:
+    """Tag a delete item the safety guard refused, so the fold-safe deletion pass can find
+    it later. Records the keeper + delete paths and the reason. Set on BOTH the --doit and
+    dry-run guard paths, so the marker reflects the guard's actual decision in either mode.
+    See :mod:`emby_dedupe.api.fold_safe_delete`.
+    """
+    item["fold_safe_candidate"] = {
+        "keeper": keeper_path,
+        "delete": item.get("path"),
+        "reason": reason,
+    }
+
+
 def _warn_unsafe_deletions(
     decisions: list, known_paths: list, delete_paths: list = None
 ) -> None:
@@ -1363,6 +1251,7 @@ def _warn_unsafe_deletions(
             )
             if not safe:
                 unsafe += 1
+                _mark_guard_refused(item, keeper_path, reason)
                 logger.warning(
                     "SAFETY GUARD would SKIP deletion of id=%s under --doit — %s "
                     "(delete=%r keeper=%r).",
@@ -1427,7 +1316,7 @@ def _resolve_image_url_for_deleted_item(item: dict, item_group: dict | None) -> 
 
     # If we have provider_ids dictionary, try TMDB (case-insensitive)
     if "provider_ids" in item and item["provider_ids"]:
-        pids_lower = {k.lower(): v for k, v in item["provider_ids"].items()}
+        pids_lower = normalize_provider_ids(item["provider_ids"])
         if "tmdb" in pids_lower:
             tmdb_id = pids_lower["tmdb"]
             fallback_url = f"https://image.tmdb.org/t/p/w300/{tmdb_id}.jpg"
@@ -1435,23 +1324,6 @@ def _resolve_image_url_for_deleted_item(item: dict, item_group: dict | None) -> 
             return fallback_url
 
     return ""
-
-
-def _find_item_group(item: dict, decisions: list) -> dict | None:
-    """
-    Find the decision group containing the specified item.
-
-    Args:
-        item: Item to find group for
-        decisions: List of decision groups
-
-    Returns:
-        Decision group dict if found, None otherwise
-    """
-    for candidate in decisions:
-        if item["id"] in [delete_item["id"] for delete_item in candidate.get("delete", [])]:
-            return candidate
-    return None
 
 
 def _extract_original_item_data(item: dict) -> dict:
@@ -1476,41 +1348,23 @@ def _extract_original_item_data(item: dict) -> dict:
     }
 
 
-def _generate_report_with_metadata(base_url: str, decisions: list, metadata: dict = None) -> str:
-    """
-    Generate markdown report with optional metadata.
-
-    Args:
-        base_url: Base URL of the Emby server
-        decisions: List of decision objects
-        metadata: Optional metadata dict
-
-    Returns:
-        Generated markdown report string
-    """
-    from emby_dedupe.reports.markdown import format_markdown_table
-
-    if metadata:
-        return format_markdown_table(base_url, decisions, metadata)
-    else:
-        return format_markdown_table(base_url, decisions)
-
-
 def _execute_one_deletion(
-    client, base_url, item, keeper_path, decisions, known_paths, delete_paths,
-    doit, username, password, api_key, progress_bar,
+    client, base_url, item, keeper_path, decision, known_paths, delete_paths,
+    username, password, api_key, progress_bar,
 ) -> None:
     """Delete a single item unless the safety guard refuses it, then restore the item's
     display data (lost during deletion) and advance the progress bar. Extracted from the
-    deletion loop to keep the caller's cognitive complexity in check.
+    deletion loop to keep the caller's cognitive complexity in check. ``decision`` is the
+    enclosing keep/delete group the caller is iterating — used to resolve the deleted
+    item's display image from its kept sibling. Only reached on the doit path (the
+    not-doit branch returns earlier via _mark_items_as_not_attempted).
     """
     progress_bar.set_description(f"Deleting ID: {item['id']}")
 
     # Store the original item data before deletion, incl. a resolved image URL.
     original_item_data = _extract_original_item_data(item)
     try:
-        item_group = _find_item_group(item, decisions)
-        resolved_url = _resolve_image_url_for_deleted_item(item, item_group)
+        resolved_url = _resolve_image_url_for_deleted_item(item, decision)
         if resolved_url:
             original_item_data["image_url"] = resolved_url
     except Exception as e:
@@ -1520,20 +1374,21 @@ def _execute_one_deletion(
     # the keeper (the data-loss bug). Refuse and skip — keep both files.
     safe, reason = is_delete_safe(keeper_path, item.get("path"), known_paths, delete_paths)
     if not safe:
-        # Pre-format into ONE message with no positional args, so logging never runs
+        # Pre-format into ONE f-string with no positional args, so logging never runs
         # ``msg % args`` (immune to stray % in paths or an arg-count mismatch — this line
         # crashed twice before via stale bytecode).
         logger.error(
-            "SAFETY GUARD blocked deletion of id=%s — %s "
-            "(delete=%r keeper=%r). Both files kept; resolve the layout manually."
-            % (item["id"], reason, item.get("path"), keeper_path)
+            f"SAFETY GUARD blocked deletion of id={item['id']} — {reason} "
+            f"(delete={item.get('path')!r} keeper={keeper_path!r}). "
+            "Both files kept; resolve the layout manually."
         )
         item["deletion_result"] = {
             "id": item["id"], "status": "skipped_unsafe", "error": reason,
         }
+        _mark_guard_refused(item, keeper_path, reason)
     else:
         item["deletion_result"] = delete_item(
-            client, base_url, item["id"], doit, username, password, api_key
+            client, base_url, item["id"], username, password, api_key
         )
 
     # Restore all the original data that might have been lost during deletion.
@@ -1602,7 +1457,7 @@ def process_deletion_and_generate_report(
         _warn_unsafe_deletions(decisions, known_paths, delete_paths)
         _mark_items_as_not_attempted(decisions, deletion_progress_bar)
         deletion_progress_bar.close()
-        return _generate_report_with_metadata(base_url, decisions, metadata)
+        return markdown.format_markdown_table(base_url, decisions, metadata)
 
     deletion_progress_bar = tqdm(
         total=total_deletions, desc="Deleting items", unit="item", dynamic_ncols=True
@@ -1612,9 +1467,9 @@ def process_deletion_and_generate_report(
         keeper_path = (decision.get("keep") or {}).get("path")
         for item in decision.get("delete", []):
             _execute_one_deletion(
-                client, base_url, item, keeper_path, decisions, known_paths,
-                delete_paths, doit, username, password, api_key, deletion_progress_bar,
+                client, base_url, item, keeper_path, decision, known_paths,
+                delete_paths, username, password, api_key, deletion_progress_bar,
             )
 
     deletion_progress_bar.close()
-    return _generate_report_with_metadata(base_url, decisions, metadata)
+    return markdown.format_markdown_table(base_url, decisions, metadata)

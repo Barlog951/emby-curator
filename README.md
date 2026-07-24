@@ -350,6 +350,36 @@ emby-curator --host "http://your-emby-server" --api-key "your_api_key" --library
 emby-curator --host "http://your-emby-server" --api-key "your_api_key" --doit genres normalize --item-ids 123,456
 ```
 
+## Python API
+
+Besides the CLI, `emby-curator` exposes a small stable Python API for embedding the
+quality check in your own tools (e.g. a downloader deciding whether an existing copy
+is good enough). Import the supported symbols from the top-level package:
+
+```python
+from emby_dedupe import EmbyChecker, CheckConfig
+
+# Reads ~/.emby-dedupe/config.yaml (raises EmbyConfigMissingError if absent).
+with EmbyChecker.from_config() as checker:
+    # Fast connectivity/credential probe (real GET /System/Info, never cached).
+    checker.test_connection()
+
+    result = checker.check(
+        name="Inception", year=2010,
+        resolution="2160p", codec="hevc", hdr="HDR10", size_mb=15000,
+    )
+    if result.should_download:
+        print(f"grab it — {result.reason}")
+```
+
+Supported surface (re-exported from `emby_dedupe`, safe to depend on):
+`EmbyChecker`, `CheckConfig`, `ComparisonResult`, `ExistingQuality`,
+`ProposedQuality`, `Config`. `check()` accepts either a `CheckConfig` or keyword
+arguments matching its fields; an unknown keyword raises `TypeError`. Configuration
+and connection problems raise the `EmbyDedupeError` subclasses in
+`emby_dedupe.utils.exceptions` (`EmbyConfigError` — also a `ValueError`;
+`EmbyConfigMissingError` — also a `FileNotFoundError`; `EmbyServerConnectionError`).
+
 ## API Key Requirement
 
 A valid API key with enough permissions to access the necessary operations on the Emby server must be provided. This API key is used to authenticate the script with the Emby server for read and list actions. Deletion operations require username and password credentials for additional authentication.
@@ -415,7 +445,7 @@ For services and run configurations:
 1. Go to Run → Edit Configurations
 2. Add a new Python configuration
 3. Set "Run with Docker" in the "Python interpreter" dropdown
-4. Set the script path to your entry point (e.g., `/app/emby_dedupe/cli/main.py`)
+4. Set the module to run to the package entry point (`emby_dedupe`, i.e. `python -m emby_dedupe` — routes to the typer CLI in `emby_dedupe/cli/app.py`)
 
 The `Dockerfile.dev` includes:
 - Python 3.12 environment
@@ -427,7 +457,7 @@ This provides a consistent environment for development and testing, regardless o
 
 ### Running Tests
 
-The project has a comprehensive test suite with 129 tests covering 70% of the codebase. The tests are organized in the same structure as the main package:
+The project has a comprehensive test suite with 1216 tests covering 89% of the codebase. The tests are organized in the same structure as the main package:
 
 ```
 tests/
@@ -490,17 +520,16 @@ The project uses GitHub Actions for continuous integration with these workflows:
 
 #### Test Coverage
 
-Current test coverage by module:
-- API Client: 80%
-- Deduplication Logic: 59%
-- Metadata Handling: 75%
-- HTML Reports: 72%
-- Markdown Reports: 68%
-- Common Report Functions: 87%
-- File Operations: 88%
+Current test coverage by module (89% overall):
+- API Client: 93%
+- Deduplication Logic: 89%
+- Metadata Handling: 91%
+- HTML Reports: 84%
+- Markdown Reports: 71%
+- Common Report Functions: 90%
 - HTTP Utilities: 100%
 - Logging: 100%
-- CLI: 54%
+- CLI: 55-66%
 
 The tests cover all key functionality including:
 - Duplicate identification and rationalization

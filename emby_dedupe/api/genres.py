@@ -10,7 +10,6 @@ Provides CRUD operations for genres in Emby media server:
 
 import copy
 import difflib
-from typing import Optional
 
 import httpx
 
@@ -116,7 +115,7 @@ def fetch_items_with_genres(
         "Fields": _GENRE_FIELDS,
     }
 
-    target_ids: list[Optional[str]] = list(library_ids) if library_ids else [None]
+    target_ids: list[str | None] = list(library_ids) if library_ids else [None]
 
     for lib_id in target_ids:
         all_items.extend(_fetch_library_items(client, base_url, user_id, lib_id, base_params))
@@ -130,7 +129,7 @@ def fetch_items_by_ids(
     user_id: str,
     item_ids: list[str],
     chunk_size: int = 100,
-    fields: Optional[str] = None,
+    fields: str | None = None,
 ) -> list[dict]:
     """Fetch specific items by ID using the batch endpoint.
 
@@ -184,7 +183,7 @@ def _fetch_library_items(
     client: httpx.Client,
     base_url: str,
     user_id: str,
-    lib_id: Optional[str],
+    lib_id: str | None,
     base_params: dict,
 ) -> list[dict]:
     """Fetch all pages of items for a single library (or all libraries if lib_id is None)."""
@@ -317,7 +316,7 @@ def normalize_genre_name(name: str, normalization_map: dict) -> str:
 
 def _check_normalization_candidate(
     item: dict, genres: list, variant_groups: dict
-) -> Optional[dict]:
+) -> dict | None:
     """Check if an item needs genre normalization and update variant_groups in place.
 
     Returns a candidate dict if the item needs normalization, else None.

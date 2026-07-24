@@ -4,18 +4,8 @@
 Package entry point — delegates to the typer CLI application.
 """
 
-from pathlib import Path
-
-# Load environment variables from .env file if it exists
-try:
-    from dotenv import load_dotenv
-    env_path = Path(__file__).parent.parent / '.env'
-    if env_path.exists():
-        load_dotenv(env_path)
-except ImportError:
-    # python-dotenv not available, environment variables must be set manually
-    pass
-
+# .env loading happens at emby_dedupe.cli.app import time (it must precede typer's
+# envvar resolution), so this entry point only needs to import the app.
 from emby_dedupe.cli.app import app
 
 

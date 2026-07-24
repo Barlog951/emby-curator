@@ -5,7 +5,6 @@ Logging utilities for the Emby Dedupe tool.
 import logging
 import re
 import sys
-from typing import List, Optional
 
 from emby_dedupe.utils.constants import LOGGING_LEVELS
 
@@ -19,7 +18,7 @@ class SensitiveDataFilter(logging.Filter):
     Log filter that redacts sensitive information in log messages such as keys or passwords.
     """
 
-    def __init__(self, patterns: Optional[List[re.Pattern]] = None):
+    def __init__(self, patterns: list[re.Pattern] | None = None):
         super().__init__()
         # Add more patterns for keys or tokens that do not have a clear prefix/suffix.
         self._patterns = patterns or [
@@ -57,7 +56,7 @@ class SensitiveDataFilter(logging.Filter):
         return True
 
 
-def set_logging_level(verbosity_count: int, env_verbosity: Optional[str] = None) -> None:
+def set_logging_level(verbosity_count: int, env_verbosity: str | None = None) -> None:
     """
     Set logging level based on verbosity count and environment variable.
 

@@ -77,6 +77,18 @@ class TestBPPMultiplier:
         assert get_bpp_multiplier(0.07) == 0.85       # No codec → poor
         assert get_bpp_multiplier(0.07, "hevc") == 1.0  # HEVC → acceptable
 
+    def test_codec_efficiency_ratio_delegates_to_scoring(self):
+        """The BPP/bitrate ratio helper delegates to the single scoring source
+        (HEVC=0.65, AV1=0.5, else 1.0) — no duplicate ratio logic here."""
+        from emby_dedupe.api.quality_compare import _get_codec_efficiency_ratio
+        from emby_dedupe.api.scoring import codec_efficiency_ratio
+
+        for codec in ("hevc", "x265", "h265", "av1", "h264", "avc", None, "weird"):
+            assert _get_codec_efficiency_ratio(codec) == codec_efficiency_ratio(codec)
+        assert _get_codec_efficiency_ratio("hevc") == 0.65
+        assert _get_codec_efficiency_ratio("av1") == 0.5
+        assert _get_codec_efficiency_ratio("h264") == 1.0
+
 
 class TestRedFlagDetection:
     """Tests for RED FLAG quality issue detection."""
@@ -158,21 +170,29 @@ class TestCodecMultiplier:
 
 
 class TestTehranS03E02RegressionCase:
-    """Regression test for Tehran S03E02 case that revealed scoring issues."""
+    """Under-bitrate handling (Tehran S03E02 case), unified-model semantics.
 
-    def test_4k_under_bitrate_rejected(self):
-        """Test 4K at 2.6 Mbps is rejected (RED FLAG)."""
-        # Tehran S03E02: 4K WEB-DL at 2.6 Mbps (2371MB)
-        proposed = ProposedQuality(
-            resolution="2160p",
-            codec="x265",
-            size_mb=2371,
-            bitrate_kbps=2600,
-            name="Tehran.S03E02.2160p.WEB-DL.mkv"
+    The retired check model auto-rejected an under-bitrate 4K (score 0.0), so it lost
+    to a good 720p. The unified model is resolution-dominant: it never auto-rejects
+    and does not flip a 4K below a 720p. Instead it DEMOTES a 4K whose bitrate is below
+    its codec-adjusted adequacy floor, so the starved 4K scores well below an
+    adequate-bitrate 4K sibling. Intent preserved: under-bitrate is penalised (as a
+    demotion, > 0); codec efficiency shifts the threshold.
+    """
+
+    def test_under_bitrate_4k_demoted_not_rejected(self):
+        """4K x265 at 2.6 Mbps (below the ~3.9 Mbps HEVC-adjusted 4K floor) is demoted."""
+        starved = ProposedQuality(
+            resolution="2160p", codec="x265", size_mb=2371, bitrate_kbps=2600,
+            name="Tehran.S03E02.2160p.WEB-DL.mkv",
         )
-        score = proposed.calculate_score()
-        # Should be rejected (score = 0)
-        assert score == 0.0, "Under-bitrate 4K should be auto-rejected"
+        adequate = ProposedQuality(
+            resolution="2160p", codec="x265", size_mb=12000, bitrate_kbps=20000,
+            name="Tehran.S03E02.2160p.WEB-DL.mkv",
+        )
+        starved_score = starved.calculate_score()
+        assert starved_score > 0, "under-bitrate is a demotion, never a 0.0 auto-reject"
+        assert starved_score < adequate.calculate_score(), "starved 4K demoted vs healthy 4K"
 
     def test_720p_good_bitrate_accepted(self):
         """Test 720p at 4.9 Mbps is accepted."""
@@ -188,17 +208,14 @@ class TestTehranS03E02RegressionCase:
         # Should be accepted (score > 0)
         assert score > 0, "Good 720p should be accepted"
 
-    def test_4k_rejected_vs_720p_comparison(self):
-        """Test that over-compressed 4K loses to good 720p in comparison."""
-        # Proposed: Bad 4K
-        proposed_4k = ProposedQuality(
-            resolution="2160p",
-            codec="x265",
-            size_mb=2371,
-            bitrate_kbps=2600
+    def test_under_bitrate_4k_outranks_720p_but_is_demoted(self):
+        """Resolution-dominant: the 4K outranks a good 720p even when under-bitrate,
+        yet the starved 4K scores far below an adequate-bitrate 4K of the same title.
+        (The retired model kept the 720p; documented deviation in the unify refactor.)"""
+        starved_4k = ProposedQuality(
+            resolution="2160p", codec="x265", size_mb=2371, bitrate_kbps=2600,
+            path="Tehran.S03E02.2160p.WEB-DL.mkv",
         )
-
-        # Existing: Good 720p
         existing_items = [{
             "Id": "720p_good",
             "Name": "Tehran S03E02",
@@ -211,82 +228,68 @@ class TestTehranS03E02RegressionCase:
             "Bitrate": 4900 * 1000,
         }]
 
-        result = compare_quality(proposed_4k, existing_items)
+        result = compare_quality(starved_4k, existing_items)
+        assert result.recommendation == "download"  # 4K resolution dominates
+        assert result.proposed_score > 0            # demotion, not rejection
 
-        # Should recommend SKIP - keep existing 720p
-        assert result.recommendation == "skip"
-        # 4K should be heavily penalized (RED FLAG gives minimal score)
-        assert result.proposed_score < 10  # Very low score due to RED FLAG
-        # Existing 720p should have much higher score (in millions after KB normalization)
-        assert result.existing_score > 1_000_000
+        adequate_4k = ProposedQuality(
+            resolution="2160p", codec="x265", size_mb=12000, bitrate_kbps=20000,
+            path="Tehran.S03E02.2160p.WEB-DL.mkv",
+        )
+        assert result.proposed_score < adequate_4k.calculate_score()
+
+
+def _remux_1080p_item():
+    """1080p REMUX @ 30 Mbps (26.7GB) — a high-source-quality 1080p reference."""
+    return {
+        "Id": "remux_1080p",
+        "Name": "Movie",
+        "Path": "/movies/Movie.BluRay.REMUX.1080p.mkv",
+        "MediaStreams": [
+            {"Type": "Video", "Width": 1920, "Height": 1080, "Codec": "h264"},
+            {"Type": "Audio", "Channels": 8},
+        ],
+        "Size": 26_700_000_000,
+        "Bitrate": 30_000_000,
+    }
 
 
 class TestRemuxVsWebDL:
-    """Tests comparing high-quality REMUX vs lower-quality 4K WEB-DL."""
+    """4K WEB-DL vs 1080p REMUX under the unified resolution-dominant model.
 
-    def test_1080p_remux_beats_4k_webdl_low_bitrate(self):
-        """Test 1080p REMUX (30 Mbps) beats 4K WEB-DL (5 Mbps)."""
-        # Existing: 1080p REMUX @ 30 Mbps (26.7GB)
-        remux_item = {
-            "Id": "remux_1080p",
-            "Name": "Movie",
-            "Path": "/movies/Movie.BluRay.REMUX.1080p.mkv",
-            "MediaStreams": [
-                {"Type": "Video", "Width": 1920, "Height": 1080, "Codec": "h264"},
-                {"Type": "Audio", "Channels": 8},
-            ],
-            "Size": 26_700_000_000,  # 26.7GB
-            "Bitrate": 30_000_000,    # 30 Mbps
-        }
+    The retired check model preferred a 1080p REMUX over a 4K WEB-DL on bits-per-pixel.
+    The unified model (matching the dedupe path) is resolution-dominant: an adequate 4K
+    WEB-DL outranks a 1080p REMUX (this is the headline behaviour the unify refactor
+    intends). Only a 4K that falls BELOW its codec-adjusted bitrate floor is demoted
+    enough to lose to the 1080p REMUX.
+    """
 
-        # Proposed: 4K WEB-DL @ 5 Mbps (4.5GB) - under-bitrate!
-        proposed_4k = ProposedQuality(
-            resolution="2160p",
-            codec="hevc",
-            size_mb=4500,
-            bitrate_kbps=5000,  # Way too low for 4K
-            path="Movie.2160p.WEB-DL.mkv"
-        )
-
-        result = compare_quality(proposed_4k, [remux_item])
-
-        # 4K should be rejected (RED FLAG), REMUX should win
-        assert result.recommendation == "skip"
-        # 4K should have minimal score due to RED FLAG
-        assert result.proposed_score < 10
-        # REMUX should have high score
-        assert result.existing_score > 1_000_000
-
-    def test_1080p_remux_beats_4k_webdl_marginal_bitrate(self):
-        """Test 1080p REMUX beats 4K WEB-DL at marginal bitrate (18 Mbps)."""
-        # Existing: 1080p REMUX @ 30 Mbps
-        remux_item = {
-            "Id": "remux_1080p",
-            "Name": "Movie",
-            "Path": "/movies/Movie.BluRay.REMUX.1080p.mkv",
-            "MediaStreams": [
-                {"Type": "Video", "Width": 1920, "Height": 1080, "Codec": "h264"},
-                {"Type": "Audio", "Channels": 8},
-            ],
-            "Size": 26_700_000_000,
-            "Bitrate": 30_000_000,
-        }
-
-        # Proposed: 4K WEB-DL @ 18 Mbps (marginal, passes RED FLAG but still poor quality)
+    def test_adequate_4k_webdl_beats_1080p_remux(self):
+        """A healthy 4K WEB-DL (18 Mbps HEVC, above its floor) outranks a 1080p REMUX."""
         proposed_4k = ProposedQuality(
             resolution="2160p",
             codec="hevc",
             size_mb=16000,
-            bitrate_kbps=18000,  # Above 15 Mbps minimum, but still low
-            path="Movie.2160p.WEB-DL.mkv"
+            bitrate_kbps=18000,
+            path="Movie.2160p.WEB-DL.mkv",
         )
+        result = compare_quality(proposed_4k, [_remux_1080p_item()])
+        assert result.recommendation == "download"
+        assert result.proposed_score > result.existing_score
 
-        result = compare_quality(proposed_4k, [remux_item])
-
-        # REMUX should still win due to superior source quality and bitrate
+    def test_starved_4k_webdl_loses_to_1080p_remux(self):
+        """A 4K WEB-DL far below its floor (1.5 Mbps HEVC) is demoted below the REMUX."""
+        proposed_4k = ProposedQuality(
+            resolution="2160p",
+            codec="hevc",
+            size_mb=800,
+            bitrate_kbps=1500,  # well under the ~3.9 Mbps HEVC-adjusted 4K floor
+            path="Movie.2160p.WEB-DL.mkv",
+        )
+        result = compare_quality(proposed_4k, [_remux_1080p_item()])
         assert result.recommendation == "skip"
-        # Both should have scores > 0, but REMUX higher
         assert result.existing_score > result.proposed_score
+        assert result.proposed_score > 0  # demotion, never a 0.0 auto-reject
 
 
 class TestRemuxVsWebDLWithLanguagePriority:
@@ -369,21 +372,32 @@ class TestRemuxVsWebDLWithLanguagePriority:
 class TestProposedQualityScoring:
     """Tests for ProposedQuality comprehensive scoring."""
 
-    def test_red_flag_overrides_all_other_factors(self):
-        """Test that RED FLAG causes immediate rejection regardless of other factors."""
-        # Excellent specs BUT critically under-bitrate for 4K
-        # AV1 is efficient at 0.5x, so 15 Mbps * 0.5 = 7.5 Mbps minimum
-        # Use 5 Mbps to trigger the red flag even with AV1 efficiency
-        proposed = ProposedQuality(
+    def test_under_bitrate_demotes_despite_excellent_specs(self):
+        """A 4K below its codec floor is demoted even with the best source/audio.
+
+        The demotion replaces the retired 0.0 auto-reject: the score stays positive
+        (so the language-override ratio math is intact) but lands well below the same
+        item at a healthy bitrate.
+        """
+        starved = ProposedQuality(
             resolution="2160p",
-            codec="av1",  # Best codec (0.5x efficiency)
-            audio="atmos",  # Best audio
-            size_mb=50000,  # Large file
-            bitrate_kbps=5000,  # Below even AV1-adjusted threshold of 7.5 Mbps
-            path="Movie.BluRay.REMUX.2160p.mkv"  # Best source
+            codec="av1",  # 0.5x efficiency → floor ~3.0 Mbps for 4K
+            audio="atmos",
+            size_mb=50000,
+            bitrate_kbps=1500,  # below even the AV1-adjusted 4K floor
+            path="Movie.BluRay.REMUX.2160p.mkv",
         )
-        score = proposed.calculate_score()
-        assert score == 0.0, "RED FLAG should override all positive factors"
+        healthy = ProposedQuality(
+            resolution="2160p",
+            codec="av1",
+            audio="atmos",
+            size_mb=50000,
+            bitrate_kbps=12000,  # comfortably above the floor
+            path="Movie.BluRay.REMUX.2160p.mkv",
+        )
+        starved_score = starved.calculate_score()
+        assert starved_score > 0, "demotion, never a 0.0 auto-reject"
+        assert starved_score < healthy.calculate_score()
 
     def test_all_multipliers_applied(self):
         """Test that all multipliers (source, BPP, codec) are applied correctly."""
@@ -444,42 +458,69 @@ class TestExistingQualityScoring:
         existing = ExistingQuality.from_emby_item(item)
         score = existing.calculate_score()
 
-        # Should have high score due to REMUX source, excellent BPP, HEVC codec
-        assert score > 1_000_000
+        # Should outscore a poor, low-res, under-bitrate sibling.
+        poor = ExistingQuality.from_emby_item({
+            "Id": "existing_poor",
+            "Name": "Movie",
+            "Path": "/movies/Movie.480p.mkv",
+            "MediaStreams": [
+                {"Type": "Video", "Width": 854, "Height": 480, "Codec": "h264"},
+                {"Type": "Audio", "Channels": 2},
+            ],
+            "Size": 900_000_000,
+            "Bitrate": 1_200_000,
+        })
+        assert score > 0
+        assert score > poor.calculate_score()
 
 
 class TestHEVCThresholdRegression:
-    """Regression tests for HEVC threshold bug fix (A Knight of the Seven Kingdoms)."""
+    """Codec efficiency shifts the bitrate-adequacy threshold (A Knight of the Seven Kingdoms).
 
-    def test_hevc_4k_11mbps_not_rejected(self):
-        """Regression: A Knight S01E03 - 2160p HEVC at 11.1 Mbps should NOT be rejected."""
+    HEVC's adequacy floor is ~0.65x of H.264's, so a bitrate adequate for HEVC can be
+    below-floor (and demoted) for H.264 at the same resolution. Neither is auto-rejected;
+    codec efficiency only shifts where the starved-bitrate demotion begins.
+    """
+
+    def test_codec_efficiency_shifts_adequacy_threshold(self):
+        """At 5 Mbps 4K, HEVC is above its ~3.9 Mbps floor (undemoted) while H.264 is
+        below its 6.0 Mbps floor (demoted) — so HEVC scores higher for the same bitrate."""
+        hevc = ProposedQuality(
+            resolution="2160p", codec="x265", size_mb=2451, bitrate_kbps=5000,
+            source_quality_tier="webdl", path="Movie.2160p.WEB-DL.x265.mkv",
+        )
+        h264 = ProposedQuality(
+            resolution="2160p", codec="x264", size_mb=2451, bitrate_kbps=5000,
+            source_quality_tier="webdl", path="Movie.2160p.WEB-DL.x264.mkv",
+        )
+        assert hevc.calculate_score() > h264.calculate_score()
+
+    def test_hevc_4k_above_floor_not_demoted(self):
+        """A Knight S01E03: 4K HEVC at 11.1 Mbps is above the HEVC floor → full 4K credit,
+        so it comfortably outscores a 1080p sibling (never rejected)."""
         proposed = ProposedQuality(
-            resolution="2160p",
-            codec="x265",
-            size_mb=2451,
-            bitrate_kbps=11100,
-            hdr="DV",
-            audio="Atmos",
-            audio_languages=["cze", "slk", "eng"],
+            resolution="2160p", codec="x265", size_mb=2451, bitrate_kbps=11100,
+            hdr="DV", audio="Atmos", audio_languages=["cze", "slk", "eng"],
             source_quality_tier="webdl",
             path="A.Knight.S01E03.2160p.HMAX.WEB-DL.DDP5.1.Atmos.HDR.DoVi.H265.mkv",
-            name="A Knight of the Seven Kingdoms"
+            name="A Knight of the Seven Kingdoms",
         )
-
-        score = proposed.calculate_score()
-        assert score > 1_000_000, f"HEVC 4K at 11.1 Mbps should score high, got {score}"
-
-    def test_h264_4k_11mbps_rejected(self):
-        """H.264 4K at 11.1 Mbps SHOULD be rejected (too low for inefficient codec)."""
-        proposed = ProposedQuality(
-            resolution="2160p",
-            codec="x264",
-            size_mb=2451,
-            bitrate_kbps=11100,
-            source_quality_tier="webdl",
-            path="Movie.2160p.WEB-DL.x264.mkv",
-            name="Test Movie"
+        hd = ProposedQuality(
+            resolution="1080p", codec="x265", size_mb=2451, bitrate_kbps=11100,
+            source_quality_tier="webdl", path="A.Knight.S01E03.1080p.WEB-DL.H265.mkv",
         )
+        assert proposed.calculate_score() > hd.calculate_score()
 
-        score = proposed.calculate_score()
-        assert score == 0.0, f"H.264 4K at 11.1 Mbps should be rejected, got {score}"
+    def test_dv_proposed_not_penalized_vs_hdr10(self):
+        """A proposed DV item must NOT be auto-penalised as DV Profile 5: the ``hdr``
+        string can't tell a defective P5 from a harmless P7/P8, so a proposed DV item
+        scores exactly like an equivalent HDR10 item (the P5 penalty is Existing-only)."""
+        dv = ProposedQuality(
+            resolution="2160p", codec="x265", size_mb=2451, bitrate_kbps=11100, hdr="DV",
+            source_quality_tier="webdl", path="A.Knight.S01E03.2160p.WEB-DL.H265.mkv",
+        )
+        hdr10 = ProposedQuality(
+            resolution="2160p", codec="x265", size_mb=2451, bitrate_kbps=11100, hdr="HDR10",
+            source_quality_tier="webdl", path="A.Knight.S01E03.2160p.WEB-DL.H265.mkv",
+        )
+        assert dv.calculate_score() == hdr10.calculate_score()

@@ -6,7 +6,7 @@ Provides audit and normalization of Emby library genres.
 import argparse
 import json
 import sys
-from typing import Optional
+from dataclasses import dataclass
 
 import httpx
 from tqdm import tqdm
@@ -43,120 +43,12 @@ from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.logging import logger, set_logging_level
 
 
-def add_genres_arguments(parser: argparse.ArgumentParser) -> None:
-    """Add genre management arguments to the argument parser.
-
-    Args:
-        parser: The argument parser to add arguments to.
-    """
-    parser.add_argument(
-        "action",
-        choices=["audit", "normalize", "fix", "process"],
-        help="Action to perform: audit (report genre health), normalize (fix genre names), fix (fetch from TMDB/OMDb), or process (normalize + fix in one pass)",
-    )
-    parser.add_argument(
-        "--doit",
-        action="store_true",
-        help="Apply normalization changes (default: dry-run preview only)",
-    )
-    parser.add_argument(
-        "--lock",
-        dest="lock",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Lock genres after normalization to prevent metadata refresh from reverting (default: True). Use --no-lock to disable.",
-    )
-    parser.add_argument(
-        "--repair-dupes",
-        action="store_true",
-        help=(
-            "Also scan for and fix duplicate genres caused by normalization collisions "
-            "(e.g. item had both 'Suspense' and 'Thriller' → both become 'Thriller'). "
-            "Requires one extra request per item — slower but thorough."
-        ),
-    )
-    parser.add_argument(
-        "--suggest",
-        action="store_true",
-        help=(
-            "Flag genres not in the TMDB canonical list and suggest likely mappings "
-            "(e.g. 'Dobrodružný' → Adventure). Use after adding new content to catch "
-            "new non-English or variant genres before they accumulate."
-        ),
-    )
-    parser.add_argument(
-        "--output-json",
-        type=str,
-        help="Save audit results as JSON to this file path",
-    )
-    parser.add_argument(
-        "--all-libraries",
-        action="store_true",
-        help="Scan all Emby libraries",
-    )
-    parser.add_argument(
-        "-v",
-        "--verbosity",
-        action="count",
-        default=0,
-        help="Increase verbosity level (use multiple times for more detail)",
-    )
-    parser.add_argument(
-        "--host",
-        type=str,
-        help="Emby server host URL",
-    )
-    parser.add_argument(
-        "-p",
-        "--port",
-        type=int,
-        help="Emby server port",
-    )
-    parser.add_argument(
-        "-a",
-        "--api-key",
-        type=str,
-        help="Emby API key",
-    )
-    parser.add_argument(
-        "-l",
-        "--library",
-        type=str,
-        action="append",
-        help="Library name to scan (can be specified multiple times)",
-    )
-    parser.add_argument(
-        "--gaps-only",
-        action="store_true",
-        help="Only fetch genres for items with no genres (default behaviour for fix)",
-    )
-    parser.add_argument(
-        "--validate",
-        action="store_true",
-        help="Compare existing genres against TMDB/OMDb and add any missing ones",
-    )
-    parser.add_argument(
-        "--tmdb-api-key",
-        type=str,
-        help="TMDB API key (or set DEDUPE_TMDB_API_KEY env var)",
-    )
-    parser.add_argument(
-        "--item-ids",
-        type=str,
-        help=(
-            "Comma-separated list of Emby item IDs to process. "
-            "Skips full library scan — only these items are checked. "
-            "Used by the webhook listener to process specific newly added items."
-        ),
-    )
-
-
 def _validate_genres_args(
-    host: Optional[str],
-    api_key: Optional[str],
+    host: str | None,
+    api_key: str | None,
     library: list,
     all_libraries: bool,
-    item_ids: Optional[list[str]] = None,
+    item_ids: list[str] | None = None,
 ) -> None:
     """Validate required arguments for genre commands.
 
@@ -367,7 +259,7 @@ def _apply_normalization_updates(
     client: httpx.Client,
     base_url: str,
     user_id: str,
-    item_ids: Optional[list[str]],
+    item_ids: list[str] | None,
     lock: bool,
 ) -> None:
     """Apply normalization updates for each (item, new_genres) pair and print summary."""
@@ -400,8 +292,8 @@ def _run_normalize(
     user_id: str,
     library_ids: list[str],
     args: argparse.Namespace,
-    item_ids: Optional[list[str]] = None,
-    prefetched_items: Optional[list[dict]] = None,
+    item_ids: list[str] | None = None,
+    prefetched_items: list[dict] | None = None,
 ) -> None:
     """Run the genre normalization action.
 
@@ -455,19 +347,33 @@ def _run_normalize(
         _run_repair_dupes(client, base_url, user_id, library_ids, lock=args.lock)
 
 
+@dataclass(frozen=True)
+class GenreProviders:
+    """Genre-provider clients, keys and cache bundled as one unit threaded through the
+    genre-fill pipeline. ``cache`` is a mutable dict updated in place during a run.
+    """
+    tmdb_client: httpx.Client | None
+    tmdb_limiter: RateLimiter | None
+    omdb_client: httpx.Client | None
+    omdb_limiter: RateLimiter | None
+    omdb_keys: list[str]
+    cache: dict
+
+
 def _create_provider_clients(
-    tmdb_key: Optional[str],
+    tmdb_key: str | None,
     omdb_keys: list[str],
-) -> tuple:
-    """Create rate-limited HTTP clients for TMDB and OMDb.
+    cache: dict,
+) -> GenreProviders:
+    """Create rate-limited HTTP clients for TMDB and OMDb, bundled with keys and cache.
 
     Args:
         tmdb_key: TMDB API bearer token, or None to skip TMDB.
         omdb_keys: List of OMDb API keys, or empty list to skip OMDb.
+        cache: The loaded genre cache (mutated in place during the run).
 
     Returns:
-        Tuple of (tmdb_client, tmdb_limiter, omdb_client, omdb_limiter).
-        Each pair is (None, None) when the corresponding provider is disabled.
+        A GenreProviders bundle. The client/limiter for a disabled provider is None.
     """
     tmdb_client = (
         httpx.Client(headers={"Authorization": f"Bearer {tmdb_key}"}) if tmdb_key else None
@@ -475,20 +381,22 @@ def _create_provider_clients(
     tmdb_limiter = RateLimiter(35.0) if tmdb_key else None
     omdb_client = httpx.Client() if omdb_keys else None
     omdb_limiter = RateLimiter(10.0) if omdb_keys else None
-    return tmdb_client, tmdb_limiter, omdb_client, omdb_limiter
+    return GenreProviders(
+        tmdb_client, tmdb_limiter, omdb_client, omdb_limiter, omdb_keys, cache
+    )
 
 
 def _process_single_item_genres(
     item: dict,
-    tmdb_client, tmdb_limiter, omdb_client, omdb_limiter,
-    omdb_keys: list, cache: dict,
+    providers: GenreProviders,
     client, base_url: str, user_id: str,
-    item_ids: Optional[list], args,
+    item_ids: list | None, args,
 ) -> str:
     """Process one item's external genres. Returns status: no_data|no_diff|dry_run|updated|error."""
     try:
         external_genres = fetch_genres_for_item(
-            item, tmdb_client, tmdb_limiter, omdb_client, omdb_limiter, omdb_keys, cache
+            item, providers.tmdb_client, providers.tmdb_limiter,
+            providers.omdb_client, providers.omdb_limiter, providers.omdb_keys, providers.cache,
         )
         if not external_genres:
             return "no_data"
@@ -519,16 +427,11 @@ def _process_single_item_genres(
 
 def _apply_genre_updates(
     items: list[dict],
-    tmdb_client: Optional[httpx.Client],
-    tmdb_limiter: Optional[RateLimiter],
-    omdb_client: Optional[httpx.Client],
-    omdb_limiter: Optional[RateLimiter],
-    omdb_keys: list[str],
-    cache: dict,
+    providers: GenreProviders,
     client: httpx.Client,
     base_url: str,
     user_id: str,
-    item_ids: Optional[list[str]],
+    item_ids: list[str] | None,
     args: argparse.Namespace,
 ) -> None:
     """Iterate items and apply external genre updates from TMDB/OMDb.
@@ -538,12 +441,7 @@ def _apply_genre_updates(
 
     Args:
         items: Items to process.
-        tmdb_client: Rate-limited TMDB HTTP client (or None).
-        tmdb_limiter: TMDB rate limiter (or None).
-        omdb_client: Rate-limited OMDb HTTP client (or None).
-        omdb_limiter: OMDb rate limiter (or None).
-        omdb_keys: List of OMDb API keys.
-        cache: Mutable genre cache dict (updated in-place).
+        providers: Bundle of TMDB/OMDb clients, keys and the mutable genre cache.
         client: Emby HTTP client.
         base_url: Emby server base URL with port.
         user_id: Emby user ID for full-item fetches.
@@ -558,8 +456,7 @@ def _apply_genre_updates(
 
     for item in tqdm(items, desc="Fetching external genres", unit="item"):
         status = _process_single_item_genres(
-            item, tmdb_client, tmdb_limiter, omdb_client, omdb_limiter,
-            omdb_keys, cache, client, base_url, user_id, item_ids, args,
+            item, providers, client, base_url, user_id, item_ids, args,
         )
         if status == "no_data":
             skipped_no_data += 1
@@ -589,8 +486,8 @@ def _run_fix(
     user_id: str,
     library_ids: list[str],
     args: argparse.Namespace,
-    item_ids: Optional[list[str]] = None,
-    prefetched_items: Optional[list[dict]] = None,
+    item_ids: list[str] | None = None,
+    prefetched_items: list[dict] | None = None,
 ) -> None:
     """Fetch genres from TMDB/OMDb and fill gaps or validate existing genres.
 
@@ -614,11 +511,8 @@ def _run_fix(
         )
         sys.exit(1)
 
-    tmdb_client, tmdb_limiter, omdb_client, omdb_limiter = _create_provider_clients(
-        tmdb_key, omdb_keys
-    )
-
     cache = load_genre_cache()
+    providers = _create_provider_clients(tmdb_key, omdb_keys, cache)
 
     if prefetched_items is not None:
         items = prefetched_items
@@ -644,11 +538,10 @@ def _run_fix(
 
     try:
         _apply_genre_updates(
-            items, tmdb_client, tmdb_limiter, omdb_client, omdb_limiter,
-            omdb_keys, cache, client, base_url, user_id, item_ids, args,
+            items, providers, client, base_url, user_id, item_ids, args,
         )
     finally:
-        save_genre_cache(cache)
+        save_genre_cache(providers.cache)
 
 
 def _run_process(
@@ -740,13 +633,13 @@ def _resolve_genres_config(args: argparse.Namespace) -> tuple:
     override_warning("--api-key", args.api_key, env_api_key or "")
     override_warning("--library", ",".join(args.library) if args.library else "", env_library_str or "")
 
-    host: Optional[str] = args.host or env_host
+    host: str | None = args.host or env_host
     port = args.port or env_port or None
-    api_key: Optional[str] = args.api_key or env_api_key
+    api_key: str | None = args.api_key or env_api_key
     library = args.library or env_library or []
     all_libraries = getattr(args, "all_libraries", False)
     item_ids_raw = getattr(args, "item_ids", None)
-    item_ids: Optional[list[str]] = (
+    item_ids: list[str] | None = (
         [i.strip() for i in item_ids_raw.split(",") if i.strip()]
         if item_ids_raw else None
     )
@@ -765,7 +658,7 @@ def run_genres_command(args: argparse.Namespace) -> None:
     # After _validate_genres_args, host and api_key are guaranteed non-None (or sys.exit was called)
     resolved_host: str = host  # type: ignore[assignment]
     resolved_api_key: str = api_key  # type: ignore[assignment]
-    resolved_port: Optional[int] = int(port) if isinstance(port, str) else port
+    resolved_port: int | None = int(port) if isinstance(port, str) else port
 
     validated_host, validated_port = handle_host_and_port(resolved_host, resolved_port)
     base_url = f"{validated_host}:{validated_port}"

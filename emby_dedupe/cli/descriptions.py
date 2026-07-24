@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import Optional
 
 import httpx
 from tqdm import tqdm
@@ -41,7 +40,7 @@ from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.logging import logger, set_logging_level
 
 
-def _parse_lang_chain(raw: Optional[str]) -> tuple[str, ...]:
+def _parse_lang_chain(raw: str | None) -> tuple[str, ...]:
     """Parse --overview-langs flag: comma-separated BCP47 codes."""
     if not raw:
         return LANG_CHAIN_DEFAULT
@@ -57,12 +56,12 @@ def _truncate(text: str, limit: int = 240) -> str:
 
 def _preview_change(
     item: dict,
-    new_overview: Optional[str],
-    overview_lang: Optional[str],
-    new_title: Optional[str],
-    new_tagline: Optional[str] = None,
-    tagline_lang: Optional[str] = None,
-    new_year: Optional[int] = None,
+    new_overview: str | None,
+    overview_lang: str | None,
+    new_title: str | None,
+    new_tagline: str | None = None,
+    tagline_lang: str | None = None,
+    new_year: int | None = None,
 ) -> None:
     """Print a side-by-side dry-run preview for one item."""
     name = item.get("Name", item.get("Id", "?"))
@@ -107,7 +106,7 @@ def _fetch_input_items(
     base_url: str,
     user_id: str,
     library_ids: list[str],
-    item_ids_raw: Optional[str],
+    item_ids_raw: str | None,
 ) -> list[dict]:
     """Resolve the candidate input set: either explicit item IDs or a full sweep."""
     if item_ids_raw:
@@ -130,9 +129,9 @@ def _resolve_episode_series_tmdb(
     client: httpx.Client,
     base_url: str,
     user_id: str,
-    series_id: Optional[str],
+    series_id: str | None,
     series_tmdb_map: dict,
-) -> Optional[str]:
+) -> str | None:
     """Return the parent series's TMDB ID, fetching it on miss (--item-ids mode)."""
     if not series_id:
         return None
@@ -158,10 +157,10 @@ def _fetch_localized_for_episode(
     series_tmdb_id: str,
     tmdb_client: httpx.Client,
     tmdb_limiter: RateLimiter,
-    cache: Optional[dict],
+    cache: dict | None,
     cache_ttl_seconds: int,
     stats: dict,
-) -> Optional[dict]:
+) -> dict | None:
     """Fetch localized text for an episode and track cache hits."""
     season = item["ParentIndexNumber"]
     episode = item["IndexNumber"]
@@ -179,10 +178,10 @@ def _fetch_localized_for_movie_or_series(
     item: dict,
     tmdb_client: httpx.Client,
     tmdb_limiter: RateLimiter,
-    cache: Optional[dict],
+    cache: dict | None,
     cache_ttl_seconds: int,
     stats: dict,
-) -> Optional[dict]:
+) -> dict | None:
     """Fetch localized text for a movie/series/collection and track cache hits."""
     tmdb_id = item["ProviderIds"]["Tmdb"]
     media = _MEDIA_TYPE_BY_ITEM_TYPE.get(item.get("Type", ""), "movie")
@@ -204,10 +203,10 @@ def _fetch_localized_for_item(
     tmdb_client: httpx.Client,
     tmdb_limiter: RateLimiter,
     series_tmdb_map: dict,
-    cache: Optional[dict],
+    cache: dict | None,
     cache_ttl_seconds: int,
     stats: dict,
-) -> Optional[dict]:
+) -> dict | None:
     """Return localized TMDB data for an item (episode or movie/series).
 
     Returns None when no TMDB ID is resolvable; the caller treats that as
@@ -234,10 +233,10 @@ def _pick_updates(
     lang_chain: tuple[str, ...],
     update_title: bool,
 ) -> tuple[
-    Optional[tuple[str, str]],
-    Optional[tuple[str, str]],
-    Optional[tuple[str, str]],
-    Optional[int],
+    tuple[str, str] | None,
+    tuple[str, str] | None,
+    tuple[str, str] | None,
+    int | None,
 ]:
     """Pick (overview, tagline, title, year) candidates — any may be None.
 
@@ -263,12 +262,12 @@ def _apply_or_preview(
     base_url: str,
     user_id: str,
     item: dict,
-    new_overview: Optional[str],
-    overview_lang: Optional[str],
-    new_tagline: Optional[str],
-    tagline_lang: Optional[str],
-    new_title: Optional[str],
-    new_year: Optional[int],
+    new_overview: str | None,
+    overview_lang: str | None,
+    new_tagline: str | None,
+    tagline_lang: str | None,
+    new_title: str | None,
+    new_year: int | None,
     args: argparse.Namespace,
     stats: dict,
 ) -> None:
@@ -300,7 +299,7 @@ def _process_item(
     tmdb_client: httpx.Client,
     tmdb_limiter: RateLimiter,
     series_tmdb_map: dict,
-    cache: Optional[dict],
+    cache: dict | None,
     cache_ttl_seconds: int,
     lang_chain: tuple[str, ...],
     update_title: bool,
@@ -377,14 +376,14 @@ def _resolve_tmdb_key(args: argparse.Namespace) -> str:
     return tmdb_key
 
 
-def _resolve_cache(args: argparse.Namespace) -> tuple[Optional[dict], int]:
+def _resolve_cache(args: argparse.Namespace) -> tuple[dict | None, int]:
     """Load the on-disk cache (or None when --no-cache) and resolve TTL seconds."""
     use_cache = not bool(getattr(args, "no_cache", False))
     cache_ttl_days = getattr(args, "cache_ttl_days", None)
     cache_ttl_seconds = (
         cache_ttl_days * 86400 if cache_ttl_days is not None else DEFAULT_TTL_SECONDS
     )
-    cache: Optional[dict] = load_cache() if use_cache else None
+    cache: dict | None = load_cache() if use_cache else None
     if cache is not None:
         print(f"Cache loaded: {len(cache)} entries (TTL {cache_ttl_seconds // 86400}d)")
     return cache, cache_ttl_seconds
@@ -460,11 +459,11 @@ def _run_fill(
 
 
 def _validate_args(
-    host: Optional[str],
-    api_key: Optional[str],
+    host: str | None,
+    api_key: str | None,
     libraries: list[str],
     all_libraries: bool,
-    item_ids: Optional[str],
+    item_ids: str | None,
 ) -> None:
     missing = []
     if not host:

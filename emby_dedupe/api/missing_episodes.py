@@ -4,7 +4,6 @@ This module provides functionality to identify and report missing episodes
 without interfering with the existing deduplication functionality.
 """
 
-from typing import Dict, List, Optional
 
 import httpx
 from tqdm import tqdm
@@ -16,7 +15,7 @@ from emby_dedupe.utils.logging import logger
 UNKNOWN_SERIES_NAME = "Unknown Series"
 
 
-def _get_user_id(client: httpx.Client, base_url: str) -> Optional[str]:
+def _get_user_id(client: httpx.Client, base_url: str) -> str | None:
     """Get the first available user ID for API calls."""
     try:
         users_url = f"{base_url}/Users"
@@ -31,7 +30,7 @@ def _get_user_id(client: httpx.Client, base_url: str) -> Optional[str]:
     return None
 
 
-def _fetch_series_metadata(client: httpx.Client, base_url: str, series_id: str, user_id: str | None) -> Dict:
+def _fetch_series_metadata(client: httpx.Client, base_url: str, series_id: str, user_id: str | None) -> dict:
     """Fetch metadata for a single series."""
     try:
         # Use user-specific endpoint if available, otherwise fallback to direct endpoint
@@ -70,7 +69,7 @@ def _fetch_series_metadata(client: httpx.Client, base_url: str, series_id: str, 
         }
 
 
-def enrich_episodes_with_series_metadata(client: httpx.Client, base_url: str, episodes: List[Dict]) -> None:
+def enrich_episodes_with_series_metadata(client: httpx.Client, base_url: str, episodes: list[dict]) -> None:
     """
     Enrich missing episodes with proper series metadata including original titles.
     This is needed when the direct /Shows/Missing endpoint doesn't include series metadata.
@@ -105,7 +104,7 @@ def enrich_episodes_with_series_metadata(client: httpx.Client, base_url: str, ep
             episode["OriginalSeriesName"] = UNKNOWN_SERIES_NAME
 
 
-def _parse_episodes_response(missing_data) -> List[Dict]:
+def _parse_episodes_response(missing_data) -> list[dict]:
     """Parse missing episodes response handling different formats."""
     if isinstance(missing_data, dict) and "Items" in missing_data:
         return missing_data["Items"]
@@ -116,7 +115,7 @@ def _parse_episodes_response(missing_data) -> List[Dict]:
         return []
 
 
-def _try_authenticated_missing_episodes(base_url: str, url: str, params: dict, username: str, password: str) -> Optional[List[Dict]]:
+def _try_authenticated_missing_episodes(base_url: str, url: str, params: dict, username: str, password: str) -> list[dict] | None:
     """Try to fetch missing episodes with user authentication."""
     try:
         from emby_dedupe.api.client import create_http_client
@@ -142,7 +141,7 @@ def _try_authenticated_missing_episodes(base_url: str, url: str, params: dict, u
     return None
 
 
-def _try_api_key_missing_episodes(client: httpx.Client, base_url: str, url: str, params: dict) -> Optional[List[Dict]]:
+def _try_api_key_missing_episodes(client: httpx.Client, base_url: str, url: str, params: dict) -> list[dict] | None:
     """Try to fetch missing episodes with API key authentication."""
     try:
         response = client.get(url, params=params, timeout=60.0)
@@ -176,7 +175,7 @@ def _try_api_key_missing_episodes(client: httpx.Client, base_url: str, url: str,
     return None
 
 
-def get_missing_episodes(client: httpx.Client, base_url: str, library_id: Optional[str] = None, username: Optional[str] = None, password: Optional[str] = None) -> List[Dict]:
+def get_missing_episodes(client: httpx.Client, base_url: str, library_id: str | None = None, username: str | None = None, password: str | None = None) -> list[dict]:
     """
     Retrieves the list of missing episodes from the Emby server.
     Falls back to alternative methods if the direct endpoint doesn't work.
@@ -221,7 +220,7 @@ def get_missing_episodes(client: httpx.Client, base_url: str, library_id: Option
     return get_missing_episodes_alternative(client, base_url, library_id)
 
 
-def get_missing_episodes_alternative(client: httpx.Client, base_url: str, library_id: Optional[str] = None) -> List[Dict]:
+def get_missing_episodes_alternative(client: httpx.Client, base_url: str, library_id: str | None = None) -> list[dict]:
     """
     Alternative method to find missing episodes by analyzing existing series.
     This is a fallback when the direct /Shows/Missing endpoint doesn't work.
@@ -294,7 +293,7 @@ def get_missing_episodes_alternative(client: httpx.Client, base_url: str, librar
         return []
 
 
-def get_missing_episodes_for_series(client: httpx.Client, base_url: str, series_id: str, series_name: str, original_series_name: str = None) -> List[Dict]:
+def get_missing_episodes_for_series(client: httpx.Client, base_url: str, series_id: str, series_name: str, original_series_name: str = None) -> list[dict]:
     """
     Get missing episodes for a specific series using Emby's /Shows/Missing endpoint.
     This is the correct way to get missing episodes as determined by Emby's metadata.
@@ -337,7 +336,7 @@ def get_missing_episodes_for_series(client: httpx.Client, base_url: str, series_
         return []
 
 
-def get_expected_episodes_from_metadata(client: httpx.Client, base_url: str, series_id: str, season_number: int) -> List[Dict]:
+def get_expected_episodes_from_metadata(client: httpx.Client, base_url: str, series_id: str, season_number: int) -> list[dict]:
     """
     Get expected episodes for a season based on metadata from external providers.
     This uses Emby's metadata to determine what episodes should exist, not gaps in numbering.
@@ -383,7 +382,7 @@ def get_expected_episodes_from_metadata(client: httpx.Client, base_url: str, ser
         return []
 
 
-def get_season_episodes(client: httpx.Client, base_url: str, season_id: str) -> List[Dict]:
+def get_season_episodes(client: httpx.Client, base_url: str, season_id: str) -> list[dict]:
     """
     Get all episodes for a specific season.
     """
@@ -408,7 +407,7 @@ def get_season_episodes(client: httpx.Client, base_url: str, season_id: str) -> 
         return []
 
 
-def get_series_episodes(client: httpx.Client, base_url: str, series_id: str) -> List[Dict]:
+def get_series_episodes(client: httpx.Client, base_url: str, series_id: str) -> list[dict]:
     """
     Retrieves all episodes for a specific TV series.
 
@@ -439,7 +438,7 @@ def get_series_episodes(client: httpx.Client, base_url: str, series_id: str) -> 
         return []
 
 
-def get_series_seasons(client: httpx.Client, base_url: str, series_id: str) -> List[Dict]:
+def get_series_seasons(client: httpx.Client, base_url: str, series_id: str) -> list[dict]:
     """
     Retrieves all seasons for a specific TV series.
 
@@ -470,7 +469,7 @@ def get_series_seasons(client: httpx.Client, base_url: str, series_id: str) -> L
         return []
 
 
-def _deduplicate_episodes(episodes: List[Dict]) -> List[Dict]:
+def _deduplicate_episodes(episodes: list[dict]) -> list[dict]:
     """Deduplicate missing episodes based on series, season, and episode number."""
     unique_episodes = {}
     for episode in episodes:
@@ -491,7 +490,7 @@ def _deduplicate_episodes(episodes: List[Dict]) -> List[Dict]:
     return result
 
 
-def _group_missing_episodes(episodes: List[Dict]) -> tuple[Dict, Dict]:
+def _group_missing_episodes(episodes: list[dict]) -> tuple[dict, dict]:
     """Group episodes by series and season."""
     by_series = {}
     by_season = {}
@@ -545,7 +544,7 @@ def _group_missing_episodes(episodes: List[Dict]) -> tuple[Dict, Dict]:
     return by_series, by_season
 
 
-def _calculate_missing_statistics(episodes: List[Dict], by_series: Dict, by_season: Dict) -> Dict:
+def _calculate_missing_statistics(episodes: list[dict], by_series: dict, by_season: dict) -> dict:
     """Calculate summary statistics for missing episodes."""
     return {
         "total_missing_episodes": len(episodes),
@@ -556,7 +555,7 @@ def _calculate_missing_statistics(episodes: List[Dict], by_series: Dict, by_seas
     }
 
 
-def analyze_missing_episodes(missing_episodes: List[Dict]) -> Dict:
+def analyze_missing_episodes(missing_episodes: list[dict]) -> dict:
     """
     Analyzes missing episodes data to provide statistics and groupings.
 
@@ -596,11 +595,11 @@ def analyze_missing_episodes(missing_episodes: List[Dict]) -> Dict:
 def process_missing_episodes_for_libraries(
     client: httpx.Client,
     base_url: str,
-    library_names: List[str],
+    library_names: list[str],
     get_library_id_func,
-    username: Optional[str] = None,
-    password: Optional[str] = None
-) -> Dict:
+    username: str | None = None,
+    password: str | None = None
+) -> dict:
     """
     Process missing episodes for multiple libraries, reusing existing library ID resolution.
 

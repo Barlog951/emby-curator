@@ -33,7 +33,9 @@ def load_json_cache(path: Path, *, label: str = "cache") -> dict:
     return {}
 
 
-def save_json_cache(path: Path, data: dict, *, label: str = "cache") -> None:
+def save_json_cache(
+    path: Path, data: dict, *, label: str = "cache", compact: bool = False
+) -> None:
     """Write ``data`` to ``path`` atomically via a sibling ``.tmp`` file.
 
     A disk error is logged and swallowed — caching is best-effort and must never
@@ -43,11 +45,15 @@ def save_json_cache(path: Path, data: dict, *, label: str = "cache") -> None:
         path: Cache file location.
         data: Dict to serialise.
         label: Noun used in warning logs, e.g. "description cache".
+        compact: When True, serialise without indentation (``indent=None``). Use for
+            large machine-only caches (e.g. provider-ID tables for a big library) where
+            the human-readable ``indent=2`` form roughly doubles the on-disk size.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
+    indent = None if compact else 2
     try:
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=indent), encoding="utf-8")
         tmp.replace(path)
     except OSError as e:
         logger.warning(f"Could not save {label}: {e}")

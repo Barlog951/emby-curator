@@ -5,7 +5,7 @@ HTML report generation for the Emby Dedupe tool.
 import os
 import tempfile
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from tqdm import tqdm
 
@@ -13,7 +13,7 @@ from emby_dedupe.reports.common import calculate_report_statistics
 from emby_dedupe.utils.logging import logger
 
 
-def _validate_decisions(decisions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _validate_decisions(decisions: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Filter decisions to only include valid ones with proper keep and delete items.
 
@@ -42,7 +42,7 @@ def _validate_decisions(decisions: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     return valid_decisions
 
 
-def _detect_language_priority_usage(valid_decisions: List[Dict[str, Any]]) -> tuple[bool, bool, Optional[list]]:
+def _detect_language_priority_usage(valid_decisions: list[dict[str, Any]]) -> tuple[bool, bool, list | None]:
     """
     Detect if language prioritization was used and if it changed any decisions.
 
@@ -71,7 +71,7 @@ def _detect_language_priority_usage(valid_decisions: List[Dict[str, Any]]) -> tu
     return language_priorities_used, language_priorities_changed_selection, language_priorities_list
 
 
-def _ensure_quality_fields(quality_desc: Dict[str, Any]) -> None:
+def _ensure_quality_fields(quality_desc: dict[str, Any]) -> None:
     """
     Ensure quality description has proper audio and video fields with defaults.
     Modifies quality_desc in place.
@@ -97,7 +97,7 @@ def _ensure_quality_fields(quality_desc: Dict[str, Any]) -> None:
             quality_desc["audio"]["languages"] = ["unknown"]
 
 
-def _create_language_priority_message(keep_item: Dict[str, Any]) -> str:
+def _create_language_priority_message(keep_item: dict[str, Any]) -> str:
     """
     Create a human-readable message about language priority selection.
 
@@ -122,7 +122,7 @@ def _create_language_priority_message(keep_item: Dict[str, Any]) -> str:
     return ""
 
 
-def _process_delete_item(item: Dict[str, Any], base_url: str, keep_serverid: str) -> Dict[str, Any]:
+def _process_delete_item(item: dict[str, Any], base_url: str, keep_serverid: str) -> dict[str, Any]:
     """
     Process a single delete item into template-friendly format.
 
@@ -171,7 +171,7 @@ def _process_delete_item(item: Dict[str, Any], base_url: str, keep_serverid: str
     }
 
 
-def _process_decision_group(decision: Dict[str, Any], base_url: str) -> Dict[str, Any]:
+def _process_decision_group(decision: dict[str, Any], base_url: str) -> dict[str, Any]:
     """
     Process a single decision group into template-friendly format.
 
@@ -192,7 +192,7 @@ def _process_decision_group(decision: Dict[str, Any], base_url: str) -> Dict[str
     all_items = [keep_item] + delete_items
 
     # Sort by date_added to find newest and oldest
-    def date_sort_key(item: Dict[str, Any]) -> str:
+    def date_sort_key(item: dict[str, Any]) -> str:
         return item['quality_description'].get('date_added', '0000-00-00')
 
     try:
@@ -245,9 +245,9 @@ def _process_decision_group(decision: Dict[str, Any], base_url: str) -> Dict[str
     }
 
 
-def _prepare_template_data(base_url: str, stats: Dict[str, Any], language_priorities_used: bool,
+def _prepare_template_data(base_url: str, stats: dict[str, Any], language_priorities_used: bool,
                            language_priorities_changed_selection: bool, language_priorities_list: Any,
-                           metadata: Dict[str, Any]) -> Dict[str, Any]:
+                           metadata: dict[str, Any]) -> dict[str, Any]:
     """Prepare template data structure with stats and metadata."""
     excluded_ids = metadata.get("excluded_ids", [])
 
@@ -283,8 +283,8 @@ def _prepare_template_data(base_url: str, stats: Dict[str, Any], language_priori
     }
 
 
-def _process_decisions_to_groups(valid_decisions: List[Dict[str, Any]], base_url: str,
-                                  template_data: Dict[str, Any]) -> None:
+def _process_decisions_to_groups(valid_decisions: list[dict[str, Any]], base_url: str,
+                                  template_data: dict[str, Any]) -> None:
     """Process decisions into template-friendly group format."""
     with tqdm(total=len(valid_decisions), desc="Preparing report data", unit="item") as progress_bar:
         for decision in valid_decisions:
@@ -297,7 +297,7 @@ def _process_decisions_to_groups(valid_decisions: List[Dict[str, Any]], base_url
                 continue
 
 
-def _log_rendering_error_details(template_data: Dict[str, Any]) -> None:
+def _log_rendering_error_details(template_data: dict[str, Any]) -> None:
     """Log detailed error information when template rendering fails."""
     logger.error("Template data structure:")
     logger.error(f"Number of duplicate groups: {len(template_data.get('duplicate_groups', []))}")
@@ -322,7 +322,7 @@ def _log_rendering_error_details(template_data: Dict[str, Any]) -> None:
         logger.error(f"Video section content: {quality_desc['video']}")
 
 
-def format_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None) -> str:
+def format_html_report(base_url: str, decisions: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> str:
     """
     Formats decisions into a beautiful HTML report using Jinja2 templates.
 
@@ -334,13 +334,8 @@ def format_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata:
     Returns:
         str: A fully formed HTML document as a string.
     """
-    try:
-        # Try to import Jinja2, which we'll use for templating
-        from jinja2 import Environment, FileSystemLoader, select_autoescape
-    except ImportError:
-        logger.error("Jinja2 template engine is required but not installed. Please install it using: pip install jinja2")
-        raise ImportError("Jinja2 is required for HTML report generation. "
-                         "Please install it using: pip install jinja2")
+    # jinja2 is a hard runtime dependency (pyproject) — import it plainly.
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
 
     # Calculate statistics
     stats = calculate_report_statistics(decisions)
@@ -384,7 +379,7 @@ def format_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata:
         raise
 
 
-def generate_html_report(base_url: str, decisions: List[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None) -> str:
+def generate_html_report(base_url: str, decisions: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> str:
     """
     Generates an HTML report and saves it to a temporary file that can be opened in a browser.
 
@@ -419,7 +414,7 @@ def generate_html_report(base_url: str, decisions: List[Dict[str, Any]], metadat
         # Copy the CSS file
         shutil.copy2(css_src_path, css_dest_path)
         logger.debug(f"CSS file copied to: {css_dest_path}")
-    except (IOError, OSError) as e:
+    except OSError as e:
         # If copying fails, log the error but continue without the CSS
         logger.error(f"Failed to copy CSS file: {e}")
 

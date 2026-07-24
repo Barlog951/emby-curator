@@ -254,16 +254,22 @@ class TestClient:
         assert se_key in provider_tables["series_episode"]
         assert len(provider_tables["series_episode"][se_key]) == 1
 
+    @patch('emby_dedupe.api.pagination.make_http_request')
     @patch('emby_dedupe.api.client.make_http_request')
-    def test_fetch_and_process_media_items(self, mock_make_http_request):
-        """Test fetching and processing media items."""
+    def test_fetch_and_process_media_items(self, mock_client_req, mock_pagination_req):
+        """Test fetching and processing media items.
+
+        The total-count call goes through client.make_http_request; the page fetch now
+        goes through pagination.make_http_request (client delegates to paginate_emby_items).
+        """
         mock_client = Mock()
 
-        # Mock first response to get total count
+        # Total-count call (client.make_http_request)
         mock_total_response = Mock()
         mock_total_response.json.return_value = {"TotalRecordCount": 2}
+        mock_client_req.return_value = mock_total_response
 
-        # Mock second response with actual items
+        # Page fetch (pagination.make_http_request) — TotalRecordCount stops after one page.
         mock_items_response = Mock()
         mock_items_response.json.return_value = {
             "Items": [
@@ -283,11 +289,10 @@ class TestClient:
                         "Tmdb": "4321"
                     }
                 }
-            ]
+            ],
+            "TotalRecordCount": 2,
         }
-
-        # Configure the mock to return different responses for different calls
-        mock_make_http_request.side_effect = [mock_total_response, mock_items_response]
+        mock_pagination_req.return_value = mock_items_response
 
         # Call the function
         result = fetch_and_process_media_items(mock_client, "http://example.com", "lib1")
@@ -297,29 +302,52 @@ class TestClient:
         assert "tt1234567" in result["imdb"]
         assert "tt7654321" in result["imdb"]
 
-        # Verify API calls
-        assert mock_make_http_request.call_count == 2
+        # Verify API calls: one total-count, one page.
+        assert mock_client_req.call_count == 1
+        assert mock_pagination_req.call_count == 1
 
-    @patch('emby_dedupe.api.client.PAGE_SIZE', 2)
+    @patch('emby_dedupe.api.pagination.make_http_request')
     @patch('emby_dedupe.api.client.make_http_request')
+    def test_fetch_and_process_media_items_propagates_page_failure(
+        self, mock_client_req, mock_pagination_req
+    ):
+        """A mid-fetch page failure must propagate, not silently yield a partial index.
+
+        _fetch_paginated_items passes raise_on_error=True to paginate_emby_items so a
+        provider-table build never treats a truncated result as complete.
+        """
+        mock_total_response = Mock()
+        mock_total_response.json.return_value = {"TotalRecordCount": 10}
+        mock_client_req.return_value = mock_total_response
+
+        mock_pagination_req.side_effect = httpx.RequestError("mid-fetch boom")
+
+        with pytest.raises(httpx.RequestError):
+            fetch_and_process_media_items(Mock(), "http://example.com", "lib1")
+
+    @patch('emby_dedupe.api.pagination.make_http_request')
     def test_fetch_all_media_paths_paginates(self, mock_make_http_request):
         """fetch_all_media_paths walks every page and returns each item's verbatim Path.
 
+        Now delegates to paginate_emby_items (pagination.make_http_request); the
+        empty trailing page stops iteration and items without Path are skipped.
         Feeds the deletion safety guard real folder visibility (see deletion_guard)."""
         from emby_dedupe.api.client import fetch_all_media_paths
 
+        # TotalRecordCount is larger than what's returned, so the empty-page guard
+        # (not a total match) is what stops iteration.
         page1 = Mock()
         page1.json.return_value = {"Items": [
             {"Id": "1", "Path": "/Movies/A/A.mkv"},
-            {"Id": "2", "Path": "/Movies/B/B.mkv"},   # full page (==PAGE_SIZE) → fetch again
-        ]}
+            {"Id": "2", "Path": "/Movies/B/B.mkv"},
+        ], "TotalRecordCount": 100}
         page2 = Mock()
         page2.json.return_value = {"Items": [
             {"Id": "3", "Path": "/Movies/C/C.mkv"},
             {"Id": "4"},                               # no Path → skipped, not crashing
-        ]}                                             # also full (==PAGE_SIZE) → fetch again
+        ], "TotalRecordCount": 100}
         page3 = Mock()
-        page3.json.return_value = {"Items": []}        # empty trailing page → stop
+        page3.json.return_value = {"Items": [], "TotalRecordCount": 100}  # empty → stop
         mock_make_http_request.side_effect = [page1, page2, page3]
 
         result = fetch_all_media_paths(Mock(), "http://emby")
@@ -327,10 +355,11 @@ class TestClient:
         assert result == ["/Movies/A/A.mkv", "/Movies/B/B.mkv", "/Movies/C/C.mkv"]
         assert mock_make_http_request.call_count == 3
 
-    @patch('emby_dedupe.api.client.make_http_request')
+    @patch('emby_dedupe.api.pagination.make_http_request')
     def test_fetch_all_media_paths_degrades_to_empty_on_failure(self, mock_make_http_request):
         """A fetch failure must degrade to [] so the guard falls back to over-refusing
-        (safe) rather than ever under-refusing."""
+        (safe) rather than ever under-refusing. paginate_emby_items swallows the httpx
+        error internally, yielding no pages → []."""
         from emby_dedupe.api.client import fetch_all_media_paths
 
         mock_make_http_request.side_effect = httpx.RequestError("boom")
@@ -349,7 +378,7 @@ class TestClient:
 
         result = delete_item(
             mock_client, "http://example.com", "item123",
-            True, "username", "password", "api_key"
+            "username", "password", "api_key"
         )
 
         assert result["status"] == "success"
@@ -365,23 +394,11 @@ class TestClient:
 
         result = delete_item(
             mock_client, "http://example.com", "item123",
-            True, "username", "password", "api_key"
+            "username", "password", "api_key"
         )
 
         assert result["status"] == "failed"
         assert "Authentication failed" in result["error"]
-        assert not mock_client.request.called  # No request should be made
-
-    def test_delete_item_skipped(self):
-        """Test item deletion in dry-run mode."""
-        mock_client = Mock()
-
-        result = delete_item(
-            mock_client, "http://example.com", "item123",
-            False, "username", "password", "api_key"
-        )
-
-        assert result["status"] == "skipped"
         assert not mock_client.request.called  # No request should be made
 
     @patch('emby_dedupe.api.client.hashlib')

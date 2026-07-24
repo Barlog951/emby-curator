@@ -18,7 +18,6 @@ community rating to be protected.
 from __future__ import annotations
 
 import json
-from typing import Optional
 
 import httpx
 from tqdm import tqdm
@@ -58,13 +57,13 @@ from emby_dedupe.utils.logging import logger
 
 
 def _validate_cleanup_args(
-    host: Optional[str],
-    api_key: Optional[str],
+    host: str | None,
+    api_key: str | None,
     libraries: list[str],
     all_libraries: bool,
     doit: bool,
-    username: Optional[str],
-    password: Optional[str],
+    username: str | None,
+    password: str | None,
 ) -> None:
     """Validate cleanup command arguments.
 
@@ -180,9 +179,9 @@ def _perform_deletions(
     client: httpx.Client,
     base_url: str,
     candidates: list,
-    username: Optional[str],
-    password: Optional[str],
-    api_key: Optional[str],
+    username: str | None,
+    password: str | None,
+    api_key: str | None,
     label: str = "movies",
 ) -> None:
     """Delete cleanup candidates from Emby and record results.
@@ -208,7 +207,7 @@ def _perform_deletions(
             progress.set_postfix_str(candidate.name[:40])
             result = delete_item(
                 client, base_url, candidate.item_id,
-                doit=True, username=username, password=password, api_key=api_key,
+                username=username, password=password, api_key=api_key,
             )
             candidate.deletion_result = result
             logger.info(f"Deleted {candidate.name}: {result.get('status', 'unknown')}")
@@ -259,10 +258,10 @@ def _output_report(
     candidates: list[CleanupCandidate],
     protection_stats: dict,
     config: CleanupConfig,
-    series_candidates: Optional[list[SeriesCleanupCandidate]],
-    series_stats: Optional[dict],
-    movie_near_miss: Optional[list[CleanupCandidate]] = None,
-    series_near_miss: Optional[list[SeriesCleanupCandidate]] = None,
+    series_candidates: list[SeriesCleanupCandidate] | None,
+    series_stats: dict | None,
+    movie_near_miss: list[CleanupCandidate] | None = None,
+    series_near_miss: list[SeriesCleanupCandidate] | None = None,
 ) -> None:
     """Output cleanup report in the requested format (console or JSON).
 
@@ -298,8 +297,8 @@ def _execute_cleanup(
     api_key: str,
     libraries: list[str],
     all_libraries: bool,
-    username: Optional[str],
-    password: Optional[str],
+    username: str | None,
+    password: str | None,
     output_format: str,
     html_report: bool,
     html_only: bool,

@@ -2,10 +2,12 @@
 Common reporting functions used by both markdown and HTML reports.
 """
 
-from typing import Any, Dict, List
+from typing import Any
+
+from emby_dedupe.utils.formatting import format_file_size
 
 
-def _is_valid_decision(decision: Dict[str, Any]) -> bool:
+def _is_valid_decision(decision: dict[str, Any]) -> bool:
     """Check if decision is valid for statistics."""
     if not decision.get("keep"):
         return False
@@ -24,7 +26,7 @@ def _safe_int_conversion(value: Any) -> int:
         return 0
 
 
-def _process_deletion_status(item: Dict[str, Any], stats: Dict[str, Any]) -> None:
+def _process_deletion_status(item: dict[str, Any], stats: dict[str, Any]) -> None:
     """Update stats based on deletion status (in-place)."""
     deletion_status = item.get("deletion_result", {}).get("status", "skipped")
     if deletion_status == "success":
@@ -35,7 +37,7 @@ def _process_deletion_status(item: Dict[str, Any], stats: Dict[str, Any]) -> Non
         stats["skipped_deletions"] += 1
 
 
-def calculate_report_statistics(decisions: List[Dict[str, Any]]) -> Dict[str, Any]:
+def calculate_report_statistics(decisions: list[dict[str, Any]]) -> dict[str, Any]:
     """
     Calculate streamlined statistics from the decisions data for reporting.
 
@@ -45,7 +47,7 @@ def calculate_report_statistics(decisions: List[Dict[str, Any]]) -> Dict[str, An
     Returns:
         Dict[str, Any]: Dictionary containing various statistics.
     """
-    stats: Dict[str, Any] = {
+    stats: dict[str, Any] = {
         "total_groups": 0,
         "total_items_to_delete": 0,
         "total_items_to_keep": 0,
@@ -97,23 +99,8 @@ def calculate_report_statistics(decisions: List[Dict[str, Any]]) -> Dict[str, An
 
 
 def format_size(size_bytes: int) -> str:
+    """Format a size in bytes to a human-readable string (e.g. "4.20 GB").
+
+    Thin wrapper over the shared ``utils.formatting.format_file_size`` (zero/None → "0 B").
     """
-    Format a size in bytes to a human-readable string.
-
-    Args:
-        size_bytes (int): Size in bytes
-
-    Returns:
-        str: Formatted size string (e.g., "4.2 GB")
-    """
-    if size_bytes == 0:
-        return "0 B"
-
-    size_names = ("B", "KB", "MB", "GB", "TB", "PB")
-    i = 0
-    size_value = float(size_bytes)
-    while size_value >= 1024 and i < len(size_names) - 1:
-        size_value /= 1024.0
-        i += 1
-
-    return f"{size_value:.2f} {size_names[i]}"
+    return format_file_size(size_bytes, zero_label="0 B")

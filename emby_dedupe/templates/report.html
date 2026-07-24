@@ -183,8 +183,11 @@
                         <h4>File Info</h4>
                         <div><strong>Added to Library:</strong> {{ group.keep.quality_description.date_added }}</div>
                     </div>
+                    {% if group.keep.quality_description.get('score_summary') %}
+                    <div class="score-summary"><strong>Quality:</strong> {{ group.keep.quality_description.score_summary }}</div>
+                    {% endif %}
                 </div>
-                
+
                 <a href="{{ group.keep_url }}" target="_blank" class="url-link">View in Emby</a>
             </div>
         </div>
@@ -243,8 +246,11 @@
                             <h4>File Info</h4>
                             <div><strong>Added to Library:</strong> {{ item.quality_description.date_added }}</div>
                         </div>
+                        {% if item.quality_description.get('score_summary') %}
+                        <div class="score-summary"><strong>Quality:</strong> {{ item.quality_description.score_summary }}</div>
+                        {% endif %}
                     </div>
-                    
+
                     {% if item.deletion_result and item.deletion_result.status == "success" %}
                         <!-- Item was deleted, show external links instead -->
                         <div class="external-links">

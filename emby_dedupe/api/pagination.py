@@ -24,6 +24,7 @@ def paginate_emby_items(
     params: dict,
     *,
     error_context: str = "fetch items",
+    raise_on_error: bool = False,
 ) -> Iterator[tuple[list[dict], int]]:
     """Yield ``(page_items, total_record_count)`` for each page of an Emby endpoint.
 
@@ -41,6 +42,9 @@ def paginate_emby_items(
             responsible for ``Limit``/``ParentId``/etc.).
         error_context: Phrase for the error log, e.g.
             ``"fetch episodes from library 5"``.
+        raise_on_error: When True, re-raise a request failure instead of logging
+            and stopping. Use for callers whose partial result must not be treated
+            as complete (e.g. the provider-table build aborts the library on error).
 
     Yields:
         Tuples of (page items, total record count), one per page.
@@ -51,6 +55,8 @@ def paginate_emby_items(
         try:
             data = make_http_request(client, "GET", endpoint, params=page_params).json()
         except (httpx.HTTPStatusError, httpx.RequestError) as e:
+            if raise_on_error:
+                raise
             logger.error(f"Failed to {error_context}: {e}")
             return
 

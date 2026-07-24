@@ -5,74 +5,34 @@ Metadata processing utilities for Emby media items.
 import os
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from emby_dedupe.api.quality_compare import detect_ai_upscale, detect_source_quality
+
+# ``DOVI_P5_QUALITY_PENALTY`` and ``_is_dovi_profile5`` now live in the shared
+# ``scoring`` module and are re-exported here for backward compatibility — the DV-P5
+# test suite imports ``_is_dovi_profile5`` from this module. (The redundant ``as``
+# alias marks the penalty constant as an intentional re-export, not dead import.)
+from emby_dedupe.api.scoring import DOVI_P5_QUALITY_PENALTY as DOVI_P5_QUALITY_PENALTY
+from emby_dedupe.api.scoring import (
+    _is_dovi_profile5,
+    compute_quality_breakdown,
+    duration_minutes_from_ticks,
+    format_score_summary,
+    hdr_bonus_from_string,
+    hdr_marker_in_text,
+    is_neutral_multiplier,
+)
+from emby_dedupe.utils.formatting import format_file_size
 from emby_dedupe.utils.logging import logger
-
-# Dolby Vision Profile 5 ("green/pink") quality penalty.
-#
-# DV Profile 5 is single-layer (BL+RPU), encoded in the IPT-PQ-C2 / ICtCp matrix
-# with NO HDR10 fallback. On any Emby playback path that is not full-DV-P5 aware
-# (most clients, browsers, transcodes) it renders with a green/magenta tint, i.e.
-# it is effectively unwatchable. When a non-defective copy of the same item also
-# exists, we must keep that one even though the DV P5 file is usually LARGER (and
-# would otherwise win on raw size/bitrate). This multiplier collapses the P5
-# file's quality rating so a non-P5 sibling always outranks it, while staying a
-# positive multiplier (keeps the language-override ratio math intact).
-DOVI_P5_QUALITY_PENALTY = 0.0001
-
-
-def _is_dovi_profile5(video_stream: Optional[Dict[str, Any]]) -> bool:
-    """Return True if a video stream is Dolby Vision Profile 5 (green/pink risk).
-
-    Emby exposes the DV profile directly. Verified live on Emby 4.9.5.0, the P5
-    file reports ``ExtendedVideoSubType == "DoviProfile50"`` (description
-    ``"Profile 5.0"``, ``VideoRange == "DolbyVision"``). DV Profile 7/8 carry an
-    HDR10 base layer and do NOT show the tint, so they are deliberately NOT
-    flagged (their subtype is e.g. ``DoviProfile70``/``DoviProfile81``).
-
-    Args:
-        video_stream: An Emby video ``MediaStream`` dict, or None.
-
-    Returns:
-        True only for Dolby Vision Profile 5.
-    """
-    if not video_stream:
-        return False
-    subtype = str(video_stream.get("ExtendedVideoSubType") or "")
-    if subtype.startswith("DoviProfile5"):
-        return True
-    # Fallback for builds that omit ExtendedVideoSubType: Dolby Vision range
-    # plus a "Profile 5.x" description.
-    video_range = str(video_stream.get("VideoRange") or "").replace(" ", "").lower()
-    desc = str(video_stream.get("ExtendedVideoSubTypeDescription") or "").strip().lower()
-    return video_range == "dolbyvision" and desc.startswith("profile 5")
 
 
 def _format_file_size(size_bytes: int) -> str:
-    """Format file size in human-readable format (KB, MB, GB).
-
-    Args:
-        size_bytes: File size in bytes.
-
-    Returns:
-        Formatted string with size and unit.
-    """
-    if not size_bytes:
-        return "unknown"
-
-    if size_bytes >= 1073741824:  # 1 GB
-        return f"{size_bytes / 1073741824:.2f} GB"
-    elif size_bytes >= 1048576:  # 1 MB
-        return f"{size_bytes / 1048576:.2f} MB"
-    elif size_bytes >= 1024:  # 1 KB
-        return f"{size_bytes / 1024:.2f} KB"
-    else:
-        return f"{size_bytes} bytes"
+    """Format file size in human-readable format (unknown/zero → "unknown")."""
+    return format_file_size(size_bytes, zero_label="unknown")
 
 
-def _parse_iso_date(date_str: str, include_time: bool = True) -> Optional[str]:
+def _parse_iso_date(date_str: str, include_time: bool = True) -> str | None:
     """Parse ISO 8601 date string to formatted date.
 
     Args:
@@ -92,7 +52,7 @@ def _parse_iso_date(date_str: str, include_time: bool = True) -> Optional[str]:
         return None
 
 
-def _try_parse_date_field(item: Dict[str, Any], field_name: str, include_time: bool = True) -> Optional[str]:
+def _try_parse_date_field(item: dict[str, Any], field_name: str, include_time: bool = True) -> str | None:
     """Try to parse a date from a specific field.
 
     Args:
@@ -122,7 +82,7 @@ def _try_parse_date_field(item: Dict[str, Any], field_name: str, include_time: b
         return None
 
 
-def _try_fallback_date_fields(item: Dict[str, Any]) -> Optional[str]:
+def _try_fallback_date_fields(item: dict[str, Any]) -> str | None:
     """Try to get date from fallback fields (PremiereDate, EndDate, ProductionYear).
 
     Args:
@@ -158,7 +118,7 @@ def _try_fallback_date_fields(item: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _try_filesystem_date(item: Dict[str, Any]) -> Optional[str]:
+def _try_filesystem_date(item: dict[str, Any]) -> str | None:
     """Try to get date from filesystem modification time.
 
     Args:
@@ -183,7 +143,7 @@ def _try_filesystem_date(item: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _try_any_date_field(item: Dict[str, Any]) -> Optional[str]:
+def _try_any_date_field(item: dict[str, Any]) -> str | None:
     """Last resort: try any field with 'date' in name.
 
     Args:
@@ -204,7 +164,7 @@ def _try_any_date_field(item: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _resolve_date_added(item: Dict[str, Any]) -> str:
+def _resolve_date_added(item: dict[str, Any]) -> str:
     """Resolve date added from multiple possible sources with fallback chain.
 
     Tries in priority order:
@@ -247,7 +207,7 @@ def _resolve_date_added(item: Dict[str, Any]) -> str:
     return "unknown"
 
 
-def _extract_premiere_date(item: Dict[str, Any]) -> str:
+def _extract_premiere_date(item: dict[str, Any]) -> str:
     """Extract premiere date (original release date) from item.
 
     Args:
@@ -266,7 +226,7 @@ def _extract_premiere_date(item: Dict[str, Any]) -> str:
     return date_str
 
 
-def _build_tv_metadata(item: Dict[str, Any], quality_desc: Dict[str, Any]) -> None:
+def _build_tv_metadata(item: dict[str, Any], quality_desc: dict[str, Any]) -> None:
     """Add TV series metadata to quality description dict (in-place).
 
     Args:
@@ -289,7 +249,7 @@ def _build_tv_metadata(item: Dict[str, Any], quality_desc: Dict[str, Any]) -> No
         quality_desc["episode_info"] = "Unknown episode"
 
 
-def _extract_video_quality(video_stream: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _extract_video_quality(video_stream: dict[str, Any] | None) -> dict[str, Any]:
     """Extract video quality information from a video stream."""
     if not video_stream:
         return {
@@ -316,7 +276,7 @@ def _extract_video_quality(video_stream: Optional[Dict[str, Any]]) -> Dict[str, 
     }
 
 
-def _extract_audio_quality(audio_stream: Optional[Dict[str, Any]], languages: List[str]) -> Dict[str, Any]:
+def _extract_audio_quality(audio_stream: dict[str, Any] | None, languages: list[str]) -> dict[str, Any]:
     """Extract audio quality information from an audio stream and language list."""
     if not audio_stream:
         return {
@@ -333,7 +293,7 @@ def _extract_audio_quality(audio_stream: Optional[Dict[str, Any]], languages: Li
     }
 
 
-def get_quality_description(item: Dict[str, Any]) -> Dict[str, Any]:
+def get_quality_description(item: dict[str, Any]) -> dict[str, Any]:
     """
     Get the quality description from the media item.
 
@@ -384,7 +344,7 @@ def get_quality_description(item: Dict[str, Any]) -> Dict[str, Any]:
     return quality_description
 
 
-def get_image_url(base_url: str, item_id: str, item_image_tags: dict, server_id: str, api_key: Optional[str] = None) -> str:
+def get_image_url(base_url: str, item_id: str, item_image_tags: dict, server_id: str, api_key: str | None = None) -> str:
     """
     Generates a URL for the primary image (poster/thumbnail) of a media item.
 
@@ -426,38 +386,18 @@ def get_image_url(base_url: str, item_id: str, item_image_tags: dict, server_id:
 
 
 # --- Quality rating model --------------------------------------------------------
-# Factors are NORMALISED (megapixels, Mbps, channels) so the WEIGHTS express intent,
-# instead of raw magnitudes deciding the outcome. Resolution dominates; HDR is a real
-# bonus; video bitrate is a within-resolution tiebreaker; the added-date only resolves
-# otherwise-identical items. (Previously file_size [bytes ~1e9] and date_added [unix ts
-# ~1.8e9] swamped resolution [pixels ~1e7], so a slightly bigger/newer low-res file beat
-# a 4K. See the Last Frontier S01E07 regression.)
-_RES_WEIGHT = 10.0       # resolution (megapixels) — primary
-_HDR_WEIGHT = 5.0        # HDR (HDR10/HDR10+/Dolby Vision) over SDR
-_BITRATE_WEIGHT = 1.0    # video bitrate (Mbps) — tiebreaker within a resolution tier
-_AUDIO_WEIGHT = 0.5      # audio channels — minor
-_DATE_WEIGHT = 0.01      # added-date — only breaks exact ties (normalised tiny)
+# The scoring model itself lives in the shared ``scoring`` module and is used by BOTH
+# this dedupe path and the check path (quality_compare) — see scoring.py. This section
+# only extracts the normalised factors from an Emby item dict and delegates.
 
 
-def _bitrate_floor_mbps(height: int) -> float:
-    """Bitrate (Mbps) below which a file is 'starved' for its resolution — see
-    _calculate_quality_rating's Phase-2 demotion. Tunable defaults."""
-    if height >= 2000:   # 2160p / 4K
-        return 6.0
-    if height >= 1000:   # 1080p
-        return 2.5
-    if height >= 700:    # 720p
-        return 1.2
-    return 0.0           # SD: no floor
-
-
-def _resolution_megapixels(video_stream: Optional[Dict[str, Any]]) -> float:
+def _resolution_megapixels(video_stream: dict[str, Any] | None) -> float:
     if not video_stream:
         return 0.0
     return ((video_stream.get("Height", 0) or 0) * (video_stream.get("Width", 0) or 0)) / 1_000_000.0
 
 
-def _video_bitrate_mbps(item: Dict[str, Any], video_stream: Optional[Dict[str, Any]]) -> float:
+def _video_bitrate_mbps(item: dict[str, Any], video_stream: dict[str, Any] | None) -> float:
     """Video bitrate in Mbps — from the video stream (preferred) or the item total."""
     br = (video_stream or {}).get("BitRate") or item.get("Bitrate") or 0
     try:
@@ -466,27 +406,37 @@ def _video_bitrate_mbps(item: Dict[str, Any], video_stream: Optional[Dict[str, A
         return 0.0
 
 
-def _hdr_bonus(video_stream: Optional[Dict[str, Any]]) -> float:
-    """1.0 for any real HDR (HDR10/HDR10+/Dolby Vision/HLG), 0.0 for SDR/unknown.
-    The Dolby Vision Profile-5 penalty is applied separately."""
-    vr = str((video_stream or {}).get("VideoRange") or "").replace(" ", "").lower()
-    return 1.0 if vr and vr not in ("sdr", "unknown") else 0.0
-
-
-def _calculate_quality_rating(
-    item: Dict[str, Any],
-    video_stream: Optional[Dict],
-    audio_stream: Optional[Dict],
+def _hdr_bonus(
+    video_stream: dict[str, Any] | None,
+    item_name: str = "",
+    item_path: str | None = None,
 ) -> float:
-    """Calculate quality rating for a media item.
+    """1.0 for any real HDR (HDR10/HDR10+/Dolby Vision/HLG), 0.0 for SDR/unknown.
+    The Dolby Vision Profile-5 penalty is applied separately.
 
-    Args:
-        item: Media item dict.
-        video_stream: Video stream info.
-        audio_stream: Audio stream info.
+    Falls back to an explicit HDR marker in the filename/title when Emby exposes
+    no HDR metadata — some WEB-DL rips carry real HDR the server misses, and
+    without this an HDR copy ties with a genuinely SDR sibling and can lose the
+    tie-break (as happened to The Agency S02E07, 2026-07-22)."""
+    bonus = hdr_bonus_from_string((video_stream or {}).get("VideoRange"))
+    if not bonus and (
+        hdr_marker_in_text(os.path.basename(item_path or ""))
+        or hdr_marker_in_text(item_name)
+    ):
+        return 1.0
+    return bonus
 
-    Returns:
-        Quality rating score.
+
+def _rating_breakdown(
+    item: dict[str, Any],
+    video_stream: dict | None,
+    audio_stream: dict | None,
+) -> dict[str, Any]:
+    """Extract the normalised factors from an Emby item and score them ONCE.
+
+    Returns the full per-factor breakdown (``scoring.quality_score_breakdown``): the
+    ``total`` is the rating, and ``multipliers`` carries the source/AI values so callers
+    don't re-run ``detect_source_quality`` / ``detect_ai_upscale`` (they run once here).
     """
     # Parse date added to get timestamp for comparison
     date_rating = 0
@@ -497,58 +447,50 @@ def _calculate_quality_rating(
         except (ValueError, TypeError) as e:
             logger.warning(f"Error parsing DateCreated for rating: {e}")
 
-    # Normalised factors (see the weight constants above): resolution in megapixels,
-    # bitrate in Mbps, audio in channels, date as a tiny tiebreaker.
-    res_mp = _resolution_megapixels(video_stream)
-    bitrate_mbps = _video_bitrate_mbps(item, video_stream)
-    channels = (audio_stream.get("Channels", 0) or 0) if audio_stream else 0
-    hdr = _hdr_bonus(video_stream)
-
-    # Phase 2 — starved-bitrate demotion: if a file's bitrate is below the adequacy
-    # floor for its resolution, reduce its resolution credit proportionally so a badly
-    # under-bitrate high-res file can lose to a well-encoded lower-res one. At/above the
-    # floor, full resolution credit (efficient encodes like our cq18 HDR10 are NOT
-    # penalised — their bitrate is above the floor).
     height = (video_stream.get("Height", 0) or 0) if video_stream else 0
-    floor = _bitrate_floor_mbps(height)
-    res_credit = res_mp
-    if floor and 0 < bitrate_mbps < floor:
-        res_credit = res_mp * (bitrate_mbps / floor)
+    channels = (audio_stream.get("Channels", 0) or 0) if audio_stream else 0
 
-    # Weighted, normalised base rating (resolution dominates; HDR bonus; bitrate
-    # tiebreaker; date only resolves exact ties).
-    base_quality_rating = (
-        res_credit * _RES_WEIGHT
-        + hdr * _HDR_WEIGHT
-        + bitrate_mbps * _BITRATE_WEIGHT
-        + channels * _AUDIO_WEIGHT
-        + (date_rating / 1_000_000_000.0) * _DATE_WEIGHT
-    )
-
-    # Apply source quality and AI upscale multipliers
     item_path = item.get("Path")
     item_name = item.get("Name", "")
 
-    source_multiplier = detect_source_quality(item_path, item_name)
-    is_ai_upscale = detect_ai_upscale(item_path, item_name)
-    ai_upscale_multiplier = 0.7 if is_ai_upscale else 1.0
-
-    # Dolby Vision Profile 5 renders green/pink on non-DV playback paths; collapse
-    # its rating so a non-defective copy of the same item is always kept instead.
-    dovi_p5_multiplier = (
-        DOVI_P5_QUALITY_PENALTY if _is_dovi_profile5(video_stream) else 1.0
-    )
-
-    # Apply multipliers to get final quality rating
-    return (
-        base_quality_rating
-        * source_multiplier
-        * ai_upscale_multiplier
-        * dovi_p5_multiplier
+    return compute_quality_breakdown(
+        res_megapixels=_resolution_megapixels(video_stream),
+        height=height,
+        hdr_bonus=_hdr_bonus(video_stream, item_name, item_path),
+        video_bitrate_mbps=_video_bitrate_mbps(item, video_stream),
+        audio_channels=channels,
+        date_rating=date_rating,
+        codec=(video_stream.get("Codec") if video_stream else None),
+        source_multiplier=detect_source_quality(item_path, item_name),
+        ai_multiplier=0.7 if detect_ai_upscale(item_path, item_name) else 1.0,
+        is_dovi_p5=_is_dovi_profile5(video_stream),
+        size_bytes=item.get("Size", 0) or 0,
+        duration_minutes=duration_minutes_from_ticks(item.get("RunTimeTicks")),
     )
 
 
-def rate_media_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _calculate_quality_rating(
+    item: dict[str, Any],
+    video_stream: dict | None,
+    audio_stream: dict | None,
+) -> float:
+    """Calculate quality rating for a media item.
+
+    Extracts the normalised factors from the Emby item and delegates to the shared
+    ``scoring`` model (the single model shared with the check path).
+
+    Args:
+        item: Media item dict.
+        video_stream: Video stream info.
+        audio_stream: Audio stream info.
+
+    Returns:
+        Quality rating score.
+    """
+    return float(_rating_breakdown(item, video_stream, audio_stream)["total"])
+
+
+def rate_media_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """
     Assigns a quality rating to each media item based on its attributes.
 
@@ -574,22 +516,24 @@ def rate_media_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             (s for s in item["MediaStreams"] if s["Type"] == "Audio"), None
         )
 
-        # Calculate quality rating using helper
-        quality_rating = _calculate_quality_rating(item, video_stream, audio_stream)
-
-        # Detect source and AI upscale for quality description
-        item_path = item.get("Path")
-        item_name = item.get("Name", "")
-        source_multiplier = detect_source_quality(item_path, item_name)
-        is_ai_upscale = detect_ai_upscale(item_path, item_name)
+        # Score the item ONCE — the breakdown's total is the rating, and its
+        # multipliers give the source/AI values (no second detect_* pass).
+        breakdown = _rating_breakdown(item, video_stream, audio_stream)
+        quality_rating = float(breakdown["total"])
+        source_multiplier = breakdown["multipliers"]["source"]
+        is_ai_upscale = not is_neutral_multiplier(breakdown["multipliers"]["ai"])
+        score_summary = format_score_summary(breakdown)
 
         # Get detailed quality description
         quality_description = get_quality_description(item) if video_stream and audio_stream else {}
 
-        # Add source quality info to quality description
+        # Add source quality info + the one-line score summary (explainability). The
+        # summary rides on quality_description so the HTML report renders it without
+        # extra template-context plumbing.
         if quality_description:
             quality_description["source_quality_multiplier"] = source_multiplier
             quality_description["is_ai_upscale"] = is_ai_upscale
+            quality_description["score_summary"] = score_summary
 
         # For TV episodes, add the series/season/episode info to the name for better display
         item_name = item["Name"]
@@ -609,7 +553,15 @@ def rate_media_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 # Emby API uses ParentIndexNumber for season, IndexNumber for episode
                 "season_number": item.get("ParentIndexNumber", ""),
                 "episode_number": item.get("IndexNumber", ""),
+                # Emby runtime in ticks (10^7/s); the fold-safe delete pass uses it as a
+                # same-content check between keeper and delete candidate.
+                "runtime_ticks": item.get("RunTimeTicks"),
                 "rating": quality_rating,
+                # Per-factor breakdown + one-line summary behind ``rating``
+                # (explainability); always present even when quality_description is
+                # empty (missing video/audio streams).
+                "score_breakdown": breakdown,
+                "score_summary": score_summary,
                 "quality_description": quality_description
             }
         )

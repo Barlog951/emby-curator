@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import copy
 import re
-from typing import Optional
 
 import httpx
 
@@ -99,7 +98,7 @@ def _get_title_detector():
     return _TITLE_DETECTOR
 
 
-def detect_title_language(title: str) -> Optional[str]:
+def detect_title_language(title: str) -> str | None:
     """Return ISO 639-1 code for the title's detected language, or None.
 
     Uses lingua-py restricted to the languages relevant to this library.
@@ -120,7 +119,7 @@ def _fetch_tmdb_one_lang(
     url: str,
     lang: str,
     log_context: str,
-) -> Optional[dict]:
+) -> dict | None:
     """Fetch a single TMDB endpoint for one language.
 
     Returns:
@@ -148,8 +147,8 @@ _MEDIA_TYPE_KEY_BUILDERS = {
 
 
 def _cache_lookup(
-    cache: Optional[dict], cache_key: Optional[str], cache_ttl: int,
-) -> tuple[bool, Optional[dict]]:
+    cache: dict | None, cache_key: str | None, cache_ttl: int,
+) -> tuple[bool, dict | None]:
     """Return (hit, value) for a cache lookup; hit=False means caller fetches."""
     if cache is None or cache_key is None:
         return False, None
@@ -223,9 +222,9 @@ def fetch_tmdb_episode_localized(
     season: int,
     episode: int,
     langs: tuple[str, ...] = _DEFAULT_LOCALIZED_LANGS,
-    cache: Optional[dict] = None,
+    cache: dict | None = None,
     cache_ttl: int = DEFAULT_TTL_SECONDS,
-) -> Optional[dict]:
+) -> dict | None:
     """Fetch title+overview for a TV episode in each language.
 
     Episodes don't have taglines on TMDB; the returned dict still includes a
@@ -262,9 +261,9 @@ def fetch_tmdb_localized(
     tmdb_id: str,
     media_type: str,
     langs: tuple[str, ...] = _DEFAULT_LOCALIZED_LANGS,
-    cache: Optional[dict] = None,
+    cache: dict | None = None,
     cache_ttl: int = DEFAULT_TTL_SECONDS,
-) -> Optional[dict]:
+) -> dict | None:
     """Fetch title+overview for an item in each language.
 
     Args:
@@ -298,7 +297,7 @@ def fetch_tmdb_localized(
 
 def pick_overview_from_localized(
     localized: dict, lang_chain: tuple[str, ...] = LANG_CHAIN_DEFAULT
-) -> Optional[tuple[str, str]]:
+) -> tuple[str, str] | None:
     """Pick first non-empty overview from the chain. Returns (overview, lang) or None."""
     for lang in lang_chain:
         ov = (localized.get(lang) or {}).get("overview", "")
@@ -309,7 +308,7 @@ def pick_overview_from_localized(
 
 def pick_tagline_from_localized(
     localized: dict, lang_chain: tuple[str, ...] = LANG_CHAIN_DEFAULT
-) -> Optional[tuple[str, str]]:
+) -> tuple[str, str] | None:
     """Pick first non-empty tagline from the chain. Returns (tagline, lang) or None."""
     for lang in lang_chain:
         tg = (localized.get(lang) or {}).get("tagline", "")
@@ -318,7 +317,7 @@ def pick_tagline_from_localized(
     return None
 
 
-def pick_year_from_localized(localized: dict) -> Optional[int]:
+def pick_year_from_localized(localized: dict) -> int | None:
     """Return the production year from any language entry, or None.
 
     The year is language-independent (TMDB's release/air date is the same across
@@ -336,7 +335,7 @@ def pick_year_from_localized(localized: dict) -> Optional[int]:
 
 def pick_title_from_localized(
     current_title: str, localized: dict
-) -> Optional[tuple[str, str]]:
+) -> tuple[str, str] | None:
     """Apply the title policy using language detection (lingua-py).
 
     Keep the current title if its detected language is Czech, Slovak, or
@@ -371,7 +370,7 @@ def fetch_tmdb_overview(
     tmdb_id: str,
     media_type: str,
     lang_chain: tuple[str, ...] = LANG_CHAIN_DEFAULT,
-) -> Optional[tuple[str, str]]:
+) -> tuple[str, str] | None:
     """Return (overview, lang) trying lang_chain in order. Thin wrapper over
     fetch_tmdb_localized for callers that only want the overview.
     """
@@ -452,7 +451,7 @@ def pick_overview_with_fallback(
     localized: dict,
     current_overview: str,
     lang_chain: tuple[str, ...] = LANG_CHAIN_DEFAULT,
-) -> Optional[tuple[str, str]]:
+) -> tuple[str, str] | None:
     """Pick an overview using the chain, with EN fallback when current is empty.
 
     When the current Overview is empty, append "en-US" to the chain so we can
@@ -470,7 +469,7 @@ def pick_tagline_with_fallback(
     localized: dict,
     current_tagline: str,
     lang_chain: tuple[str, ...] = LANG_CHAIN_DEFAULT,
-) -> Optional[tuple[str, str]]:
+) -> tuple[str, str] | None:
     """Pick a tagline using the chain, with EN fallback when current is empty."""
     chain = lang_chain
     if not current_tagline.strip() and "en-US" not in chain:
@@ -479,8 +478,8 @@ def pick_tagline_with_fallback(
 
 
 def _field_needs_update(
-    new_value: Optional[str],
-    current_value: Optional[str],
+    new_value: str | None,
+    current_value: str | None,
     lock_name: str,
     current_locked: list,
 ) -> bool:
@@ -497,7 +496,7 @@ def _apply_field_update(
     field_key: str,
     new_value,
     lock_name: str,
-    locked: Optional[list],
+    locked: list | None,
 ) -> None:
     """Write the new value to payload and append the lock enum when applicable."""
     payload[field_key] = new_value
@@ -527,10 +526,10 @@ def update_item_metadata(
     base_url: str,
     item_id: str,
     full_item: dict,
-    new_overview: Optional[str] = None,
-    new_title: Optional[str] = None,
-    new_tagline: Optional[str] = None,
-    new_year: Optional[int] = None,
+    new_overview: str | None = None,
+    new_title: str | None = None,
+    new_tagline: str | None = None,
+    new_year: int | None = None,
     lock: bool = True,
 ) -> bool:
     """Update Overview, Name, Tagline, and/or ProductionYear for one Emby item.

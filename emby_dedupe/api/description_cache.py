@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Optional
 
 from emby_dedupe.utils.json_cache import load_json_cache, save_json_cache
 
@@ -59,7 +58,7 @@ def save_cache(cache: dict) -> None:
     save_json_cache(CACHE_PATH, cache, label="description cache")
 
 
-def is_fresh(entry: Optional[dict], ttl_seconds: int = DEFAULT_TTL_SECONDS) -> bool:
+def is_fresh(entry: dict | None, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> bool:
     """Return True when entry exists and was written within ``ttl_seconds``."""
     if not entry:
         return False
@@ -69,7 +68,7 @@ def is_fresh(entry: Optional[dict], ttl_seconds: int = DEFAULT_TTL_SECONDS) -> b
     return (time.time() - ts) < ttl_seconds
 
 
-def make_entry(localized: Optional[dict]) -> dict:
+def make_entry(localized: dict | None) -> dict:
     """Wrap a TMDB localized dict (or None) with a timestamp for storage.
 
     Storing ``None`` results as ``{"_ts": ..., "data": None}`` is important: it
@@ -79,7 +78,7 @@ def make_entry(localized: Optional[dict]) -> dict:
     return {"_ts": int(time.time()), "data": localized}
 
 
-def read_entry(entry: Optional[dict]) -> Optional[dict]:
+def read_entry(entry: dict | None) -> dict | None:
     """Unwrap a stored entry's ``data`` field.  Returns None if entry absent."""
     if not entry:
         return None

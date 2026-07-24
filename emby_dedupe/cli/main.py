@@ -4,28 +4,13 @@ Main command-line interface for the Emby Dedupe tool.
 
 import logging
 import sys
-from pathlib import Path
+from dataclasses import dataclass, field
 
-# Load environment variables from .env file if it exists
-try:
-    from dotenv import load_dotenv
-    env_path = Path(__file__).parent.parent.parent / '.env'
-    if env_path.exists():
-        load_dotenv(env_path)
-except ImportError:
-    # python-dotenv not available, environment variables must be set manually
-    pass
-
-import httpx
-
-import emby_dedupe.api.client as _client_mod
 from emby_dedupe.api.client import (
     check_emby_connection,
     fetch_all_media_paths,
     fetch_and_process_media_items,
     get_library_id,
-    handle_host_and_port,
-    logout,
 )
 from emby_dedupe.api.deduplication import (
     identify_duplicates,
@@ -35,25 +20,12 @@ from emby_dedupe.api.deduplication import (
 )
 from emby_dedupe.cli.arguments import (
     get_env_variable,
-    override_warning,
-    parse_args,
-    validate_required_arguments,
 )
-from emby_dedupe.cli.errors import cli_error_boundary
 from emby_dedupe.reports.html import generate_html_report
 from emby_dedupe.reports.markdown import output_report_to_stdout
 from emby_dedupe.utils.constants import (
-    ENV_DEDUPE_DOIT,
-    ENV_DEDUPE_EMBY_API_KEY,
-    ENV_DEDUPE_EMBY_HOST,
-    ENV_DEDUPE_EMBY_LIBRARY,
     ENV_DEDUPE_EMBY_PASSWORD,
-    ENV_DEDUPE_EMBY_PORT,
     ENV_DEDUPE_EMBY_USERNAME,
-    ENV_DEDUPE_EXCLUDE_IDS,
-    ENV_DEDUPE_HTML_ONLY,
-    ENV_DEDUPE_HTML_REPORT,
-    ENV_DEDUPE_LANG_PRIO,
     ENV_DEDUPE_LOGGING,
     LANGUAGE_NORMALIZATION_MAP,
 )
@@ -116,51 +88,6 @@ def _parse_excluded_ids(exclude_ids_str: str) -> list:
     return excluded_ids
 
 
-def _load_env_variables():
-    """
-    Load all environment variables.
-
-    Returns:
-        Dictionary of environment variable values.
-    """
-    return {
-        'verbosity': get_env_variable(ENV_DEDUPE_LOGGING),
-        'host': get_env_variable(ENV_DEDUPE_EMBY_HOST),
-        'port': get_env_variable(ENV_DEDUPE_EMBY_PORT),
-        'api_key': get_env_variable(ENV_DEDUPE_EMBY_API_KEY),
-        'library_str': get_env_variable(ENV_DEDUPE_EMBY_LIBRARY),
-        'doit': get_env_variable(ENV_DEDUPE_DOIT) in ("true", "True", "TRUE", "1"),
-        'html_report': get_env_variable(ENV_DEDUPE_HTML_REPORT) in ("true", "True", "TRUE", "1"),
-        'html_only': get_env_variable(ENV_DEDUPE_HTML_ONLY) in ("true", "True", "TRUE", "1"),
-        'lang_prio': get_env_variable(ENV_DEDUPE_LANG_PRIO),
-        'exclude_ids': get_env_variable(ENV_DEDUPE_EXCLUDE_IDS),
-    }
-
-
-def _apply_override_warnings(args, env_vars):
-    """
-    Apply override warnings for command-line arguments vs environment variables.
-
-    Args:
-        args: Parsed argument namespace.
-        env_vars: Dictionary of environment variable values.
-    """
-    set_logging_level(args.verbosity, env_vars['verbosity'])
-    override_warning("--verbosity", args.verbosity and str(logger.level), env_vars['verbosity'])
-    override_warning("--host", args.host, env_vars['host'])
-    override_warning("--port", args.port and str(args.port), env_vars['port'])
-    override_warning("--api-key", args.api_key, env_vars['api_key'])
-
-    env_library = [lib.strip() for lib in env_vars['library_str'].split(',')] if env_vars['library_str'] else None
-    override_warning(
-        "--library",
-        args.library and ','.join(args.library) if args.library else None,
-        env_library and ','.join(env_library) if env_library else None
-    )
-    override_warning("--lang-prio", args.lang_prio, env_vars['lang_prio'])
-    override_warning("--exclude-ids", args.exclude_ids, env_vars['exclude_ids'])
-
-
 def _resolve_auth_credentials(args, doit):
     """
     Resolve authentication credentials if doit is enabled.
@@ -179,50 +106,69 @@ def _resolve_auth_credentials(args, doit):
     return None, None
 
 
-def _resolve_configuration(args):
-    """
-    Resolve configuration from command-line arguments and environment variables.
+@dataclass(frozen=True)
+class ResolvedConfig:
+    """Fully-resolved dedupe run configuration (replaces the old positional 12-tuple)."""
+
+    host: str | None
+    port: int | None
+    api_key: str | None
+    library: list = field(default_factory=list)
+    doit: bool = False
+    lang_priorities: list = field(default_factory=list)
+    excluded_ids: list = field(default_factory=list)
+    username: str | None = None
+    password: str | None = None
+    html_report: bool = False
+    html_only: bool = False
+    no_open: bool = False
+
+
+def _resolve_configuration(args) -> ResolvedConfig:
+    """Finish resolving a dedupe run's configuration from parsed arguments.
+
+    Environment variables are resolved by typer's ``envvar=`` declarations BEFORE this
+    runs (single resolution layer — the old duplicate env re-read produced false
+    "CLI overrides env" warnings). This only performs the steps typer cannot:
+    DEDUPE_LOGGING log-level setup, language/exclude-id parsing, auth gating on
+    ``doit``, and the html_report |= html_only derivation.
 
     Args:
-        args: Parsed argument namespace.
+        args: Parsed argument namespace (values already CLI>env resolved).
 
     Returns:
-        Tuple of (host, port, api_key, library, doit, lang_priorities, excluded_ids, username, password,
-                  html_report, html_only, no_open).
+        ResolvedConfig: immutable resolved configuration.
     """
-    env_vars = _load_env_variables()
-    _apply_override_warnings(args, env_vars)
+    set_logging_level(args.verbosity, get_env_variable(ENV_DEDUPE_LOGGING))
 
-    logger.debug("Collecting final values for required settings")
+    lang_priorities = _parse_language_priorities(args.lang_prio)
+    excluded_ids = _parse_excluded_ids(args.exclude_ids)
+    username, password = _resolve_auth_credentials(args, args.doit)
 
-    # Parse library list from environment
-    env_library = [lib.strip() for lib in env_vars['library_str'].split(',')] if env_vars['library_str'] else None
+    return ResolvedConfig(
+        host=args.host,
+        port=args.port or None,
+        api_key=args.api_key,
+        library=args.library or [],
+        doit=args.doit,
+        lang_priorities=lang_priorities,
+        excluded_ids=excluded_ids,
+        username=username,
+        password=password,
+        html_report=args.html_report or args.html_only,
+        html_only=args.html_only,
+        no_open=getattr(args, "no_open", False),
+    )
 
-    # Resolve core configuration
-    host = args.host or env_vars['host']
-    port = args.port or env_vars['port'] or None
-    api_key = args.api_key or env_vars['api_key']
-    library = args.library or env_library or []
-    doit = args.doit or env_vars['doit']
 
-    # Handle language priorities
-    lang_prio_str = args.lang_prio or env_vars['lang_prio']
-    lang_priorities = _parse_language_priorities(lang_prio_str)
-
-    # Handle excluded IDs
-    exclude_ids_str = args.exclude_ids or env_vars['exclude_ids']
-    excluded_ids = _parse_excluded_ids(exclude_ids_str)
-
-    # Resolve authentication credentials
-    username, password = _resolve_auth_credentials(args, doit)
-
-    # Resolve HTML report settings
-    html_report = args.html_report or env_vars['html_report'] or args.html_only or env_vars['html_only']
-    html_only = args.html_only or env_vars['html_only']
-    no_open = getattr(args, 'no_open', False)
-
-    return (host, port, api_key, library, doit, lang_priorities, excluded_ids,
-            username, password, html_report, html_only, no_open)
+def _build_report_metadata(excluded_ids, lang_priorities, exclusion_metadata) -> dict:
+    """Build the report metadata dict (single construction for pipeline + reports)."""
+    return {
+        "excluded_ids": excluded_ids if excluded_ids else [],
+        "language_priorities": lang_priorities if lang_priorities else [],
+        "excluded_groups_count": exclusion_metadata.get("excluded_groups_count", 0),
+        "excluded_titles": exclusion_metadata.get("excluded_titles", {}),
+    }
 
 
 def _connect_and_fetch_libraries(client, base_url, library):
@@ -314,12 +260,7 @@ def _run_deduplication_pipeline(client, base_url, all_provider_tables, excluded_
     logger.debug(f"Processing {len(decisions)} decisions for markdown report generation")
 
     # Create metadata dictionary for report generation
-    report_metadata = {
-        "excluded_ids": excluded_ids if excluded_ids else [],
-        "language_priorities": lang_priorities if lang_priorities else [],
-        "excluded_groups_count": exclusion_metadata.get("excluded_groups_count", 0),
-        "excluded_titles": exclusion_metadata.get("excluded_titles", {})
-    }
+    report_metadata = _build_report_metadata(excluded_ids, lang_priorities, exclusion_metadata)
 
     # Give the deletion safety guard full folder visibility by fetching every library
     # media path (not just the duplicated ones), so it stops over-refusing safe deletes
@@ -365,12 +306,7 @@ def _generate_reports(base_url, decisions, exclusion_metadata, excluded_ids,
         no_open: Whether to skip opening browser.
     """
     # Create metadata dictionary for report generation
-    report_metadata = {
-        "excluded_ids": excluded_ids if excluded_ids else [],
-        "language_priorities": lang_priorities if lang_priorities else [],
-        "excluded_groups_count": exclusion_metadata.get("excluded_groups_count", 0),
-        "excluded_titles": exclusion_metadata.get("excluded_titles", {})
-    }
+    report_metadata = _build_report_metadata(excluded_ids, lang_priorities, exclusion_metadata)
 
     if html_report:
         try:
@@ -397,59 +333,3 @@ def _generate_reports(base_url, decisions, exclusion_metadata, excluded_ids,
 
     if not html_only:
         output_report_to_stdout(markdown_report)
-
-
-def main() -> None:
-    """
-    Main entry point for the Emby Dedupe tool.
-    """
-    args = parse_args()
-
-    # Route to check command if specified
-    if hasattr(args, 'command') and args.command == 'check':
-        from emby_dedupe.cli.check import run_check
-        exit_code = run_check(args)
-        sys.exit(exit_code)
-
-    # Route to genres command if specified
-    if hasattr(args, 'command') and args.command == 'genres':
-        from emby_dedupe.cli.genres import run_genres_command
-        run_genres_command(args)
-        sys.exit(0)
-
-    # Resolve configuration from args and environment
-    (host, port, api_key, library, doit, lang_priorities, excluded_ids,
-     username, password, html_report, html_only, no_open) = _resolve_configuration(args)
-
-    # Validate required arguments
-    validate_required_arguments(host, api_key, library, doit, username, password)
-
-    # Validate and handle host and port information
-    validated_host, validated_port = handle_host_and_port(host, port)
-
-    logger.debug(
-        f"Using the following configurations: "
-        f"Host: {validated_host}, Port: {validated_port}, API Key: {api_key}, "
-        f"Libraries: {', '.join(library)}, DoIt: {doit}"
-    )
-
-    base_url = f"{validated_host}:{validated_port}"
-    client = httpx.Client(headers={"X-Emby-Token": api_key})
-
-    try:
-        with cli_error_boundary():
-            # Connect and fetch provider tables from all libraries
-            all_provider_tables = _connect_and_fetch_libraries(client, base_url, library)
-
-            # Run deduplication pipeline
-            decisions, exclusion_metadata, markdown_report = _run_deduplication_pipeline(
-                client, base_url, all_provider_tables, excluded_ids, lang_priorities,
-                api_key, doit, username, password
-            )
-
-            # Generate reports
-            _generate_reports(base_url, decisions, exclusion_metadata, excluded_ids,
-                             lang_priorities, markdown_report, html_report, html_only, no_open)
-    finally:
-        if _client_mod.auth_state.token_for_delete and doit:
-            logout(client, base_url, _client_mod.auth_state.token_for_delete)

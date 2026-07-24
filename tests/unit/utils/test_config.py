@@ -1,6 +1,5 @@
 """Tests for the config module."""
 
-import os
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -8,11 +7,8 @@ from unittest.mock import patch
 from emby_dedupe.utils.config import (
     Config,
     ensure_cache_dir,
-    ensure_config_dir,
     get_config_path,
-    get_config_value,
     load_config,
-    save_config,
 )
 
 
@@ -25,13 +21,6 @@ class TestConfigPaths:
         assert isinstance(path, Path)
         assert path.name == "config.yaml"
 
-    def test_ensure_config_dir_creates_directory(self):
-        """Test that ensure_config_dir creates the directory."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with patch('emby_dedupe.utils.config.CONFIG_DIR', Path(tmpdir) / "test_config"):
-                path = ensure_config_dir()
-                assert path.exists()
-                assert path.is_dir()
 
     def test_ensure_cache_dir_creates_directory(self):
         """Test that ensure_cache_dir creates the directory."""
@@ -51,47 +40,6 @@ class TestLoadSaveConfig:
             with patch('emby_dedupe.utils.config.CONFIG_FILE', Path(tmpdir) / "nonexistent.yaml"):
                 config = load_config()
                 assert config == {}
-
-    def test_load_config_returns_empty_when_yaml_unavailable(self):
-        """Test that load_config returns empty dict when YAML is not available."""
-        with patch('emby_dedupe.utils.config.YAML_AVAILABLE', False):
-            config = load_config()
-            assert config == {}
-
-    def test_save_config_returns_false_when_yaml_unavailable(self):
-        """Test that save_config returns False when YAML is not available."""
-        with patch('emby_dedupe.utils.config.YAML_AVAILABLE', False):
-            result = save_config({"test": "value"})
-            assert result is False
-
-
-class TestGetConfigValue:
-    """Tests for get_config_value function."""
-
-    def test_get_config_value_returns_default(self):
-        """Test that get_config_value returns default when not found."""
-        with patch('emby_dedupe.utils.config.load_config', return_value={}):
-            value = get_config_value("nonexistent", default="default_value")
-            assert value == "default_value"
-
-    def test_get_config_value_from_provided_config(self):
-        """Test that get_config_value uses provided config dict."""
-        value = get_config_value("test_key", config={"test_key": "test_value"})
-        assert value == "test_value"
-
-    def test_get_config_value_from_env(self):
-        """Test that get_config_value reads from environment variable."""
-        with patch.dict(os.environ, {"DEDUPE_TEST_KEY": "env_value"}):
-            with patch('emby_dedupe.utils.config.load_config', return_value={}):
-                value = get_config_value("test_key")
-                assert value == "env_value"
-
-    def test_get_config_value_env_list_parsing(self):
-        """Test that get_config_value parses comma-separated lists from env."""
-        with patch.dict(os.environ, {"DEDUPE_LIBRARIES": "Movies,TV Shows,Music"}):
-            with patch('emby_dedupe.utils.config.load_config', return_value={}):
-                value = get_config_value("libraries")
-                assert value == ["Movies", "TV Shows", "Music"]
 
 
 class TestConfigClass:

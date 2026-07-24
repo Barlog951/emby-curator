@@ -6,7 +6,6 @@ Used by `genres fix` to fill missing genres and cross-validate existing ones.
 import threading
 import time
 from pathlib import Path
-from typing import Optional
 
 import httpx
 
@@ -63,7 +62,7 @@ def fetch_tmdb_genres(
     limiter: RateLimiter,
     tmdb_id: str,
     media_type: str = "movie",
-    cache: Optional[dict] = None,
+    cache: dict | None = None,
 ) -> list[str]:
     """Fetch and normalize genres for a TMDB item.
 
@@ -114,7 +113,7 @@ def fetch_omdb_genres(
     limiter: RateLimiter,
     imdb_id: str,
     api_keys: list[str],
-    cache: Optional[dict] = None,
+    cache: dict | None = None,
 ) -> list[str]:
     """Fetch and normalize genres for an item from OMDb, trying each API key in order.
 
@@ -173,10 +172,10 @@ def fetch_omdb_genres(
 
 def fetch_genres_for_item(
     item: dict,
-    tmdb_client: Optional[httpx.Client],
-    tmdb_limiter: Optional[RateLimiter],
-    omdb_client: Optional[httpx.Client],
-    omdb_limiter: Optional[RateLimiter],
+    tmdb_client: httpx.Client | None,
+    tmdb_limiter: RateLimiter | None,
+    omdb_client: httpx.Client | None,
+    omdb_limiter: RateLimiter | None,
     omdb_keys: list[str],
     cache: dict,
 ) -> list[str]:

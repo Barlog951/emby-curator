@@ -10,7 +10,6 @@ pipeline (emby_dedupe.api.cleanup_pipeline), report formatting
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -69,16 +68,16 @@ class CleanupCandidate:
 
     item_id: str
     name: str
-    year: Optional[int]
-    rating: Optional[float]
-    critic_rating: Optional[float]
+    year: int | None
+    rating: float | None
+    critic_rating: float | None
     threshold: float
     age_years: float
     library: str
     size_bytes: int
     path: str
-    deletion_result: Optional[dict] = None
-    days_left: Optional[int] = None
+    deletion_result: dict | None = None
+    days_left: int | None = None
 
 
 @dataclass
@@ -105,15 +104,15 @@ class SeriesCleanupCandidate:
 
     item_id: str
     name: str
-    year: Optional[int]
-    rating: Optional[float]
-    critic_rating: Optional[float]
+    year: int | None
+    rating: float | None
+    critic_rating: float | None
     threshold: float
     stale_years: float
-    last_episode_added: Optional[str]
+    last_episode_added: str | None
     episode_count: int
     library: str
     size_bytes: int
     path: str
-    deletion_result: Optional[dict] = None
-    days_left: Optional[int] = None
+    deletion_result: dict | None = None
+    days_left: int | None = None

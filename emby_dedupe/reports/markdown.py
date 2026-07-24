@@ -3,8 +3,7 @@ Markdown report generation for the Emby Dedupe tool.
 """
 
 import io
-import sys
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from tqdm import tqdm
 
@@ -27,7 +26,7 @@ def get_emoji_for_status(status: str) -> str:
     return EMOJI_CHECK if status == "success" else EMOJI_CROSS
 
 
-def format_individual_item(item: Dict[str, Any], base_url: str, decision: Dict[str, Any]) -> str:
+def format_individual_item(item: dict[str, Any], base_url: str, decision: dict[str, Any]) -> str:
     """
     Formats an individual item to be marked for deletion with an emoji and as a markdown link.
 
@@ -52,7 +51,7 @@ def format_individual_item(item: Dict[str, Any], base_url: str, decision: Dict[s
     return f"{name_match_emoji} {item_link} {truncate_string(item['name'],10)}{status_emoji} {error_message_string}"
 
 
-def _format_provider_exclusions(buffer: io.StringIO, excluded_ids: List[str], stats: Dict[str, Any]) -> None:
+def _format_provider_exclusions(buffer: io.StringIO, excluded_ids: list[str], stats: dict[str, Any]) -> None:
     """Format provider ID exclusion information.
 
     Args:
@@ -79,7 +78,7 @@ def _format_provider_exclusions(buffer: io.StringIO, excluded_ids: List[str], st
                 buffer.write(f"  - {item} ({provider_id})\n")
 
 
-def _format_term_exclusions(buffer: io.StringIO, stats: Dict[str, Any]) -> None:
+def _format_term_exclusions(buffer: io.StringIO, stats: dict[str, Any]) -> None:
     """Format exclusion term information.
 
     Args:
@@ -96,7 +95,7 @@ def _format_term_exclusions(buffer: io.StringIO, stats: Dict[str, Any]) -> None:
         buffer.write(f"- **Exclusion terms used**: {', '.join(sorted(stats.get('excluded_terms', [])))}\n")
 
 
-def format_statistics_section(stats: Dict[str, Any], excluded_ids: Optional[List[str]] = None) -> str:
+def format_statistics_section(stats: dict[str, Any], excluded_ids: list[str] | None = None) -> str:
     """
     Format statistics into a markdown string.
 
@@ -142,7 +141,7 @@ def format_statistics_section(stats: Dict[str, Any], excluded_ids: Optional[List
         return buffer.getvalue()
 
 
-def _extract_metadata_info(metadata: Optional[Dict[str, Any]], stats: Dict[str, Any]) -> tuple:
+def _extract_metadata_info(metadata: dict[str, Any] | None, stats: dict[str, Any]) -> tuple:
     """Extract metadata information and update stats."""
     excluded_ids = None
     excluded_titles = {}
@@ -160,7 +159,7 @@ def _extract_metadata_info(metadata: Optional[Dict[str, Any]], stats: Dict[str, 
     return excluded_ids, excluded_titles, excluded_groups_count
 
 
-def _validate_decision(decision: Dict[str, Any]) -> bool:
+def _validate_decision(decision: dict[str, Any]) -> bool:
     """Validate that a decision has required fields."""
     if not decision.get("keep"):
         logger.debug("Skipping decision with no 'keep' item")
@@ -174,7 +173,7 @@ def _validate_decision(decision: Dict[str, Any]) -> bool:
     return True
 
 
-def _format_title_for_episode(keep: Dict[str, Any]) -> str:
+def _format_title_for_episode(keep: dict[str, Any]) -> str:
     """Format title for TV episode with series info."""
     title = truncate_string(keep["name"], 15)
     if keep.get("is_episode") and keep.get("series_name"):
@@ -190,7 +189,7 @@ def _format_title_for_episode(keep: Dict[str, Any]) -> str:
     return title
 
 
-def _build_table_row(decision: Dict[str, Any], base_url: str) -> Dict[str, str]:
+def _build_table_row(decision: dict[str, Any], base_url: str) -> dict[str, str]:
     """Build a single table row from a decision."""
     keep = decision["keep"]
     title = _format_title_for_episode(keep)
@@ -207,7 +206,7 @@ def _build_table_row(decision: Dict[str, Any], base_url: str) -> Dict[str, str]:
     }
 
 
-def format_markdown_table(base_url: str, decisions: List[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None) -> str:
+def format_markdown_table(base_url: str, decisions: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> str:
     """
     Efficiently formats the decisions into a markdown table.
 
@@ -274,27 +273,17 @@ def format_markdown_table(base_url: str, decisions: List[Dict[str, Any]], metada
             total=len(table_rows), desc="Formatting markdown table", unit="row"
         )
 
-        # Must use a try to catch excessive memory usage
-        try:
-            # Write all rows and update the progress bar for each row.
-            for row in table_rows:
-                buffer.write(
-                    "| "
-                    + " | ".join(
-                        f"{str(row[header]):<{max_widths[header]}}"
-                        for header in headers
-                    )
-                    + " |\n"
+        # Write all rows and update the progress bar for each row.
+        for row in table_rows:
+            buffer.write(
+                "| "
+                + " | ".join(
+                    f"{str(row[header]):<{max_widths[header]}}"
+                    for header in headers
                 )
-                progress_bar.update(1)
-                current_memory_usage = sys.getsizeof(buffer.getvalue())
-        except MemoryError:
-            logger.error(
-                f"Memory usage exceeded limit while formatting markdown table. "
-                f"Current usage: {current_memory_usage}"
+                + " |\n"
             )
-            progress_bar.close()
-            return ""
+            progress_bar.update(1)
 
         progress_bar.close()
 

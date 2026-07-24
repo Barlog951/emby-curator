@@ -15,7 +15,6 @@ import shutil
 import tempfile
 import time
 import webbrowser
-from typing import Optional
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -53,8 +52,8 @@ def _print_movie_stats(protection_stats: dict, config: CleanupConfig) -> None:
 
 
 def _format_rating_str(
-    community_rating: Optional[float],
-    critic_rating: Optional[float],
+    community_rating: float | None,
+    critic_rating: float | None,
 ) -> str:
     """Format a combined rating string for console display.
 
@@ -76,6 +75,22 @@ def _format_rating_str(
     return "none"
 
 
+def _print_table(rows: list, columns: list) -> None:
+    """Print a fixed-width console table.
+
+    Args:
+        rows: Row objects to render (one line each, numbered from 1).
+        columns: List of ``(header, width, value_fn)`` tuples. ``value_fn(row, index)``
+            returns the already-formatted cell text; the table left-justifies it to
+            ``width`` (callers truncate long text cells themselves).
+    """
+    header = " ".join(f"{name:<{width}}" for name, width, _ in columns)
+    print(header)
+    print("-" * len(header))
+    for i, row in enumerate(rows, 1):
+        print(" ".join(f"{value_fn(row, i):<{width}}" for _, width, value_fn in columns))
+
+
 def _print_movie_table(candidates: list[CleanupCandidate]) -> None:
     """Print the movie candidates table to stdout.
 
@@ -84,34 +99,16 @@ def _print_movie_table(candidates: list[CleanupCandidate]) -> None:
     """
     total_size = sum(c.size_bytes for c in candidates)
     print(f"\nTotal movie space to free: {format_size(total_size)}\n")
-
-    col_widths = (4, 40, 6, 8, 10, 6, 20, 10)
-    header = (
-        f"{'#':<{col_widths[0]}} "
-        f"{'Name':<{col_widths[1]}} "
-        f"{'Year':<{col_widths[2]}} "
-        f"{'Rating':<{col_widths[3]}} "
-        f"{'Required':<{col_widths[4]}} "
-        f"{'Age':<{col_widths[5]}} "
-        f"{'Library':<{col_widths[6]}} "
-        f"{'Size':<{col_widths[7]}}"
-    )
-    print(header)
-    print("-" * len(header))
-
-    for i, c in enumerate(candidates, 1):
-        rating_str = _format_rating_str(c.rating, c.critic_rating)
-        name_trunc = c.name[:col_widths[1]] if len(c.name) > col_widths[1] else c.name
-        print(
-            f"{i:<{col_widths[0]}} "
-            f"{name_trunc:<{col_widths[1]}} "
-            f"{str(c.year or ''):<{col_widths[2]}} "
-            f"{rating_str:<{col_widths[3]}} "
-            f"{c.threshold:<{col_widths[4]}.1f} "
-            f"{c.age_years:<{col_widths[5]}.1f} "
-            f"{c.library[:col_widths[6]]:<{col_widths[6]}} "
-            f"{format_size(c.size_bytes):<{col_widths[7]}}"
-        )
+    _print_table(candidates, [
+        ("#", 4, lambda c, i: str(i)),
+        ("Name", 40, lambda c, i: c.name[:40]),
+        ("Year", 6, lambda c, i: str(c.year or "")),
+        ("Rating", 8, lambda c, i: _format_rating_str(c.rating, c.critic_rating)),
+        ("Required", 10, lambda c, i: f"{c.threshold:.1f}"),
+        ("Age", 6, lambda c, i: f"{c.age_years:.1f}"),
+        ("Library", 20, lambda c, i: c.library[:20]),
+        ("Size", 10, lambda c, i: format_size(c.size_bytes)),
+    ])
 
 
 def _print_series_table(series_candidates: list[SeriesCleanupCandidate]) -> None:
@@ -122,39 +119,20 @@ def _print_series_table(series_candidates: list[SeriesCleanupCandidate]) -> None
     """
     total_size = sum(c.size_bytes for c in series_candidates)
     print(f"Total: {format_size(total_size)}\n")
-
-    col_widths = (4, 40, 6, 8, 10, 8, 6, 20, 10)
-    header = (
-        f"{'#':<{col_widths[0]}} "
-        f"{'Name':<{col_widths[1]}} "
-        f"{'Year':<{col_widths[2]}} "
-        f"{'Rating':<{col_widths[3]}} "
-        f"{'Required':<{col_widths[4]}} "
-        f"{'Stale':<{col_widths[5]}} "
-        f"{'Eps':<{col_widths[6]}} "
-        f"{'Library':<{col_widths[7]}} "
-        f"{'Size':<{col_widths[8]}}"
-    )
-    print(header)
-    print("-" * len(header))
-
-    for i, c in enumerate(series_candidates, 1):
-        rating_str = _format_rating_str(c.rating, c.critic_rating)
-        name_trunc = c.name[:col_widths[1]] if len(c.name) > col_widths[1] else c.name
-        print(
-            f"{i:<{col_widths[0]}} "
-            f"{name_trunc:<{col_widths[1]}} "
-            f"{str(c.year or ''):<{col_widths[2]}} "
-            f"{rating_str:<{col_widths[3]}} "
-            f"{c.threshold:<{col_widths[4]}.1f} "
-            f"{c.stale_years:<{col_widths[5]}.1f} "
-            f"{c.episode_count:<{col_widths[6]}} "
-            f"{c.library[:col_widths[7]]:<{col_widths[7]}} "
-            f"{format_size(c.size_bytes):<{col_widths[8]}}"
-        )
+    _print_table(series_candidates, [
+        ("#", 4, lambda c, i: str(i)),
+        ("Name", 40, lambda c, i: c.name[:40]),
+        ("Year", 6, lambda c, i: str(c.year or "")),
+        ("Rating", 8, lambda c, i: _format_rating_str(c.rating, c.critic_rating)),
+        ("Required", 10, lambda c, i: f"{c.threshold:.1f}"),
+        ("Stale", 8, lambda c, i: f"{c.stale_years:.1f}"),
+        ("Eps", 6, lambda c, i: str(c.episode_count)),
+        ("Library", 20, lambda c, i: c.library[:20]),
+        ("Size", 10, lambda c, i: format_size(c.size_bytes)),
+    ])
 
 
-def _format_days_left(days: Optional[int]) -> str:
+def _format_days_left(days: int | None) -> str:
     """Format days_left as a human-readable string."""
     if days is None:
         return "never"
@@ -169,70 +147,33 @@ def _format_days_left(days: Optional[int]) -> str:
 
 def _print_near_miss_movie_table(near_miss: list[CleanupCandidate]) -> None:
     """Print near-miss movie table with days_left column."""
-    col_widths = (4, 40, 6, 8, 10, 10, 6, 20, 10)
-    header = (
-        f"{'#':<{col_widths[0]}} "
-        f"{'Name':<{col_widths[1]}} "
-        f"{'Year':<{col_widths[2]}} "
-        f"{'Rating':<{col_widths[3]}} "
-        f"{'Required':<{col_widths[4]}} "
-        f"{'Days Left':<{col_widths[5]}} "
-        f"{'Age':<{col_widths[6]}} "
-        f"{'Library':<{col_widths[7]}} "
-        f"{'Size':<{col_widths[8]}}"
-    )
-    print(header)
-    print("-" * len(header))
-
-    for i, c in enumerate(near_miss, 1):
-        rating_str = _format_rating_str(c.rating, c.critic_rating)
-        name_trunc = c.name[:col_widths[1]] if len(c.name) > col_widths[1] else c.name
-        print(
-            f"{i:<{col_widths[0]}} "
-            f"{name_trunc:<{col_widths[1]}} "
-            f"{str(c.year or ''):<{col_widths[2]}} "
-            f"{rating_str:<{col_widths[3]}} "
-            f"{c.threshold:<{col_widths[4]}.1f} "
-            f"{_format_days_left(c.days_left):<{col_widths[5]}} "
-            f"{c.age_years:<{col_widths[6]}.1f} "
-            f"{c.library[:col_widths[7]]:<{col_widths[7]}} "
-            f"{format_size(c.size_bytes):<{col_widths[8]}}"
-        )
+    _print_table(near_miss, [
+        ("#", 4, lambda c, i: str(i)),
+        ("Name", 40, lambda c, i: c.name[:40]),
+        ("Year", 6, lambda c, i: str(c.year or "")),
+        ("Rating", 8, lambda c, i: _format_rating_str(c.rating, c.critic_rating)),
+        ("Required", 10, lambda c, i: f"{c.threshold:.1f}"),
+        ("Days Left", 10, lambda c, i: _format_days_left(c.days_left)),
+        ("Age", 6, lambda c, i: f"{c.age_years:.1f}"),
+        ("Library", 20, lambda c, i: c.library[:20]),
+        ("Size", 10, lambda c, i: format_size(c.size_bytes)),
+    ])
 
 
 def _print_near_miss_series_table(near_miss: list[SeriesCleanupCandidate]) -> None:
     """Print near-miss series table with days_left column."""
-    col_widths = (4, 40, 6, 8, 10, 10, 8, 6, 20, 10)
-    header = (
-        f"{'#':<{col_widths[0]}} "
-        f"{'Name':<{col_widths[1]}} "
-        f"{'Year':<{col_widths[2]}} "
-        f"{'Rating':<{col_widths[3]}} "
-        f"{'Required':<{col_widths[4]}} "
-        f"{'Days Left':<{col_widths[5]}} "
-        f"{'Stale':<{col_widths[6]}} "
-        f"{'Eps':<{col_widths[7]}} "
-        f"{'Library':<{col_widths[8]}} "
-        f"{'Size':<{col_widths[9]}}"
-    )
-    print(header)
-    print("-" * len(header))
-
-    for i, c in enumerate(near_miss, 1):
-        rating_str = _format_rating_str(c.rating, c.critic_rating)
-        name_trunc = c.name[:col_widths[1]] if len(c.name) > col_widths[1] else c.name
-        print(
-            f"{i:<{col_widths[0]}} "
-            f"{name_trunc:<{col_widths[1]}} "
-            f"{str(c.year or ''):<{col_widths[2]}} "
-            f"{rating_str:<{col_widths[3]}} "
-            f"{c.threshold:<{col_widths[4]}.1f} "
-            f"{_format_days_left(c.days_left):<{col_widths[5]}} "
-            f"{c.stale_years:<{col_widths[6]}.1f} "
-            f"{c.episode_count:<{col_widths[7]}} "
-            f"{c.library[:col_widths[8]]:<{col_widths[8]}} "
-            f"{format_size(c.size_bytes):<{col_widths[9]}}"
-        )
+    _print_table(near_miss, [
+        ("#", 4, lambda c, i: str(i)),
+        ("Name", 40, lambda c, i: c.name[:40]),
+        ("Year", 6, lambda c, i: str(c.year or "")),
+        ("Rating", 8, lambda c, i: _format_rating_str(c.rating, c.critic_rating)),
+        ("Required", 10, lambda c, i: f"{c.threshold:.1f}"),
+        ("Days Left", 10, lambda c, i: _format_days_left(c.days_left)),
+        ("Stale", 8, lambda c, i: f"{c.stale_years:.1f}"),
+        ("Eps", 6, lambda c, i: str(c.episode_count)),
+        ("Library", 20, lambda c, i: c.library[:20]),
+        ("Size", 10, lambda c, i: format_size(c.size_bytes)),
+    ])
 
 
 def _print_series_report(
@@ -268,10 +209,10 @@ def _format_cleanup_report_console(
     candidates: list[CleanupCandidate],
     protection_stats: dict,
     config: CleanupConfig,
-    series_candidates: Optional[list[SeriesCleanupCandidate]] = None,
-    series_stats: Optional[dict] = None,
-    movie_near_miss: Optional[list[CleanupCandidate]] = None,
-    series_near_miss: Optional[list[SeriesCleanupCandidate]] = None,
+    series_candidates: list[SeriesCleanupCandidate] | None = None,
+    series_stats: dict | None = None,
+    movie_near_miss: list[CleanupCandidate] | None = None,
+    series_near_miss: list[SeriesCleanupCandidate] | None = None,
 ) -> None:
     """Print a formatted cleanup report to stdout.
 
@@ -312,8 +253,8 @@ def _format_cleanup_report_json(
     candidates: list[CleanupCandidate],
     protection_stats: dict,
     config: CleanupConfig,
-    series_candidates: Optional[list[SeriesCleanupCandidate]] = None,
-    series_stats: Optional[dict] = None,
+    series_candidates: list[SeriesCleanupCandidate] | None = None,
+    series_stats: dict | None = None,
 ) -> dict:
     """Build a JSON-serializable dict representing the full cleanup report.
 
@@ -455,10 +396,10 @@ def _generate_cleanup_html_report(
     doit: bool,
     server_id: str = "",
     api_key: str = "",
-    series_candidates: Optional[list[SeriesCleanupCandidate]] = None,
-    series_stats: Optional[dict] = None,
-    movie_near_miss: Optional[list[CleanupCandidate]] = None,
-    series_near_miss: Optional[list[SeriesCleanupCandidate]] = None,
+    series_candidates: list[SeriesCleanupCandidate] | None = None,
+    series_stats: dict | None = None,
+    movie_near_miss: list[CleanupCandidate] | None = None,
+    series_near_miss: list[SeriesCleanupCandidate] | None = None,
 ) -> str:
     """Render the cleanup report as an HTML string using Jinja2.
 

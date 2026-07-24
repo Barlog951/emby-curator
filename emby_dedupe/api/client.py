@@ -5,12 +5,12 @@ Emby API client for interacting with the Emby server.
 import hashlib
 import logging
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 import httpx
 from httpx import URL
 from tqdm import tqdm
 
+from emby_dedupe.api.pagination import paginate_emby_items
 from emby_dedupe.utils.constants import (
     DEFAULT_PORT_EMBY,
     DEFAULT_PORT_HTTP,
@@ -21,12 +21,13 @@ from emby_dedupe.utils.constants import (
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.logging import logger
+from emby_dedupe.utils.providers import PROVIDER_PRIORITY, normalize_provider_ids
 
 
 @dataclass
 class AuthState:
-    token_for_delete: Optional[str] = None
-    user_id: Optional[str] = None
+    token_for_delete: str | None = None
+    user_id: str | None = None
 
 
 auth_state = AuthState()
@@ -34,7 +35,7 @@ auth_state = AuthState()
 
 def get_auth_token(
     client: httpx.Client, base_url: str, username: str, password: str
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     """
     Retrieves the authentication token for a given username and password pair.
 
@@ -114,7 +115,7 @@ def logout(client: httpx.Client, base_url: str, auth_token: str) -> None:
         logger.error(f"An unexpected error occurred during logout: {str(ex)}")
 
 
-def create_http_client(base_url: str, username: str, password: str) -> Tuple[httpx.Client, str, str]:
+def create_http_client(base_url: str, username: str, password: str) -> tuple[httpx.Client, str, str]:
     """
     Create an httpx.Client instance and authenticate with the Emby server to receive
     an access token for subsequent API calls.
@@ -173,7 +174,7 @@ def check_emby_connection(client: httpx.Client, url: str) -> bool:
 
 def get_library_id(
     client: httpx.Client, base_url: str, library_name: str
-) -> Optional[str]:
+) -> str | None:
     """
     Retrieves the ID of the specified library by name using a provided HTTP session.
 
@@ -207,7 +208,7 @@ def get_library_id(
     return None  # Return None if any exception occurred
 
 
-def handle_host_and_port(host: str, arg_port: Optional[int]) -> Tuple[str, int]:
+def handle_host_and_port(host: str, arg_port: int | None) -> tuple[str, int]:
     """
     Validate and handle the combination of host and port information.
 
@@ -245,7 +246,7 @@ def handle_host_and_port(host: str, arg_port: Optional[int]) -> Tuple[str, int]:
 
 def ensure_authenticated_for_delete(
     client: httpx.Client, base_url: str, username: str, password: str
-) -> Tuple[Optional[str], Optional[str]]:
+) -> tuple[str | None, str | None]:
     """
     Ensures the user is authenticated for DELETE operations. Will authenticate the user if it's the
     first time a DELETE operation is being attempted and will cache the token for future calls.
@@ -321,7 +322,7 @@ def fetch_items_details(client: httpx.Client, base_url: str, item_ids: list) -> 
     # Add TV series specific fields (SeriesName, SeasonNumber, IndexNumber)
     url = f"{base_url}/Items"
     params = {
-        "Fields": "MediaStreams,Path,ProviderIds,DateCreated,DateModified,PremiereDate,ProductionYear,Tags,Overview,ParentId,SeriesName,SeasonNumber,IndexNumber",
+        "Fields": "MediaStreams,Path,ProviderIds,DateCreated,DateModified,PremiereDate,ProductionYear,Tags,Overview,ParentId,SeriesName,SeasonNumber,IndexNumber,RunTimeTicks",
         "Ids": ids_param,
     }
 
@@ -393,29 +394,26 @@ def _fetch_paginated_items(
         provider_tables: Provider tables dict to populate (modified in-place).
 
     Raises:
-        httpx.HTTPStatusError, httpx.RequestError: If fetch fails.
+        httpx.HTTPStatusError, httpx.RequestError: If fetch fails. The raise is
+            preserved (via ``raise_on_error=True``) so a mid-fetch failure aborts the
+            library instead of building a silently-incomplete provider index.
     """
-    start_index = 0
+    url = f"{base_url}/Items"
+    params = {
+        "Limit": str(PAGE_SIZE),
+        "Recursive": "True",
+        "ParentId": library_id,
+        "Fields": "ProviderIds,SeriesName,ParentIndexNumber,IndexNumber",
+        "Is3D": "False",
+        "IsFolder": "False",
+    }
     progress_bar = tqdm(total=total_items, desc="Fetching media items", unit="item")
-
     try:
-        while start_index < total_items:
-            url = f"{base_url}/Items"
-            params = {
-                "StartIndex": str(start_index),
-                "Limit": str(PAGE_SIZE),
-                "Recursive": "True",
-                "ParentId": library_id,
-                "Fields": "ProviderIds,SeriesName,ParentIndexNumber,IndexNumber",
-                "Is3D": "False",
-                "IsFolder": "False",
-            }
-            response = make_http_request(client, "GET", url, params=params)
-            media_items = response.json().get("Items", [])
+        for media_items, _total in paginate_emby_items(
+            client, url, params, error_context="fetch media items", raise_on_error=True
+        ):
             build_provider_id_tables(media_items, provider_tables)
-            processed_items = len(media_items)
-            start_index += processed_items
-            progress_bar.update(processed_items)
+            progress_bar.update(len(media_items))
     finally:
         progress_bar.close()
 
@@ -454,28 +452,28 @@ def fetch_all_media_paths(client: httpx.Client, base_url: str) -> list:
         (safe), but never under-refuses.
     """
     paths: list = []
-    start_index = 0
+    url = f"{base_url}/Items"
+    params = {
+        "Limit": str(PAGE_SIZE),
+        "Recursive": "True",
+        "IncludeItemTypes": "Movie,Episode",
+        "Fields": "Path",
+        "IsFolder": "False",
+        "EnableImages": "False",
+    }
+    # paginate_emby_items handles (and logs) the httpx errors internally, degrading to
+    # the pages already yielded; the outer catch stays for the Path extraction below.
     try:
-        while True:
-            url = f"{base_url}/Items"
-            params = {
-                "StartIndex": str(start_index),
-                "Limit": str(PAGE_SIZE),
-                "Recursive": "True",
-                "IncludeItemTypes": "Movie,Episode",
-                "Fields": "Path",
-                "IsFolder": "False",
-                "EnableImages": "False",
-            }
-            response = make_http_request(client, "GET", url, params=params)
-            items = response.json().get("Items", [])
+        for items, _total in paginate_emby_items(
+            client, url, params,
+            error_context="fetch full library paths for the deletion safety guard "
+            "(falling back to decision-only folder detection: may over-refuse, never "
+            "under-refuses)",
+        ):
             paths.extend(item["Path"] for item in items if item.get("Path"))
-            if len(items) < PAGE_SIZE:
-                break
-            start_index += len(items)
-    except (httpx.HTTPStatusError, httpx.RequestError, KeyError, ValueError) as exc:
+    except (KeyError, ValueError) as exc:
         logger.warning(
-            "Could not fetch full library paths for the deletion safety guard (%s); "
+            "Could not extract full library paths for the deletion safety guard (%s); "
             "falling back to decision-only folder detection (may over-refuse, never "
             "under-refuses).",
             exc,
@@ -487,19 +485,17 @@ def delete_item(
     client: httpx.Client,
     base_url: str,
     item_id: str,
-    doit: bool,
     username: str,
     password: str,
     api_key: str,
 ) -> dict:
     """
-    Attempts to delete a media item by its ID if the 'doit' flag is True.
+    Delete a media item by its ID (callers gate this behind their own --doit check).
 
     Args:
         client (httpx.Client): The httpx client configured for the Emby server communication.
         base_url (str): The base URL of the Emby server.
         item_id (str): The ID of the media item to be deleted.
-        doit (bool): If True, actually performs the delete action, otherwise just simulates it.
         username (str): The username for authentication.
         password (str): The password for authentication.
         api_key (str): The API key for non-DELETE requests.
@@ -508,40 +504,38 @@ def delete_item(
         dict: The deletion status and any error message if the deletion failed.
     """
     deletion_status = {"id": item_id, "status": "not_attempted", "error": None}
-    if doit:
-        # Ensure authentication is in place for DELETE operations
-        auth_token, _ = ensure_authenticated_for_delete(
-            client, base_url, username, password
-        )
-        if auth_token is None:
-            deletion_status["status"] = "failed"
-            deletion_status[
-                "error"
-            ] = "Authentication failed; cannot perform delete operations."
-            return deletion_status
 
-        client.headers.update({"X-Emby-Token": auth_token})
-        url = f"{base_url}/Items/{item_id}"
-        try:
-            response = make_http_request(client, "DELETE", url)
-            if response.is_success:
-                deletion_status["status"] = "success"
-            else:
-                deletion_status.update(
-                    {
-                        "status": "failed",
-                        "error": f"Status code: {response.status_code}, Response: {response.text}",
-                    }
-                )
-                logger.error(
-                    f"Deletion failed for item {item_id}, "
-                    f"{url} [{response.status_code}] Response: {response.text}"
-                )
-        except Exception as e:
-            deletion_status.update({"status": "failed", "error": str(e)})
-            logger.error(f"Exception occurred during deletion of item {item_id}: {e}")
-    else:
-        deletion_status["status"] = "skipped"
+    # Ensure authentication is in place for DELETE operations
+    auth_token, _ = ensure_authenticated_for_delete(
+        client, base_url, username, password
+    )
+    if auth_token is None:
+        deletion_status["status"] = "failed"
+        deletion_status[
+            "error"
+        ] = "Authentication failed; cannot perform delete operations."
+        return deletion_status
+
+    client.headers.update({"X-Emby-Token": auth_token})
+    url = f"{base_url}/Items/{item_id}"
+    try:
+        response = make_http_request(client, "DELETE", url)
+        if response.is_success:
+            deletion_status["status"] = "success"
+        else:
+            deletion_status.update(
+                {
+                    "status": "failed",
+                    "error": f"Status code: {response.status_code}, Response: {response.text}",
+                }
+            )
+            logger.error(
+                f"Deletion failed for item {item_id}, "
+                f"{url} [{response.status_code}] Response: {response.text}"
+            )
+    except Exception as e:
+        deletion_status.update({"status": "failed", "error": str(e)})
+        logger.error(f"Exception occurred during deletion of item {item_id}: {e}")
 
     client.headers.update({"X-Emby-Token": api_key})
 
@@ -658,21 +652,16 @@ def _process_all_provider_ids(
     ignored_imdb_id: str = IGNORED_IMDB_ID,
 ) -> None:
     """Process all provider IDs for a single media item."""
-    provider_ids = item.get("ProviderIds", {})
-    # Create case-insensitive lookup for provider IDs
-    # Emby API returns inconsistent casing (e.g., "Imdb" vs "IMDB")
-    provider_ids_lower = {k.lower(): v for k, v in provider_ids.items()}
+    # Case-insensitive lookup — Emby returns inconsistent casing ("Imdb" vs "IMDB").
+    provider_ids_lower = normalize_provider_ids(item.get("ProviderIds", {}))
 
-    for provider, table_name in [
-        ("imdb", "imdb"),
-        ("tvdb", "tvdb"),
-        ("tmdb", "tmdb"),
-    ]:
-        id_value = provider_ids_lower.get(provider)
+    # Every provider builds its own table (order is immaterial here), so iterate the
+    # shared priority tuple; the table name equals the provider name.
+    for provider in PROVIDER_PRIORITY:
         _process_provider_id(
             provider,
-            table_name,
-            id_value,
+            provider,
+            provider_ids_lower.get(provider),
             provider_tables,
             item,
             library_name,

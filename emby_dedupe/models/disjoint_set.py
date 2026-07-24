@@ -1,7 +1,6 @@
 """
 DisjointSet data structure for efficiently grouping related items.
 """
-from typing import Dict
 
 
 class DisjointSet:
@@ -13,7 +12,7 @@ class DisjointSet:
     """
     def __init__(self) -> None:
         # Initially, each item is its own parent
-        self.parent: Dict[str, str] = {}
+        self.parent: dict[str, str] = {}
 
     def find(self, item: str | dict) -> str:
         """

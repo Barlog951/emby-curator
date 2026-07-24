@@ -9,7 +9,6 @@ from emby_dedupe.cli.check import (
     _extract_quality_params,
     _extract_search_params,
     _get_output_format,
-    add_check_arguments,
     run_check,
 )
 
@@ -316,24 +315,3 @@ class TestRunCheck:
         assert exit_code == 2
         mock_checker.close.assert_called_once()
 
-
-class TestAddCheckArguments:
-    """Tests for argument parser configuration."""
-
-    def test_add_check_arguments_creates_arguments(self):
-        """Test that all required arguments are added to the parser."""
-        parser = Mock()
-
-        add_check_arguments(parser)
-
-        # Verify add_argument was called (at least for key arguments)
-        assert parser.add_argument.call_count > 20  # Should be ~30+ arguments
-
-        # Check some key arguments were added
-        call_args_list = [str(call) for call in parser.add_argument.call_args_list]
-        assert any("--name" in str(call) for call in call_args_list)
-        assert any("--host" in str(call) for call in call_args_list)
-        assert any("--api-key" in str(call) for call in call_args_list)
-        assert any("--resolution" in str(call) for call in call_args_list)
-        assert any("--simple" in str(call) for call in call_args_list)
-        assert any("--exit-code" in str(call) for call in call_args_list)

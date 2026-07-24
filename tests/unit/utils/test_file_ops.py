@@ -21,7 +21,7 @@ class TestFileOps:
         assert os.path.exists(f"{file_path}.json")
 
         # Read and verify the content
-        with open(f"{file_path}.json", "r") as f:
+        with open(f"{file_path}.json") as f:
             content = json.load(f)
             assert content == test_dict
 
@@ -36,7 +36,7 @@ class TestFileOps:
         assert os.path.exists(f"{file_path}.txt")
 
         # Read and verify the content
-        with open(f"{file_path}.txt", "r") as f:
+        with open(f"{file_path}.txt") as f:
             content = f.read()
             assert content == test_string
 

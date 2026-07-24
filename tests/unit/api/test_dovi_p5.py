@@ -217,3 +217,22 @@ def test_decision_is_independent_of_no_lang_priorities():
     )
     assert result["keep"]["id"] == "1002"
     assert [d["id"] for d in result["delete"]] == ["1001"]
+
+
+def test_p5_with_priority_language_loses_to_clean_copy_without():
+    """Regression (code review 2026-07-10): the smart-override check must run even
+    when the better-quality item has NO priority language (Scenario 2).
+
+    The old gate skipped should_quality_override_language() unless the quality item
+    itself had a priority language, so a defective DV P5 file with a Slovak dub was
+    kept — and the clean HDR10 copy deleted — whenever the clean copy's languages
+    were absent from the priority list. After the P5 penalty the quality gap is
+    thousands of times over the 5x Scenario-2 threshold, so the clean copy must win.
+    """
+    result = determine_items_to_delete(
+        ["1001", "1002"],
+        [_p5_item(("slo",)), _hdr10_item(("eng",))],
+        lang_priorities=["slo", "sk", "cze", "ces"],  # 'eng' deliberately absent
+    )
+    assert result["keep"]["id"] == "1002"
+    assert [d["id"] for d in result["delete"]] == ["1001"]

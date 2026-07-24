@@ -104,6 +104,6 @@ def load_fixture(fixture_path):
     """Returns a function to load a fixture file."""
     def _load_fixture(filename):
         filepath = os.path.join(fixture_path, filename)
-        with open(filepath, 'r') as f:
+        with open(filepath) as f:
             return json.load(f)
     return _load_fixture

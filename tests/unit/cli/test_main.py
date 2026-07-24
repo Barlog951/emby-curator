@@ -1,163 +1,14 @@
 """
 Tests for the CLI main module
 """
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from emby_dedupe.cli.main import (
-    _apply_override_warnings,
-    _load_env_variables,
     _parse_excluded_ids,
     _parse_language_priorities,
     _resolve_auth_credentials,
     _resolve_configuration,
-    main,
 )
-
-
-class TestCliMain:
-    """Tests for the CLI main module."""
-
-    @patch('emby_dedupe.cli.main.parse_args')
-    @patch('emby_dedupe.cli.main.get_env_variable')
-    @patch('emby_dedupe.cli.main.set_logging_level')
-    def test_main_initialization(self, mock_set_logging, mock_get_env, mock_parse_args):
-        """Test main function initialization."""
-        # Mock command line arguments
-        mock_args = Mock()
-        mock_args.host = "test_host"
-        mock_args.port = None
-        mock_args.api_key = "test_api_key"
-        mock_args.library = ["Test Library"]
-        mock_args.doit = False
-        mock_args.username = None
-        mock_args.password = None
-        mock_args.verbosity = 1
-        mock_args.html_report = False
-        mock_args.html_only = False
-        mock_args.no_open = False
-        mock_args.lang_prio = None
-        mock_args.exclude_ids = ""
-        mock_parse_args.return_value = mock_args
-
-        # Mock environment variables
-        mock_get_env.side_effect = lambda name: {
-            "DEDUPE_LOGGING": None,
-            "DEDUPE_EMBY_HOST": "env_host",
-            "DEDUPE_EMBY_PORT": None,
-            "DEDUPE_EMBY_API_KEY": "env_api_key",
-            "DEDUPE_EMBY_LIBRARY": "Env Library",
-            "DEDUPE_DOIT": None,
-            "DEDUPE_HTML_REPORT": None,
-            "DEDUPE_HTML_ONLY": None,
-            "DEDUPE_LANG_PRIO": None,
-            "DEDUPE_EXCLUDE_IDS": None
-        }.get(name)
-
-        # Patch deeper functions to avoid actual execution
-        with patch('emby_dedupe.cli.main.handle_host_and_port', return_value=("http://test_host", 8096)):
-            with patch('emby_dedupe.cli.main.httpx.Client'):
-                with patch('emby_dedupe.cli.main.check_emby_connection'):
-                    with patch('emby_dedupe.cli.main.get_library_id', return_value="lib123"):
-                        with patch('sys.exit'):
-                            # Call the function under test
-                            main()
-
-        # Check initialization
-        mock_parse_args.assert_called_once()
-        assert mock_get_env.call_count >= 5  # At least 5 environment variables
-        mock_set_logging.assert_called_once_with(1, None)
-
-    def test_main_validation_error(self):
-        """Test main function with validation error."""
-        # Just verify that the function exists and can be called
-        assert callable(main)
-
-    def test_emby_connection_error(self):
-        """Test main function with Emby connection error."""
-        # Just verify that the function exists and can be called
-        assert callable(main)
-
-    def test_no_media_items_found(self):
-        """Test main function with no media items found."""
-        # Just verify that the function exists and can be called
-        assert callable(main)
-
-    def test_emby_connection_exception(self):
-        """Test main function with Emby connection exception."""
-        # Just verify that the function exists and can be called
-        assert callable(main)
-
-    def test_json_decode_error(self):
-        """Test main function with JSON decode error."""
-        # Just verify that the function exists and can be called
-        assert callable(main)
-
-    def test_timeout_error(self):
-        """Test main function with timeout error."""
-        # Just verify that the function exists and can be called
-        assert callable(main)
-
-    def test_html_report_generation(self):
-        """Test main function with HTML report generation."""
-        # Just verify that the function exists and can be called
-        assert callable(main)
-
-    def test_html_only_mode(self):
-        """Test main function with HTML-only mode."""
-        # Just verify that the function exists and can be called
-        assert callable(main)
-
-    def test_html_only_mode_with_error(self):
-        """Test main function with HTML-only mode and HTML generation error."""
-        # Just verify that the function exists and can be called
-        assert callable(main)
-
-    def test_lang_prio_parsing_with_normalization(self):
-        """Test language priority parsing with Slovak/Czech normalization."""
-        # Test the language normalization logic directly by simulating what main() does
-
-        # This simulates what happens in main() for language priority processing
-        lang_prio_str = "slo,sk,cze,ces,cs,eng"  # Mixed Slovak/Czech variants
-
-        # Create normalized language priority list treating Slovak/Czech variants as equivalent
-        # This is the exact logic from main()
-        lang_mapping = {
-            "slo": "sk",  # Slovak ISO 639-2 -> ISO 639-1
-            "sk": "sk",   # Slovak ISO 639-1
-            "cze": "cs",  # Czech ISO 639-2 -> ISO 639-1
-            "ces": "cs",  # Czech ISO 639-2 alternate
-            "cs": "cs"    # Czech ISO 639-1
-        }
-
-        raw_langs = [lang.strip().lower() for lang in lang_prio_str.split(',') if lang.strip()]
-        seen_langs = set()
-        lang_priorities = []
-
-        for lang in raw_langs:
-            # Normalize Slovak/Czech variants, keep others as-is
-            normalized_lang = lang_mapping.get(lang, lang)
-
-            # Only add if we haven't seen this normalized language before
-            if normalized_lang not in seen_langs:
-                lang_priorities.append(normalized_lang)
-                seen_langs.add(normalized_lang)
-
-        # Should be normalized to: sk (Slovak), cs (Czech), eng (English)
-        # Slovak variants (slo, sk) -> sk
-        # Czech variants (cze, ces, cs) -> cs
-        # English remains eng
-        expected_priorities = ["sk", "cs", "eng"]
-        assert lang_priorities == expected_priorities
-
-        # Verify that duplicates are removed properly
-        assert len(lang_priorities) == 3
-        assert lang_priorities.count("sk") == 1  # Only one Slovak entry despite "slo" and "sk" input
-        assert lang_priorities.count("cs") == 1  # Only one Czech entry despite "cze", "ces", "cs" input
-
-    def test_exclude_terms_parsing(self):
-        """Test exclude terms parsing."""
-        # Just verify that the function exists and can be called
-        assert callable(main)
 
 
 class TestMainHelpers:
@@ -204,13 +55,14 @@ class TestMainHelpers:
 
     @patch('emby_dedupe.cli.main.get_env_variable')
     @patch('emby_dedupe.cli.main.set_logging_level')
-    @patch('emby_dedupe.cli.main.override_warning')
-    def test_resolve_configuration_basic(self, mock_override, mock_set_log, mock_get_env):
-        """Test basic configuration resolution."""
-        # Setup mocks
+    def test_resolve_configuration_basic(self, mock_set_log, mock_get_env):
+        """_resolve_configuration returns a ResolvedConfig built from the parsed args.
+
+        Env resolution happens in typer's envvar= layer BEFORE this function; the old
+        duplicate env re-read (source of false "CLI overrides env" warnings) is gone.
+        """
         mock_get_env.return_value = None
 
-        # Create mock args
         from argparse import Namespace
         args = Namespace(
             verbosity=0,
@@ -219,145 +71,48 @@ class TestMainHelpers:
             api_key="test-key",
             library=["TV Shows"],
             doit=False,
-            lang_prio=None,
-            exclude_ids=None,
+            lang_prio="sk,cs",
+            exclude_ids="tt123, tt456",
             username=None,
             password=None,
             html_report=False,
-            html_only=False,
+            html_only=True,
             no_open=False,
         )
 
-        result = _resolve_configuration(args)
+        resolved = _resolve_configuration(args)
 
-        # Should return tuple with 12 values
-        assert len(result) == 12
-        assert result[0] == "http://emby.local"  # host
-        assert result[2] == "test-key"  # api_key
-        assert result[3] == ["TV Shows"]  # library
+        assert resolved.host == "http://emby.local"
+        assert resolved.api_key == "test-key"
+        assert resolved.library == ["TV Shows"]
+        assert resolved.lang_priorities == ["sk", "cs"]
+        assert resolved.excluded_ids == ["tt123", "tt456"]
+        assert resolved.html_only is True
+        assert resolved.html_report is True  # derived: html_only implies html_report
+        # DEDUPE_LOGGING is the one env var still read here.
+        mock_set_log.assert_called_once_with(0, None)
 
     @patch('emby_dedupe.cli.main.get_env_variable')
     @patch('emby_dedupe.cli.main.set_logging_level')
-    @patch('emby_dedupe.cli.main.override_warning')
-    def test_resolve_configuration_with_env_vars(self, mock_override, mock_set_log, mock_get_env):
-        """Test configuration resolution with environment variables."""
-        # Setup mocks to return env values
-        env_values = {
-            "DEDUPE_LOGGING": None,
-            "DEDUPE_EMBY_HOST": "http://env-host",
-            "DEDUPE_EMBY_PORT": "8096",
-            "DEDUPE_EMBY_API_KEY": "env-api-key",
-            "DEDUPE_EMBY_LIBRARY": "Library1,Library2",
-            "DEDUPE_DOIT": "false",
-            "DEDUPE_HTML_REPORT": "false",
-            "DEDUPE_HTML_ONLY": "false",
-            "DEDUPE_LANG_PRIO": "sk,cs",
-            "DEDUPE_EXCLUDE_IDS": "tt123,tt456",
-        }
-        mock_get_env.side_effect = lambda key: env_values.get(key.replace("ENV_DEDUPE_", "DEDUPE_"))
+    @patch('emby_dedupe.cli.arguments.override_warning')
+    def test_resolve_configuration_emits_no_override_warnings(
+        self, mock_override, mock_set_log, mock_get_env
+    ):
+        """Regression (code review 2026-07-10): with values coming from typer's envvar
+        resolution (the prod/systemd case), no false "CLI overrides env" warning fires."""
+        mock_get_env.return_value = None
 
-        # Create args with no values (should use env)
         from argparse import Namespace
         args = Namespace(
-            verbosity=0,
-            host=None,
-            port=None,
-            api_key=None,
-            library=None,
-            doit=None,
-            lang_prio=None,
-            exclude_ids=None,
-            username=None,
-            password=None,
-            html_report=False,
-            html_only=False,
+            verbosity=0, host="http://env-host", port=None, api_key="env-key",
+            library=["Env Lib"], doit=False, lang_prio=None, exclude_ids=None,
+            username=None, password=None, html_report=False, html_only=False,
             no_open=False,
         )
 
-        result = _resolve_configuration(args)
+        _resolve_configuration(args)
 
-        # Should use env values
-        assert result[0] == "http://env-host"  # host from env
-        assert result[2] == "env-api-key"  # api_key from env
-        assert result[5] == ["sk", "cs"]  # parsed lang priorities
-
-    @patch('emby_dedupe.cli.main.get_env_variable')
-    def test_load_env_variables(self, mock_get_env):
-        """Test loading environment variables into dictionary."""
-        # Setup mocks
-        env_values = {
-            "DEDUPE_LOGGING": "DEBUG",
-            "DEDUPE_EMBY_HOST": "http://test",
-            "DEDUPE_EMBY_PORT": "8096",
-            "DEDUPE_EMBY_API_KEY": "key123",
-            "DEDUPE_EMBY_LIBRARY": "Library1",
-            "DEDUPE_DOIT": "true",
-            "DEDUPE_HTML_REPORT": "false",
-            "DEDUPE_HTML_ONLY": "false",
-            "DEDUPE_LANG_PRIO": "sk",
-            "DEDUPE_EXCLUDE_IDS": "tt123",
-        }
-        mock_get_env.side_effect = lambda key: env_values.get(key.replace("ENV_DEDUPE_", "DEDUPE_"))
-
-        result = _load_env_variables()
-
-        assert result['verbosity'] == "DEBUG"
-        assert result['host'] == "http://test"
-        assert result['doit'] is True  # Converted to boolean
-        assert result['html_report'] is False  # Converted to boolean
-
-    @patch('emby_dedupe.cli.main.get_env_variable')
-    def test_load_env_variables_boolean_conversion(self, mock_get_env):
-        """Test boolean conversion for environment variables."""
-        # Test various truthy values
-        for truthy in ["true", "True", "TRUE", "1"]:
-            env_values = {"DEDUPE_DOIT": truthy}
-            mock_get_env.side_effect = lambda key: env_values.get(key.replace("ENV_DEDUPE_", "DEDUPE_"))
-
-            result = _load_env_variables()
-            assert result['doit'] is True, f"'{truthy}' should be True"
-
-        # Test falsy values
-        for falsy in ["false", "False", "0", "", None]:
-            env_values = {"DEDUPE_DOIT": falsy}
-            mock_get_env.side_effect = lambda key: env_values.get(key.replace("ENV_DEDUPE_", "DEDUPE_"))
-
-            result = _load_env_variables()
-            assert result['doit'] is False, f"'{falsy}' should be False"
-
-    @patch('emby_dedupe.cli.main.set_logging_level')
-    @patch('emby_dedupe.cli.main.override_warning')
-    def test_apply_override_warnings(self, mock_override, mock_set_log):
-        """Test applying override warnings for command-line vs environment."""
-        from argparse import Namespace
-
-        args = Namespace(
-            verbosity=1,
-            host="http://cli-host",
-            port=8096,
-            api_key="cli-key",
-            library=["CLI Lib"],
-            lang_prio="cs",
-            exclude_ids="tt999",
-        )
-
-        env_vars = {
-            'verbosity': "DEBUG",
-            'host': "http://env-host",
-            'port': "8096",
-            'api_key': "env-key",
-            'library_str': "Env Lib",
-            'lang_prio': "sk",
-            'exclude_ids': "tt888",
-        }
-
-        _apply_override_warnings(args, env_vars)
-
-        # Verify set_logging_level was called
-        mock_set_log.assert_called_once_with(1, "DEBUG")
-
-        # Verify override_warning was called for each setting
-        assert mock_override.call_count >= 6
+        mock_override.assert_not_called()
 
     @patch('emby_dedupe.cli.main.get_env_variable')
     def test_resolve_auth_credentials_when_doit_true(self, mock_get_env):
@@ -409,3 +164,40 @@ class TestMainHelpers:
         # Should use environment variables
         assert username == "env-user"
         assert password == "env-pass"
+
+
+class TestLibraryEnvCommaSplit:
+    """Regression (code review 2026-07-10): DEDUPE_EMBY_LIBRARY="Movies,TV Shows" was
+    whitespace-split by click's list-envvar handling into ['Movies,TV', 'Shows']. The
+    env var is now read manually with the README-documented comma semantics."""
+
+    def _audit_args(self, mocker, env, cli_args=()):
+        from typer.testing import CliRunner
+
+        from emby_dedupe.cli.app import app
+
+        mock_run = mocker.patch("emby_dedupe.cli.genres.run_genres_command")
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            ["--host", "http://emby", "--api-key", "k", *cli_args, "genres", "audit"],
+            env=env,
+        )
+        assert result.exit_code == 0, result.output
+        return mock_run.call_args[0][0]
+
+    def test_env_library_comma_split_preserves_spaces(self, mocker):
+        args = self._audit_args(mocker, {"DEDUPE_EMBY_LIBRARY": "Movies,TV Shows"})
+        assert args.library == ["Movies", "TV Shows"]
+
+    def test_cli_library_flags_beat_env(self, mocker):
+        args = self._audit_args(
+            mocker,
+            {"DEDUPE_EMBY_LIBRARY": "Movies,TV Shows"},
+            cli_args=["--library", "CLI Lib"],
+        )
+        assert args.library == ["CLI Lib"]
+
+    def test_no_library_anywhere_is_empty(self, mocker):
+        args = self._audit_args(mocker, {"DEDUPE_EMBY_LIBRARY": ""})
+        assert args.library == []

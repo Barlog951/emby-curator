@@ -281,8 +281,8 @@ class TestDeduplication:
                 assert item["deletion_result"]["status"] == "not_attempted"
                 assert item["deletion_result"]["error"] is None
 
-        # Check that the markdown report was generated
-        mock_format_markdown.assert_called_once_with(base_url, decisions)
+        # Check that the markdown report was generated (metadata passed through as None)
+        mock_format_markdown.assert_called_once_with(base_url, decisions, None)
         assert result == "# Formatted Markdown Report"
 
     def test_process_deletion_and_generate_report_actual_deletion(self):
@@ -993,27 +993,27 @@ class TestGradeFSafetyNet:
         assert is_movie is True  # No SeriesName
 
     def test_deduplicate_by_path_movies(self):
-        """Test _deduplicate_by_path with movies (dict tracking)."""
+        """Test _deduplicate_by_path keeps the first item per unique path."""
         items = [
             {"Id": "1", "Path": "/movies/movie.mkv"},
             {"Id": "2", "Path": "/movies/movie.mkv"},  # Duplicate path
             {"Id": "3", "Path": "/movies/movie_hd.mkv"}  # Different path
         ]
 
-        unique = _deduplicate_by_path(items, is_movie_group=True)
+        unique = _deduplicate_by_path(items)
 
         assert len(unique) == 2  # Path duplicates removed
         assert unique[0]["Id"] == "1"
         assert unique[1]["Id"] == "3"
 
     def test_deduplicate_by_path_tv(self):
-        """Test _deduplicate_by_path with TV (set tracking)."""
+        """Test _deduplicate_by_path enforces strict path uniqueness for TV too."""
         items = [
             {"Id": "1", "Path": "/shows/show.s01e01.mkv"},
             {"Id": "2", "Path": "/shows/show.s01e01.mkv"},  # Duplicate path
         ]
 
-        unique = _deduplicate_by_path(items, is_movie_group=False)
+        unique = _deduplicate_by_path(items)
 
         assert len(unique) == 1  # Strict path uniqueness
 
@@ -1082,9 +1082,41 @@ class TestGradeFSafetyNet:
 
         _apply_smart_override_and_sort(rated_items, ["sk", "en"], default_top_item=rated_items[0])
 
-        # Language priority should win (ratio 70/60=1.16x < 1.5x threshold)
+        # Language priority should win (ratio 70/60=1.16x, far below every threshold)
         assert rated_items[0]["id"] == "lang"
         assert rated_items[0]["selected_by_language_priority"] is True
+
+    def test_apply_smart_override_and_sort_no_priority_lang_scenario(self):
+        """Regression (code review 2026-07-10): Scenario 2 must be reachable.
+
+        A quality item WITHOUT any priority language must still win over a
+        priority-language item when it clears the 5x no-priority-lang threshold
+        (e.g. a clean copy vs a DV P5 file rated near zero by the penalty).
+        """
+        rated_items = [
+            {
+                "id": "lang",
+                "rating": 0.01,
+                "lang_priority": 0,
+                "has_priority_lang": True,
+                "priority_language": "sk",
+                "quality_description": {"audio": {"languages": ["sk"]}}
+            },
+            {
+                "id": "quality",
+                "rating": 90.0,
+                "lang_priority": 9999,
+                "has_priority_lang": False,
+                "priority_language": None,
+                "quality_description": {"audio": {"languages": ["en"]}}
+            }
+        ]
+
+        _apply_smart_override_and_sort(rated_items, ["sk"], default_top_item=rated_items[1])
+
+        # Quality wins via Scenario 2 (ratio 9000x > 5.0x no-priority-lang threshold)
+        assert rated_items[0]["id"] == "quality"
+        assert rated_items[0]["selected_by_language_priority"] is False
 
     def test_collect_items_metadata_basic(self):
         """Test _collect_items_metadata builds item dictionary."""
@@ -1402,15 +1434,15 @@ class TestExtractedHelperFunctions:
 
     def test_format_file_size_bytes(self):
         """Test file size formatting for bytes."""
-        assert _format_file_size(512) == "512 B"
+        assert _format_file_size(512) == "512.00 B"
 
     def test_format_file_size_kilobytes(self):
         """Test file size formatting for kilobytes."""
-        assert _format_file_size(2048) == "2.0 KB"
+        assert _format_file_size(2048) == "2.00 KB"
 
     def test_format_file_size_megabytes(self):
         """Test file size formatting for megabytes."""
-        assert _format_file_size(5242880) == "5.0 MB"
+        assert _format_file_size(5242880) == "5.00 MB"
 
     def test_format_file_size_gigabytes(self):
         """Test file size formatting for gigabytes."""

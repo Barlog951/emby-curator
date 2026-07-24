@@ -511,7 +511,7 @@ class TestMetadataHelpers:
 
     def test_format_file_size_bytes(self):
         """Test formatting bytes."""
-        assert _format_file_size(500) == "500 bytes"
+        assert _format_file_size(500) == "500.00 B"
 
     def test_format_file_size_kb(self):
         """Test formatting kilobytes."""
@@ -747,6 +747,23 @@ class TestQualityRatingRegression:
 
     def test_hdr_beats_sdr_same_resolution(self):
         assert _rate(2160, 3840, 12_000_000, hdr=True) > _rate(2160, 3840, 12_000_000, hdr=False)
+
+    def test_hdr_filename_breaks_tie_when_emby_misses_hdr(self):
+        # The Agency S02E07 regression (2026-07-22): Emby exposed NO HDR metadata on an
+        # HDR WEB-DL rip (VideoRange SDR), so it tied 101.7 == 101.7 with a genuinely-SDR
+        # sibling and the tie-break deleted the HDR copy. The HDR filename tag must now
+        # break the tie in the HDR file's favour so the SDR copy is the one dropped.
+        hdr_named = _rate(2160, 3840, 15_800_000, hdr=False,
+                          path="/Movies/x/The Agency S02E07 - 2160p WEB-DL HDR CZ.mkv")
+        sdr = _rate(2160, 3840, 15_800_000, hdr=False,
+                    path="/Movies/x/The Agency S02E07 - 2160p WEB-DL CZ.mkv")
+        assert hdr_named > sdr
+
+    def test_sdr_filename_gets_no_phantom_hdr_bonus(self):
+        # Bare "DV" (SDR, e.g. DVDRip) must NOT be credited HDR by the filename fallback.
+        # Same WEB-DL source in both so only the HDR component could differ — it must not.
+        assert _rate(1080, 1920, 12_000_000, hdr=False, path="/m/Movie - 1080p WEB-DL DV.mkv") \
+            == _rate(1080, 1920, 12_000_000, hdr=False, path="/m/Movie - 1080p WEB-DL.mkv")
 
     def test_starved_high_res_can_lose_to_good_lower_res(self):
         # Phase 2: a 4K far below its bitrate floor loses to a well-encoded 1080p.

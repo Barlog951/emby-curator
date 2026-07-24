@@ -204,7 +204,7 @@ def test_process_deletion_skips_colocated_delete_but_runs_safe_one():
         },
     ]
     with patch("emby_dedupe.api.deduplication.delete_item") as mock_del, \
-         patch("emby_dedupe.api.deduplication._generate_report_with_metadata", return_value="RPT"), \
+         patch("emby_dedupe.reports.markdown.format_markdown_table", return_value="RPT"), \
          patch("emby_dedupe.api.deduplication.tqdm"):
         mock_del.return_value = {"id": "dB", "status": "success", "error": None}
         result = process_deletion_and_generate_report(
@@ -236,7 +236,7 @@ def test_process_deletion_over_refuses_single_duplicate_folder_without_library_p
     folder looks dedicated and the safe file-only delete is wrongly skipped."""
     decisions = _single_duplicate_season_decisions()
     with patch("emby_dedupe.api.deduplication.delete_item") as mock_del, \
-         patch("emby_dedupe.api.deduplication._generate_report_with_metadata", return_value="RPT"), \
+         patch("emby_dedupe.reports.markdown.format_markdown_table", return_value="RPT"), \
          patch("emby_dedupe.api.deduplication.tqdm"):
         process_deletion_and_generate_report(
             MagicMock(), "http://emby", decisions, True, "u", "p", "k"
@@ -251,7 +251,7 @@ def test_process_deletion_library_paths_lift_single_duplicate_over_refusal():
     decisions = _single_duplicate_season_decisions()
     library_paths = [EP_LOOSE_KEEP, EP_LOOSE_P5, EP_SIBLING]  # EP_SIBLING = the neighbour
     with patch("emby_dedupe.api.deduplication.delete_item") as mock_del, \
-         patch("emby_dedupe.api.deduplication._generate_report_with_metadata", return_value="RPT"), \
+         patch("emby_dedupe.reports.markdown.format_markdown_table", return_value="RPT"), \
          patch("emby_dedupe.api.deduplication.tqdm"):
         mock_del.return_value = {"id": "d", "status": "success", "error": None}
         process_deletion_and_generate_report(
@@ -281,7 +281,7 @@ def test_process_deletion_backstop_protects_multi_version_movie_folder():
         ],
     }]
     with patch("emby_dedupe.api.deduplication.delete_item") as mock_del, \
-         patch("emby_dedupe.api.deduplication._generate_report_with_metadata", return_value="RPT"), \
+         patch("emby_dedupe.reports.markdown.format_markdown_table", return_value="RPT"), \
          patch("emby_dedupe.api.deduplication.tqdm"):
         mock_del.return_value = {"id": "hd", "status": "success", "error": None}
         process_deletion_and_generate_report(

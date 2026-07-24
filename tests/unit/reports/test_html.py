@@ -288,7 +288,7 @@ class TestHtmlReports:
         mock_format_html.return_value = "<html>Test content</html>"
 
         # Mock shutil.copy2 to raise an IOError
-        with patch('shutil.copy2', side_effect=IOError("Test error")):
+        with patch('shutil.copy2', side_effect=OSError("Test error")):
             # Mock open to avoid actual file operations
             with patch('builtins.open', MagicMock()):
                 # Mock logger to check error is logged

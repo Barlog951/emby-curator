@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import date
-from typing import Optional
 
 import httpx
 from tqdm import tqdm
@@ -39,7 +38,7 @@ _CRITIC_RATING_DIVISOR: float = 10.0  # CriticRating is 0-100 (RT %); divide to 
 # ---------------------------------------------------------------------------
 
 
-def _compute_age_years(date_created_str: Optional[str]) -> float:
+def _compute_age_years(date_created_str: str | None) -> float:
     """Compute age in years from a DateCreated string.
 
     Uses only the date portion (first 10 chars) so timezone precision is
@@ -80,8 +79,8 @@ def _compute_rating_threshold(age_years: float, config: CleanupConfig) -> float:
 
 
 def _compute_effective_rating(
-    community_rating: Optional[float],
-    critic_rating: Optional[float],
+    community_rating: float | None,
+    critic_rating: float | None,
 ) -> float:
     """Compute effective rating from CommunityRating and CriticRating.
 
@@ -109,7 +108,7 @@ def _compute_days_until_candidate(
     effective_rating: float,
     current_age_years: float,
     config: CleanupConfig,
-) -> Optional[int]:
+) -> int | None:
     """Compute how many days until a near-miss item becomes a cleanup candidate.
 
     Considers two thresholds:
@@ -143,6 +142,28 @@ def _compute_days_until_candidate(
     target_age = min(crossing_age, masterpiece_age)
     days_left = (target_age - current_age_years) * 365.25
     return max(0, int(days_left))
+
+
+def _finalize_near_miss(near_miss: list, config: CleanupConfig, age_of) -> list:
+    """Set days-until-removal on each near-miss item, sort soonest-first, and slice
+    to ``config.near_miss_count``.
+
+    Args:
+        near_miss: Near-miss candidate objects (mutated: ``days_left`` is set).
+        config: Cleanup config (rating decay + near_miss_count).
+        age_of: Callable returning a candidate's current age in years
+            (``age_years`` for movies, ``stale_years`` for series).
+
+    Returns:
+        The sorted, sliced near-miss list.
+    """
+    for nm in near_miss:
+        eff = _compute_effective_rating(nm.rating, nm.critic_rating)
+        nm.days_left = _compute_days_until_candidate(eff, age_of(nm), config)
+    near_miss.sort(key=lambda c: c.days_left if c.days_left is not None else float("inf"))
+    if config.near_miss_count > 0:
+        near_miss = near_miss[:config.near_miss_count]
+    return near_miss
 
 
 def _is_franchise_protected(provider_ids: dict) -> bool:
@@ -255,7 +276,7 @@ def _paginated_fetch(
     endpoint: str,
     base_params: dict,
     library_ids: list[str],
-    lib_id_to_name: Optional[dict[str, str]] = None,
+    lib_id_to_name: dict[str, str] | None = None,
     progress_label: str = "Fetching",
     progress_unit: str = "item",
 ) -> list[dict]:
@@ -293,7 +314,7 @@ def _paginated_fetch(
 def _resolve_primary_user_id(
     client: httpx.Client,
     base_url: str,
-    username: Optional[str] = None,
+    username: str | None = None,
 ) -> str:
     """Resolve primary user ID by username, with fallback to first user.
 
@@ -360,7 +381,7 @@ def _fetch_all_library_movies(
     base_url: str,
     user_id: str,
     library_ids: list[str],
-    lib_id_to_name: Optional[dict[str, str]] = None,
+    lib_id_to_name: dict[str, str] | None = None,
 ) -> list[dict]:
     """Fetch all movies from specified libraries with full metadata.
 
@@ -511,7 +532,7 @@ def _build_favorite_actors_set(
     client: httpx.Client,
     base_url: str,
     primary_user_id: str,
-    all_users: Optional[list[dict]] = None,
+    all_users: list[dict] | None = None,
 ) -> set[str]:
     """Build a set of actors to protect, using Emby native favorites first.
 
@@ -568,6 +589,94 @@ def _classify_movie_user_data(
             interested_ids.add(item_id)
 
 
+def _check_user_item_status(
+    client: httpx.Client,
+    endpoint: str,
+    uid: str,
+    candidate_ids: list[str],
+    chunk_size: int,
+    played_ids: set[str],
+    second_ids: set[str],
+    *,
+    item_types: str,
+    fields: str,
+    warn_label: str,
+    classifier,
+) -> None:
+    """Chunk candidate IDs and batch-check one user's UserData, updating two sets in place.
+
+    Shared body of the movie (played/interested) and series (played/favorited) per-user
+    checks: they differ only in the IncludeItemTypes/Fields params, the warn wording and
+    the classifier that reads each item's UserData into the two sets.
+    """
+    for i in range(0, len(candidate_ids), chunk_size):
+        chunk = candidate_ids[i : i + chunk_size]
+        params = {
+            "Ids": ",".join(chunk),
+            "IncludeItemTypes": item_types,
+            "Fields": fields,
+        }
+        try:
+            response = make_http_request(client, "GET", endpoint, params=params)
+            items = response.json().get("Items", [])
+        except (httpx.HTTPStatusError, httpx.RequestError) as e:
+            logger.warning(f"Failed to batch-check {warn_label} for user {uid}: {e}")
+            continue
+
+        classifier(items, played_ids, second_ids)
+
+
+def _check_play_batch_for_users(
+    client: httpx.Client,
+    base_url: str,
+    users: list[dict],
+    candidate_ids: list[str],
+    *,
+    chunk_size: int,
+    desc: str,
+    log_prefix: str,
+    second_label: str,
+    per_user_fn,
+) -> tuple[set[str], set[str]]:
+    """Iterate all users, batch-checking UserData per user into two protection sets.
+
+    Shared body of the movie and series batch checks: they differ only in chunk size,
+    the progress-bar/log wording and the per-user checker (``per_user_fn``).
+
+    Returns:
+        Tuple of (played_ids, second_ids) — items protected by any user having played
+        (first set) or shown interest/favorited (second set).
+    """
+    if not candidate_ids or not users:
+        return set(), set()
+
+    played_ids: set[str] = set()
+    second_ids: set[str] = set()
+
+    with tqdm(total=len(users), desc=desc, unit="user") as progress:
+        for user in users:
+            uid = user.get("Id", "")
+            uname = user.get("Name", uid)
+            if not uid:
+                progress.update(1)
+                continue
+
+            endpoint = f"{base_url}/Users/{uid}/Items"
+            per_user_fn(
+                client, endpoint, uid, candidate_ids, chunk_size,
+                played_ids, second_ids,
+            )
+
+            progress.set_postfix_str(uname)
+            progress.update(1)
+
+    logger.info(
+        f"{log_prefix}: {len(played_ids)} played, {len(second_ids)} {second_label} "
+        f"across {len(users)} users"
+    )
+    return played_ids, second_ids
+
+
 def _check_user_movie_status(
     client: httpx.Client,
     endpoint: str,
@@ -577,32 +686,12 @@ def _check_user_movie_status(
     played_ids: set[str],
     interested_ids: set[str],
 ) -> None:
-    """Check play/interest status for all candidate movies for a single user.
-
-    Args:
-        client: Configured httpx client with auth headers.
-        endpoint: User-specific Items endpoint URL.
-        uid: User ID (for error logging).
-        candidate_ids: Movie IDs to check.
-        chunk_size: Number of IDs per batch request.
-        played_ids: Mutable set updated in place.
-        interested_ids: Mutable set updated in place.
-    """
-    for i in range(0, len(candidate_ids), chunk_size):
-        chunk = candidate_ids[i : i + chunk_size]
-        params = {
-            "Ids": ",".join(chunk),
-            "IncludeItemTypes": "Movie",
-            "Fields": "UserData",
-        }
-        try:
-            response = make_http_request(client, "GET", endpoint, params=params)
-            items = response.json().get("Items", [])
-        except (httpx.HTTPStatusError, httpx.RequestError) as e:
-            logger.warning(f"Failed to batch-check UserData for user {uid}: {e}")
-            continue
-
-        _classify_movie_user_data(items, played_ids, interested_ids)
+    """Check play/interest status for all candidate movies for a single user."""
+    _check_user_item_status(
+        client, endpoint, uid, candidate_ids, chunk_size, played_ids, interested_ids,
+        item_types="Movie", fields="UserData", warn_label="UserData",
+        classifier=_classify_movie_user_data,
+    )
 
 
 def _check_play_and_interest_batch(
@@ -614,51 +703,19 @@ def _check_play_and_interest_batch(
     """Batch-check play status and interest across ALL users for candidate movies.
 
     DA fix #13: Single batch per user using the user-scoped endpoint which returns
-    UserData (Played, IsFavorite, PlaybackPositionTicks) by default. Much more
-    efficient than two separate passes.
-
-    For each user, candidates are chunked into 100-item groups to avoid URL
-    length limits (100 is the safe limit; PAGE_SIZE=1000 would be too long).
-
-    Args:
-        client: Configured httpx client with auth headers.
-        base_url: Emby server base URL.
-        users: List of all user dicts from /Users.
-        candidate_ids: List of Emby item IDs to check.
+    UserData (Played, IsFavorite, PlaybackPositionTicks) by default. Candidates are
+    chunked into 100-item groups to avoid URL length limits.
 
     Returns:
         Tuple of (played_ids, interested_ids) — sets of item IDs protected by
         any user having played or shown interest (favorite/in-progress).
     """
-    if not candidate_ids or not users:
-        return set(), set()
-
-    played_ids: set[str] = set()
-    interested_ids: set[str] = set()
-    chunk_size = 100
-
-    with tqdm(total=len(users), desc="Checking play status", unit="user") as progress:
-        for user in users:
-            uid = user.get("Id", "")
-            uname = user.get("Name", uid)
-            if not uid:
-                progress.update(1)
-                continue
-
-            endpoint = f"{base_url}/Users/{uid}/Items"
-            _check_user_movie_status(
-                client, endpoint, uid, candidate_ids, chunk_size,
-                played_ids, interested_ids,
-            )
-
-            progress.set_postfix_str(uname)
-            progress.update(1)
-
-    logger.info(
-        f"Play/interest check: {len(played_ids)} played, {len(interested_ids)} interested "
-        f"across {len(users)} users"
+    return _check_play_batch_for_users(
+        client, base_url, users, candidate_ids,
+        chunk_size=100, desc="Checking play status",
+        log_prefix="Play/interest check", second_label="interested",
+        per_user_fn=_check_user_movie_status,
     )
-    return played_ids, interested_ids
 
 
 # ---------------------------------------------------------------------------
@@ -671,7 +728,7 @@ def _fetch_all_library_series(
     base_url: str,
     user_id: str,
     library_ids: list[str],
-    lib_id_to_name: Optional[dict[str, str]] = None,
+    lib_id_to_name: dict[str, str] | None = None,
 ) -> list[dict]:
     """Fetch all TV series from specified libraries with metadata.
 
@@ -821,32 +878,12 @@ def _check_user_series_status(
     played_ids: set[str],
     favorited_ids: set[str],
 ) -> None:
-    """Check play/favorite status for all candidate series for a single user.
-
-    Args:
-        client: Configured httpx client with auth headers.
-        endpoint: User-specific Items endpoint URL.
-        uid: User ID (for error logging).
-        candidate_ids: Series IDs to check.
-        chunk_size: Number of IDs per batch request.
-        played_ids: Mutable set updated in place.
-        favorited_ids: Mutable set updated in place.
-    """
-    for i in range(0, len(candidate_ids), chunk_size):
-        chunk = candidate_ids[i : i + chunk_size]
-        params = {
-            "Ids": ",".join(chunk),
-            "IncludeItemTypes": "Series",
-            "Fields": "UserData,RecursiveItemCount",
-        }
-        try:
-            response = make_http_request(client, "GET", endpoint, params=params)
-            items = response.json().get("Items", [])
-        except (httpx.HTTPStatusError, httpx.RequestError) as e:
-            logger.warning(f"Failed to batch-check series UserData for user {uid}: {e}")
-            continue
-
-        _classify_series_items(items, played_ids, favorited_ids)
+    """Check play/favorite status for all candidate series for a single user."""
+    _check_user_item_status(
+        client, endpoint, uid, candidate_ids, chunk_size, played_ids, favorited_ids,
+        item_types="Series", fields="UserData,RecursiveItemCount",
+        warn_label="series UserData", classifier=_classify_series_items,
+    )
 
 
 def _check_series_play_and_favorites(
@@ -858,45 +895,17 @@ def _check_series_play_and_favorites(
     """Batch-check play status and favorites for TV series across all users.
 
     A series is considered played if Played=True OR UnplayedItemCount < RecursiveItemCount
-    for any user (partial watch counts).
-
-    Args:
-        client: Configured httpx client with auth headers.
-        base_url: Emby server base URL.
-        users: List of all user dicts from /Users.
-        candidate_ids: List of series item IDs to check.
+    for any user (partial watch counts). Candidates are chunked into 50-item groups.
 
     Returns:
         Tuple of (played_ids, favorited_ids).
     """
-    if not candidate_ids or not users:
-        return set(), set()
-
-    played_ids: set[str] = set()
-    favorited_ids: set[str] = set()
-    chunk_size = 50
-
-    with tqdm(total=len(users), desc="Checking series play status", unit="user") as progress:
-        for user in users:
-            uid = user.get("Id", "")
-            uname = user.get("Name", uid)
-            if not uid:
-                progress.update(1)
-                continue
-
-            endpoint = f"{base_url}/Users/{uid}/Items"
-            _check_user_series_status(
-                client, endpoint, uid, candidate_ids, chunk_size, played_ids, favorited_ids
-            )
-
-            progress.set_postfix_str(uname)
-            progress.update(1)
-
-    logger.info(
-        f"Series play/favorite check: {len(played_ids)} played, {len(favorited_ids)} favorited "
-        f"across {len(users)} users"
+    return _check_play_batch_for_users(
+        client, base_url, users, candidate_ids,
+        chunk_size=50, desc="Checking series play status",
+        log_prefix="Series play/favorite check", second_label="favorited",
+        per_user_fn=_check_user_series_status,
     )
-    return played_ids, favorited_ids
 
 
 def _calculate_series_sizes(
@@ -989,7 +998,7 @@ def _classify_movie_protection(
     interested_ids: set[str],
     favorite_actors: set[str],
     config: CleanupConfig,
-) -> Optional[str]:
+) -> str | None:
     """Determine which protection layer (if any) shields a movie from cleanup.
 
     Returns the stats key to increment (e.g. "play_protected"), or None if the
@@ -1094,13 +1103,7 @@ def _apply_movie_filters(
         )
 
     candidates.sort(key=lambda c: c.age_years, reverse=True)
-    # Sort near-miss by days_left (soonest removal first), then slice to configured limit
-    for nm in near_miss:
-        eff = _compute_effective_rating(nm.rating, nm.critic_rating)
-        nm.days_left = _compute_days_until_candidate(eff, nm.age_years, config)
-    near_miss.sort(key=lambda c: c.days_left if c.days_left is not None else float("inf"))
-    if config.near_miss_count > 0:
-        near_miss = near_miss[:config.near_miss_count]
+    near_miss = _finalize_near_miss(near_miss, config, lambda c: c.age_years)
     return candidates, near_miss
 
 
@@ -1110,7 +1113,7 @@ def _run_cleanup_pipeline(
     config: CleanupConfig,
     library_ids: list[str],
     primary_user_id: str,
-    lib_id_to_name: Optional[dict[str, str]] = None,
+    lib_id_to_name: dict[str, str] | None = None,
 ) -> tuple[list[CleanupCandidate], dict, list[CleanupCandidate]]:
     """Orchestrate the 7-layer filter pipeline.
 
@@ -1298,7 +1301,7 @@ def _run_series_cleanup_pipeline(
     config: CleanupConfig,
     library_ids: list[str],
     primary_user_id: str,
-    lib_id_to_name: Optional[dict[str, str]] = None,
+    lib_id_to_name: dict[str, str] | None = None,
 ) -> tuple[list[SeriesCleanupCandidate], dict, list[SeriesCleanupCandidate]]:
     """Orchestrate the series cleanup filter pipeline.
 
@@ -1399,13 +1402,7 @@ def _run_series_cleanup_pipeline(
     # 8. Build final candidate objects
     candidates = _build_series_candidates(pre_size_candidates, size_map, config)
     near_miss = _build_series_candidates(pre_near_miss, size_map, config)
-    # Sort near-miss by days_left (soonest removal first), then slice
-    for nm in near_miss:
-        eff = _compute_effective_rating(nm.rating, nm.critic_rating)
-        nm.days_left = _compute_days_until_candidate(eff, nm.stale_years, config)
-    near_miss.sort(key=lambda c: c.days_left if c.days_left is not None else float("inf"))
-    if config.near_miss_count > 0:
-        near_miss = near_miss[:config.near_miss_count]
+    near_miss = _finalize_near_miss(near_miss, config, lambda c: c.stale_years)
     stats["final_candidates"] = len(candidates)
 
     logger.info(f"Series cleanup candidates: {len(candidates)}, near-miss: {len(near_miss)}")
