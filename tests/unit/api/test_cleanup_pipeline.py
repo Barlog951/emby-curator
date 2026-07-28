@@ -627,16 +627,22 @@ class TestRunCleanupPipeline:
         assert stats["final_candidates"] == 0
 
     def test_12yr_non_masterpiece_candidate(self):
-        """12+ year old movie with rating below 9.0 loses all protection."""
+        """12+ year old movie with rating below 9.0 loses its HEURISTIC protections.
+
+        Actor and franchise protection are deliberately bypassed at 12+ years (only a
+        9.0+ rating survives). Path protection is NOT — it is an explicit instruction
+        and now wins over this gate, so this case uses an unprotected path; see
+        TestPathProtectionIsAbsolute.
+        """
         people = [{"Name": "Tom Hanks", "Type": "Actor"}]
         movie = _make_movie(
             item_id="old_good", date_created=_date_years_ago(13),
             rating=8.5, people=people,
             provider_ids={"TmdbCollection": "10"},
-            path="/Movies/Dokumenty/Old.mkv",
+            path="/Movies/HD/Old.mkv",
         )
         candidates, stats, *_ = self._pipeline([movie], actors={"Tom Hanks"})
-        # franchise, path, actor all bypassed at 12+ years
+        # actor + franchise bypassed at 12+ years
         assert stats["actor_protected"] == 0
         assert stats["franchise_protected"] == 0
         assert stats["path_protected"] == 0
@@ -1999,3 +2005,54 @@ class TestProbeLibraryContentErrors:
         movies, series = _probe_library_content(client, "http://emby", "lib1")
         assert movies == 7
         assert series == 0
+
+
+class TestPathProtectionIsAbsolute:
+    """Regression: --protect-path must win over the 12-year masterpiece gate.
+
+    The masterpiece gate used to return before path protection was ever tested, so an
+    explicit "never touch this folder" instruction silently became a no-op for anything
+    12+ years old — exactly the content people protect a folder for. Found 2026-07-28 on
+    a live Documents dry run: two items under the default-protected "/Dokumenty/" were
+    listed as deletion candidates.
+    """
+
+    @staticmethod
+    def _classify(path, age, rating, config=None):
+        from emby_dedupe.api.cleanup_pipeline import _classify_movie_protection
+        from emby_dedupe.models.cleanup import CleanupConfig
+
+        return _classify_movie_protection(
+            movie={"Id": "1", "Path": path, "People": [], "ProviderIds": {}},
+            age=age,
+            effective_rating=rating,
+            threshold=6.0,
+            played_ids=set(),
+            interested_ids=set(),
+            favorite_actors=set(),
+            config=config or CleanupConfig(),
+        )
+
+    def test_old_low_rated_item_in_protected_path_is_protected(self):
+        # 13.6yr / 7.7 rating — the live Victoria's Secret case, previously a candidate.
+        assert self._classify("/Movies/Dokumenty/x/x.mkv", 13.6, 7.7) == "path_protected"
+
+    def test_old_unrated_item_in_protected_path_is_protected(self):
+        # 12.7yr / no rating — the live "Kdo zradil Jezise" case.
+        assert self._classify("/Movies/Dokumenty/y/y.avi", 12.7, 0.0) == "path_protected"
+
+    def test_protection_holds_well_past_the_masterpiece_age(self):
+        assert self._classify("/Movies/Dokumenty/z/z.mkv", 40.0, 0.0) == "path_protected"
+
+    def test_custom_protect_path_also_beats_the_masterpiece_gate(self):
+        from emby_dedupe.models.cleanup import CleanupConfig
+
+        cfg = CleanupConfig(protect_paths=["/Kids/"])
+        assert self._classify("/Movies/Kids/a.mkv", 20.0, 1.0, cfg) == "path_protected"
+        # and an unprotected path at the same age is still a candidate
+        assert self._classify("/Movies/Other/a.mkv", 20.0, 1.0, cfg) is None
+
+    def test_unprotected_old_item_is_still_a_candidate(self):
+        # The masterpiece policy itself is unchanged: 12yr+ needs 9.0.
+        assert self._classify("/Movies/HD/a.mkv", 13.0, 7.7) is None
+        assert self._classify("/Movies/HD/a.mkv", 13.0, 9.1) == "rating_protected"

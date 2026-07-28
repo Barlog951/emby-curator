@@ -1009,14 +1009,20 @@ def _classify_movie_protection(
         return "play_protected"
     if item_id in interested_ids:
         return "interest_protected"
+    # Path protection is ABSOLUTE and must be tested before the masterpiece gate below.
+    # It is an explicit "never touch this folder" instruction (--protect-path, default
+    # "/Dokumenty/"), not a heuristic like actor/franchise — and age is precisely why a
+    # folder gets protected, so letting an age rule void it is backwards. Previously the
+    # masterpiece gate returned first, silently making protect-path a no-op for anything
+    # 12+ years old.
+    if _is_path_protected(movie.get("Path", ""), config.protect_paths):
+        return "path_protected"
     if age >= config.masterpiece_only_after_years:
         return "rating_protected" if effective_rating >= config.masterpiece_rating else None
     if age < config.no_actor_protection_after_years and _get_movie_actor_names(movie.get("People", [])) & favorite_actors:
         return "actor_protected"
     if _is_franchise_protected(movie.get("ProviderIds", {})):
         return "franchise_protected"
-    if _is_path_protected(movie.get("Path", ""), config.protect_paths):
-        return "path_protected"
     if effective_rating >= threshold:
         return "rating_protected"
     return None
