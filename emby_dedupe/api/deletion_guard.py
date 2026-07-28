@@ -146,3 +146,50 @@ def collect_delete_paths(decisions) -> list:
             if item.get("path"):
                 paths.append(item["path"])
     return paths
+
+
+def is_cleanup_delete_safe(
+    delete_path: str | None, known_paths, delete_paths=None
+) -> tuple[bool, str]:
+    """Decide whether deleting ``delete_path`` can destroy media the run is KEEPING.
+
+    The cleanup path has no per-group "keeper" the way dedup does — the thing to protect
+    is *anything that survives the run* in the same folder. Emby fold-deletes an item's
+    owning directory, so removing one movie can take unrelated titles with it when they
+    share that directory. Hit live on 2026-07-28: a Victoria's Secret edition sat loose in
+    a folder holding 13 editions, 9 of them keepers.
+
+    Every survivor under the delete's directory is checked with the SAME rules dedup uses
+    (:func:`is_delete_safe`) — per-title-folder trap, direct-children-only, and
+    surviving-children-only — so both paths stay consistent by construction.
+
+    Args:
+        delete_path: filesystem path of the item about to be deleted.
+        known_paths: every media path in the library (``fetch_all_media_paths``). Without
+            full visibility a shared folder can look dedicated and the guard over-refuses.
+        delete_paths: every path being deleted in THIS run, so a same-folder sibling that
+            is itself a target does not count as a survivor.
+
+    Returns:
+        (safe, reason). ``safe`` False means refuse the Emby delete — it would fold-delete
+        a directory containing media that is meant to survive.
+    """
+    dp = _norm(delete_path)
+    if not dp:
+        return True, "no delete path — nothing to reason about"
+
+    ddir = posixpath.dirname(dp)
+    delete_set = {_norm(p) for p in (delete_paths or [])}
+    survivors = [
+        p for p in known_paths
+        if _norm(p) != dp and _norm(p) not in delete_set and _under(_norm(p), ddir)
+    ]
+    if not survivors:
+        return True, "nothing in this folder survives the run — fold-delete harms nothing"
+
+    # Delegate to the dedup guard once per survivor; any single unsafe verdict refuses.
+    for survivor in survivors:
+        safe, reason = is_delete_safe(survivor, delete_path, known_paths, delete_paths)
+        if not safe:
+            return False, reason
+    return True, f"shared folder ({len(survivors)} surviving item(s)) → Emby deletes file only"

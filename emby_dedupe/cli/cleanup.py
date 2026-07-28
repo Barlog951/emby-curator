@@ -32,9 +32,11 @@ from emby_dedupe.api.cleanup_pipeline import (
 from emby_dedupe.api.client import (
     check_emby_connection,
     delete_item,
+    fetch_all_media_paths,
     handle_host_and_port,
     logout,
 )
+from emby_dedupe.api.deletion_guard import is_cleanup_delete_safe
 from emby_dedupe.api.search import get_all_library_ids, get_library_ids_by_name
 from emby_dedupe.models.cleanup import (
     _DEFAULT_PROTECT_PATH,
@@ -201,10 +203,28 @@ def _perform_deletions(
     """
     if username is None or password is None or api_key is None:
         raise ValueError("username, password and api_key are required for deletions")
+
+    # Emby fold-deletes an item's owning directory, so a candidate sharing its folder with
+    # media the run is KEEPING can take that media with it. Fetch every library path once
+    # and gate each delete on the same guard the dedup path uses.
+    known_paths = fetch_all_media_paths(client, base_url)
+    delete_paths = [c.path for c in candidates if getattr(c, "path", None)]
+
     logger.info(f"Deleting {len(candidates)} {label} candidates...")
     with tqdm(candidates, desc=f"Deleting {label}", unit=label.rstrip("s")) as progress:
         for candidate in progress:
             progress.set_postfix_str(candidate.name[:40])
+            safe, reason = is_cleanup_delete_safe(
+                getattr(candidate, "path", None), known_paths, delete_paths
+            )
+            if not safe:
+                candidate.deletion_result = {"status": "skipped_unsafe", "error": reason}
+                logger.error(
+                    "SAFETY GUARD blocked cleanup deletion of %r — %s (path=%r). "
+                    "Item kept; resolve the layout manually.",
+                    candidate.name, reason, getattr(candidate, "path", None),
+                )
+                continue
             result = delete_item(
                 client, base_url, candidate.item_id,
                 username=username, password=password, api_key=api_key,

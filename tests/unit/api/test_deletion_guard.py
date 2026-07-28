@@ -322,3 +322,73 @@ def test_converter_and_guard_agree_a_per_title_folder_is_a_trap(tmp_path):
     safe, reason = is_delete_safe(str(keeper), str(p5), [str(keeper), str(p5)])
     assert safe is False
     assert "dedicated folder" in reason
+
+
+class TestCleanupDeleteGuard:
+    """The cleanup path had NO fold-delete guard: cli/cleanup.py called delete_item()
+    directly, so deleting a movie that shares its folder with keepers could fold-delete
+    the whole directory. Live case 2026-07-28: Victoria's Secret 2014 sat loose in a
+    folder holding 13 editions, 9 of them keepers.
+    """
+
+    VS = "/Movies/Dokumenty/The Victoria's Secret Fashion Show - 720p x264"
+
+    def test_loose_file_in_shared_folder_is_file_only_delete(self):
+        from emby_dedupe.api.deletion_guard import is_cleanup_delete_safe
+
+        delete = f"{self.VS}/The Victoria's Secret Fashion Show (2014) - 720p x264.mp4"
+        known = [
+            delete,
+            f"{self.VS}/The Victoria's Secret Fashion Show (2005) - 720p x264.mp4",
+            f"{self.VS}/The Victoria's Secret Fashion Show (2010) - 720p x264.mkv",
+            f"{self.VS}/The Victoria's Secret Fashion Show 2017/x.mkv",
+        ]
+        safe, reason = is_cleanup_delete_safe(delete, known, [delete])
+        assert safe, reason
+        assert "file only" in reason
+
+    def test_per_title_folder_with_a_survivor_is_refused(self):
+        """A folder named for the title is fold-deleted wholesale — never safe."""
+        from emby_dedupe.api.deletion_guard import is_cleanup_delete_safe
+
+        d = "/Movies/Dokumenty/Some Doc (2019)"
+        delete = f"{d}/Some Doc (2019) - 1080p.mkv"
+        known = [delete, f"{d}/Some Doc (2019) - extras.mkv"]
+        safe, reason = is_cleanup_delete_safe(delete, known, [delete])
+        assert not safe
+        assert "fold-delete" in reason or "dedicated folder" in reason
+
+    def test_nested_survivor_blocks_the_delete(self):
+        """A survivor in a SUBfolder doesn't stop Emby fold-deleting the parent."""
+        from emby_dedupe.api.deletion_guard import is_cleanup_delete_safe
+
+        d = "/Movies/Dokumenty/Container"
+        delete = f"{d}/loose.mkv"
+        known = [delete, f"{d}/Sub/keeper.mkv"]
+        safe, _ = is_cleanup_delete_safe(delete, known, [delete])
+        assert not safe
+
+    def test_folder_where_everything_is_being_deleted_is_safe(self):
+        from emby_dedupe.api.deletion_guard import is_cleanup_delete_safe
+
+        d = "/Movies/Dokumenty/Doomed"
+        a, b = f"{d}/a.mkv", f"{d}/b.mkv"
+        safe, reason = is_cleanup_delete_safe(a, [a, b], [a, b])
+        assert safe
+        assert "survives" in reason
+
+    def test_sibling_that_is_also_a_delete_target_does_not_vouch_shared(self):
+        """Two co-located deletes must not vouch for each other while a keeper sits there."""
+        from emby_dedupe.api.deletion_guard import is_cleanup_delete_safe
+
+        d = "/Movies/Dokumenty/Mixed"
+        keep = f"{d}/Mixed/keeper.mkv"          # nested keeper
+        a, b = f"{d}/a.mkv", f"{d}/b.mkv"
+        safe, _ = is_cleanup_delete_safe(a, [a, b, keep], [a, b])
+        assert not safe
+
+    def test_missing_path_is_not_blocked(self):
+        from emby_dedupe.api.deletion_guard import is_cleanup_delete_safe
+
+        assert is_cleanup_delete_safe(None, [], [])[0] is True
+        assert is_cleanup_delete_safe("", ["/x/y.mkv"], [])[0] is True
