@@ -297,6 +297,31 @@ def _process_decisions_to_groups(valid_decisions: list[dict[str, Any]], base_url
                 continue
 
 
+def _inline_group_posters(template_data: dict[str, Any]) -> None:
+    """Replace every poster URL in the report with an embedded ``data:`` URI, in place.
+
+    The scan builds image URLs with ``?api_key=<live key>`` so the browser can load
+    them. Writing that into the report would put a working credential in a file that
+    gets opened and shared, so the posters are fetched here (key sent as a header) and
+    embedded instead. On failure the URL is kept but stripped of the key.
+    """
+    from emby_dedupe.reports.images import inline_poster_urls
+
+    groups = template_data.get("duplicate_groups") or []
+    items = [
+        item
+        for group in groups
+        for item in ([group.get("keep")] + list(group.get("delete") or []))
+        if isinstance(item, dict) and item.get("image_url")
+    ]
+    if not items:
+        return
+
+    replacements = inline_poster_urls([item["image_url"] for item in items])
+    for item in items:
+        item["image_url"] = replacements.get(item["image_url"], item["image_url"])
+
+
 def _log_rendering_error_details(template_data: dict[str, Any]) -> None:
     """Log detailed error information when template rendering fails."""
     logger.error("Template data structure:")
@@ -358,6 +383,10 @@ def format_html_report(base_url: str, decisions: list[dict[str, Any]], metadata:
 
     # Process each decision group into a template-friendly format
     _process_decisions_to_groups(valid_decisions, base_url, template_data)
+
+    # Embed the posters and drop the API key: the scan builds image URLs carrying
+    # ?api_key=..., which would write a live credential into this file.
+    _inline_group_posters(template_data)
 
     # Set up Jinja2 environment
     import os

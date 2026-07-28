@@ -357,6 +357,21 @@ def _movie_candidate_to_dict(c: CleanupCandidate, base_url: str, api_key: str) -
     }
 
 
+def _inline_poster_urls_in_dicts(item_dicts: list[dict], api_key: str) -> None:
+    """Swap each dict's ``image_url`` for an embedded ``data:`` URI, in place.
+
+    Keeps the live API key out of the rendered report — see :mod:`emby_dedupe.reports.images`.
+    """
+    from emby_dedupe.reports.images import inline_poster_urls
+
+    with_images = [d for d in item_dicts if d.get("image_url")]
+    if not with_images:
+        return
+    replacements = inline_poster_urls([d["image_url"] for d in with_images], api_key)
+    for d in with_images:
+        d["image_url"] = replacements.get(d["image_url"], d["image_url"])
+
+
 def _series_candidate_to_dict(c: SeriesCleanupCandidate, base_url: str, api_key: str) -> dict:
     """Convert a SeriesCleanupCandidate to a template-friendly dict."""
     return {
@@ -452,6 +467,12 @@ def _generate_cleanup_html_report(
         series_near_miss_dicts.append(series_dict)
     movie_near_miss_size = sum(c.size_bytes for c in (movie_near_miss or []))
     series_near_miss_size = sum(c.size_bytes for c in (series_near_miss or []))
+
+    # Embed the posters so the API key never reaches the report file (see reports.images).
+    _inline_poster_urls_in_dicts(
+        [*candidates_dicts, *series_dicts, *movie_near_miss_dicts, *series_near_miss_dicts],
+        api_key,
+    )
 
     return template.render(
         base_url=base_url,
