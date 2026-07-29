@@ -457,7 +457,7 @@ This provides a consistent environment for development and testing, regardless o
 
 ### Running Tests
 
-The project has a comprehensive test suite with 1239 tests covering 89% of the codebase. The tests are organized in the same structure as the main package:
+The project has a comprehensive test suite with 1288 tests covering 89% of the codebase. The tests are organized in the same structure as the main package:
 
 ```
 tests/
