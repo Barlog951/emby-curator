@@ -9,8 +9,8 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ### Fixed
 
-- **Python 3.12 / 3.13 support restored.** 3.0.1 was unusable on any Python below
-  3.14: seven modules — including `cli/main`, `cli/check`, `api/checker`,
+- **Python 3.12 / 3.13 support.** Code merged after 3.0.1 was unusable on any Python
+  below 3.14: seven modules — including `cli/main`, `cli/check`, `api/checker`,
   `api/deduplication`, `api/metadata`, `api/quality_compare` and `utils/config` —
   raised `NameError` at import, so the `dedupe` and `check` commands could not run.
   The cause was self-referencing annotations (e.g. `def from_emby_item(cls, ...) ->
@@ -18,6 +18,10 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
   annotation evaluation (PEP 649) and accepts them; 3.12 and 3.13 evaluate them
   while the class body is still executing and fail. The affected modules now use
   `from __future__ import annotations`.
+
+  **Release 3.0.1 itself was not affected** — the regression was introduced after it
+  was published and never reached a release artifact. It did affect anyone tracking
+  `main` from a git checkout on Python 3.12/3.13.
 
 ### Changed
 
