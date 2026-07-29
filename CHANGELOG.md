@@ -5,6 +5,28 @@ All notable changes to **Emby Curator** are documented here.
 This project is a maintained fork of [emby-dedupe](https://github.com/troykelly/emby-dedupe)
 by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.0.
 
+## [3.0.2] — 2026-07-30
+
+### Fixed
+
+- **Python 3.12 / 3.13 support restored.** 3.0.1 was unusable on any Python below
+  3.14: seven modules — including `cli/main`, `cli/check`, `api/checker`,
+  `api/deduplication`, `api/metadata`, `api/quality_compare` and `utils/config` —
+  raised `NameError` at import, so the `dedupe` and `check` commands could not run.
+  The cause was self-referencing annotations (e.g. `def from_emby_item(cls, ...) ->
+  ExistingQuality` inside the `ExistingQuality` class body). Python 3.14 defers
+  annotation evaluation (PEP 649) and accepts them; 3.12 and 3.13 evaluate them
+  while the class body is still executing and fail. The affected modules now use
+  `from __future__ import annotations`.
+
+### Changed
+
+- CI runs the test suite on Python 3.12, 3.13 and 3.14 instead of 3.14 only — the
+  gap that allowed the above to ship against a declared `requires-python = ">=3.12"`.
+- Added `tests/unit/test_python_compat.py`: a static AST guard that rejects
+  eagerly-evaluated self-referencing annotations on any interpreter, plus a test
+  that every module in the package imports.
+
 ## [3.0.1] — 2026
 
 - Repository renamed `emby-dedupe` → `emby-curator`; updated all repo/image URLs
