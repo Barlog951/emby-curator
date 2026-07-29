@@ -24,6 +24,8 @@ Usage:
     should_dl = checker.should_download("Inception", year=2010, resolution="2160p")
 """
 
+from __future__ import annotations
+
 import hashlib
 import json
 import time

@@ -6,6 +6,8 @@ Loads ~/.emby-dedupe/config.yaml (user config) with explicit overrides on top
 resolved by the CLI layer (typer ``envvar=``), not here.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Any
 

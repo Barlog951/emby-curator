@@ -19,41 +19,57 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Must cover every version allowed by requires-python (>=3.12). Testing
+        # only on 3.14 hid a hard import failure on 3.12/3.13: PEP 649 defers
+        # annotation evaluation on 3.14, so unquoted self-referencing annotations
+        # (``def from_emby_item(cls, ...) -> ExistingQuality`` inside its own class)
+        # passed locally while raising NameError at import time on 3.12 — which is
+        # what production actually runs.
+        python-version: ['3.12', '3.13', '3.14']
+    name: test (py${{ matrix.python-version }})
     steps:
       - uses: actions/checkout@v7
-      
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
-          python-version: '3.14'
-          
+          python-version: ${{ matrix.python-version }}
+
       - name: Cache pip dependencies
         uses: actions/cache@v6
         with:
           path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          key: ${{ runner.os }}-py${{ matrix.python-version }}-pip-${{ hashFiles('requirements.txt') }}
           restore-keys: |
+            ${{ runner.os }}-py${{ matrix.python-version }}-pip-
             ${{ runner.os }}-pip-
-            
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
           pip install pytest pytest-cov ruff mypy
-          
+
       - name: Lint
+        if: matrix.python-version == '3.14'
         run: make lint
-        
+
       - name: Type check
+        if: matrix.python-version == '3.14'
         run: make mypy
-        
+
       - name: Run tests
         run: make test
-        
+
       - name: Test coverage
+        if: matrix.python-version == '3.14'
         run: pytest --cov-report xml --cov=emby_dedupe
-        
+
       - name: Upload coverage report
+        if: matrix.python-version == '3.14'
         uses: codecov/codecov-action@v7
         with:
           files: ./coverage.xml

@@ -10,6 +10,8 @@ codec-adjusted starved-bitrate demotion and the Dolby Vision Profile-5 penalty).
 ordering of the same pair of files.
 """
 
+from __future__ import annotations
+
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
