@@ -305,21 +305,11 @@ def _inline_group_posters(template_data: dict[str, Any]) -> None:
     gets opened and shared, so the posters are fetched here (key sent as a header) and
     embedded instead. On failure the URL is kept but stripped of the key.
     """
-    from emby_dedupe.reports.images import inline_poster_urls
+    from emby_dedupe.reports.images import inline_images_in_place
 
-    groups = template_data.get("duplicate_groups") or []
-    items = [
-        item
-        for group in groups
-        for item in ([group.get("keep")] + list(group.get("delete") or []))
-        if isinstance(item, dict) and item.get("image_url")
-    ]
-    if not items:
-        return
-
-    replacements = inline_poster_urls([item["image_url"] for item in items])
-    for item in items:
-        item["image_url"] = replacements.get(item["image_url"], item["image_url"])
+    # Walks the entire context, not just duplicate_groups: the excluded-media section
+    # renders posters too, and enumerating sections by hand let it leak the live key.
+    inline_images_in_place(template_data)
 
 
 def _log_rendering_error_details(template_data: dict[str, Any]) -> None:

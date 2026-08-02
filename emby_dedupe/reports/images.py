@@ -15,7 +15,7 @@ acceptable outcome, leaking the key is not.
 from __future__ import annotations
 
 import base64
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -125,3 +125,39 @@ def inline_poster_urls(
     logger.info("Report posters: %d/%d inlined (no API key written to the report)",
                 inlined, len(to_fetch))
     return replacements
+
+
+def _iter_image_holders(node: object) -> Iterator[dict]:
+    """Yield every dict anywhere in ``node`` that carries a non-empty ``image_url``."""
+    if isinstance(node, dict):
+        if isinstance(node.get("image_url"), str) and node["image_url"]:
+            yield node
+        yield from (h for v in node.values() for h in _iter_image_holders(v))
+    elif isinstance(node, (list, tuple)):
+        yield from (h for v in node for h in _iter_image_holders(v))
+
+
+def inline_images_in_place(
+    context: object,
+    api_key: str | None = None,
+    timeout: float = _DEFAULT_TIMEOUT,
+) -> None:
+    """Inline every poster in a render context, in place, wherever it lives.
+
+    Walks the whole structure rather than a hand-maintained list of the sections that
+    happen to hold posters today. That enumeration is what failed before: the dedupe
+    report inlined ``duplicate_groups`` only, so the ``excluded_titles`` section kept
+    rendering ``?api_key=<live key>`` and shipped a working credential in every report.
+    A new template section is now covered automatically.
+
+    Any URL that cannot be inlined is still written **without** its credential — a
+    broken image is acceptable, leaking the key is not.
+    """
+    holders = list(_iter_image_holders(context))
+    if not holders:
+        return
+
+    replacements = inline_poster_urls([h["image_url"] for h in holders], api_key, timeout)
+    for holder in holders:
+        url = holder["image_url"]
+        holder["image_url"] = replacements.get(url) or strip_credentials(url)
