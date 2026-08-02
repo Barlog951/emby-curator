@@ -13,6 +13,17 @@ description = "Emby API key (32 hex chars in an api-key / X-Emby-Token context)"
 regex = '''(?i)(?:emby[-_ ]?token|api[-_ ]?key|x-emby-token|DEDUPE_EMBY_API_KEY)["'\s:=]{1,5}([a-f0-9]{32})\b'''
 keywords = ["emby", "api_key", "api-key", "x-emby-token", "emby-token"]
 
+[[rules]]
+# 2026-08-02: the live key sat PUBLIC on GitHub for 5 days as `KEY = "<32 hex>"` in
+# tests/unit/reports/test_images.py. The rule above never fired because it demands an
+# "api_key"/"emby-token" context word, and a bare KEY/TOKEN/SECRET assignment has none.
+# Deliberately NOT a blanket 32-hex rule: Emby image tags are also 32 hex and appear
+# all over the tests, so this stays anchored to credential-shaped variable names.
+id = "bare-key-assignment"
+description = "32-hex secret assigned to a KEY/TOKEN/SECRET/PASSWORD variable"
+regex = '''(?i)\b(?:key|token|secret|password|passwd|pwd)\s*[:=]\s*["']([a-f0-9]{32})["']'''
+keywords = ["key", "token", "secret", "password"]
+
 [allowlist]
 description = "Placeholders, examples, and redaction markers — never real secrets"
 # regexes match the captured SECRET value (gitleaks default target), so a real

@@ -11,7 +11,8 @@ from emby_dedupe.reports.images import (
     strip_credentials,
 )
 
-KEY = "18b9b4f5f88945ae99e4c89ee20ea9f7"
+# Obviously-fake placeholder. NEVER paste a real key here — this file is public.
+KEY = "abc123def4560000000000000000abcd"
 URL = f"https://emby.example.com/Items/42/Images/Primary?maxWidth=200&api_key={KEY}"
 PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 64
 
