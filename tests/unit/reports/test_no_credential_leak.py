@@ -24,7 +24,10 @@ import pytest
 from emby_dedupe.reports.html import format_html_report
 from emby_dedupe.reports.images import inline_images_in_place
 
-SECRET = "deadbeefcafe1234deadbeefcafe1234"
+# Same allowlisted placeholder shape as test_images.py. A 32-hex literal assigned to a
+# KEY/SECRET/TOKEN name is exactly what the gitleaks 'bare-key-assignment' rule hunts for,
+# so it must start with the known-fake prefix or the scanner flags this file.
+SECRET = "abc123def4560000000000000000feed"
 BASE = "https://emby.example.com:443"
 
 
