@@ -55,7 +55,7 @@ from emby_dedupe.utils.exceptions import EmbyConfigError, EmbyConfigMissingError
 from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.json_cache import load_json_cache, save_json_cache
 from emby_dedupe.utils.logging import logger
-from emby_dedupe.utils.providers import iter_provider_ids
+from emby_dedupe.utils.providers import iter_provider_ids, normalize_provider_ids
 
 
 @dataclass
@@ -471,16 +471,21 @@ class EmbyChecker:
     ) -> dict | None:
         """Search Emby for a series matching the given provider ID.
 
-        Emby may ignore the AnyXxxId filter for Series items and return
-        ALL series. This method validates that the returned series actually
-        has the expected provider ID.
+        ``AnyProviderIdEquals=<provider>.<id>`` is the filter Emby actually honours;
+        the former ``Any{Provider}Id`` param is not one, so Emby returned EVERY series
+        (2,527 of them) and the match relied on the validation loop alone. That loop
+        compared the ``ProviderIds`` key case-sensitively, and Emby writes it as
+        ``"Imdb"`` OR ``"IMDB"`` (877/2,527 series carry the upper-case form) — those
+        series were invisible to the gate, so *Bad Exorcist* (IMDB tt13624584, present
+        in full) was re-downloaded on 2026-09-13. The result is still validated, key
+        case-insensitively, in case a server ignores the filter.
 
         Returns:
             Matching series dict, or None if not found.
         """
         url = f"{host}/Items"
         params = {
-            f"Any{ptype}Id": pid,
+            "AnyProviderIdEquals": f"{ptype.lower()}.{pid}",
             "IncludeItemTypes": "Series",
             "Recursive": "true",
             "Fields": "ProviderIds",
@@ -490,8 +495,8 @@ class EmbyChecker:
         series_items = response.json().get("Items", [])
 
         for candidate in series_items:
-            candidate_pids = candidate.get("ProviderIds", {})
-            if candidate_pids.get(ptype, "").lower() == pid.lower():
+            candidate_pids = normalize_provider_ids(candidate.get("ProviderIds"))
+            if str(candidate_pids.get(ptype.lower(), "")).lower() == pid.lower():
                 return candidate
 
         if series_items:

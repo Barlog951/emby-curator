@@ -942,6 +942,70 @@ class TestEmbyChecker:
         assert result[0]["Id"] == "ep1"
 
 
+class TestSeriesLookupHonoursEmbyKeyCasing:
+    """Regression (2026-09-13): *Bad Exorcist* (IMDB tt13624584) sat in the library in full,
+    yet all 26 episodes came back "not found" and were re-downloaded.
+
+    Two defects in ``_find_validated_series``: the request used ``AnyImdbId`` (not an Emby
+    filter — every series came back) and the validation loop read ``ProviderIds["Imdb"]``
+    case-sensitively while Emby stores 877/2,527 series under ``"IMDB"``.
+    """
+
+    def _checker(self):
+        checker = EmbyChecker(host="http://emby.local", api_key="test-key")
+        checker._client = Mock()
+        return checker
+
+    @patch('emby_dedupe.api.checker.make_http_request')
+    def test_upper_case_imdb_key_is_a_match(self, mock_request):
+        checker = self._checker()
+        series_response = Mock()
+        series_response.json.return_value = {
+            "Items": [{"Id": "bad-exorcist", "Name": "Bad Exorcist",
+                       "ProviderIds": {"Tvdb": "392783", "IMDB": "tt13624584", "Tmdb": "114183"}}]
+        }
+        episodes_response = Mock()
+        episodes_response.json.return_value = {
+            "Items": [{"Id": "ep1", "Name": "Pilot", "ParentIndexNumber": 1, "IndexNumber": 1,
+                       "MediaStreams": [], "Path": "/S01/E01.mkv"}]
+        }
+        mock_request.side_effect = [series_response, episodes_response]
+
+        result = checker._lookup_episode_via_series("tt13624584", None, None, season=1, episode=1)
+
+        assert result is not None and [ep["Id"] for ep in result] == ["ep1"], (
+            "a series whose ProviderIds key is spelled IMDB must be found"
+        )
+
+    @patch('emby_dedupe.api.checker.make_http_request')
+    def test_request_uses_the_provider_id_filter_emby_honours(self, mock_request):
+        checker = self._checker()
+        series_response = Mock()
+        series_response.json.return_value = {"Items": []}
+        mock_request.return_value = series_response
+
+        checker._lookup_episode_via_series("tt13624584", "114183", None, season=1, episode=1)
+
+        sent = [call.kwargs.get("params") or call.args[3] for call in mock_request.call_args_list]
+        assert sent[0]["AnyProviderIdEquals"] == "imdb.tt13624584"
+        assert sent[1]["AnyProviderIdEquals"] == "tmdb.114183"
+        for params in sent:
+            assert not any(k.startswith("Any") and k.endswith("Id") for k in params), (
+                "Any{Provider}Id is not an Emby filter and returns the whole library"
+            )
+
+    @patch('emby_dedupe.api.checker.make_http_request')
+    def test_a_filter_ignoring_server_is_still_validated(self, mock_request):
+        checker = self._checker()
+        series_response = Mock()
+        series_response.json.return_value = {
+            "Items": [{"Id": "other", "Name": "Other Show", "ProviderIds": {"IMDB": "tt0000001"}}]
+        }
+        mock_request.return_value = series_response
+
+        assert checker._lookup_episode_via_series("tt13624584", None, None, season=1, episode=1) is None
+
+
 class TestFromConfigErrorContract:
     """Regression (code review 2026-07-10): from_config() must fail loudly, not build a
     checker with host=None that only errors on the first check()."""

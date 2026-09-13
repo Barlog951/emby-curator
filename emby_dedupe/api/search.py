@@ -160,9 +160,11 @@ def search_by_provider_id(
     }
     provider_type = provider_type_map.get(provider_type.lower(), provider_type)
 
+    # ``AnyProviderIdEquals`` is the filter Emby honours; ``Any{Provider}Id`` was never
+    # one and made Emby return the whole library (see EmbyChecker._find_validated_series).
     params = {
         "api_key": api_key,
-        f"Any{provider_type}Id": provider_id,
+        "AnyProviderIdEquals": f"{provider_type.lower()}.{provider_id}",
         "Recursive": "true",
         "Fields": SEARCH_FIELDS,
     }
@@ -248,20 +250,23 @@ def select_series_candidate(
             if exact is None:
                 exact = series
             continue
-        candidate_year = series.get("ProductionYear")
-        if (
-            year is not None
-            and candidate_year is not None
-            and int(candidate_year) - int(year) > _FUZZY_YEAR_TOLERANCE
-        ):
+        if _premiered_too_late(series.get("ProductionYear"), year):
             logger.debug(
-                f"Rejecting fuzzy series match '{candidate_name}' ({candidate_year}) for "
+                f"Rejecting fuzzy series match '{candidate_name}' ({series.get('ProductionYear')}) for "
                 f"'{series_name}' ({year}): year conflict"
             )
             continue
         if fuzzy is None:
             fuzzy = series
     return exact or fuzzy
+
+
+def _premiered_too_late(candidate_year: Any, year: int | None) -> bool:
+    """A containment-only series match whose premiere is more than the tolerance AFTER the
+    caller's year cannot be the show (an episode cannot air before its series premiered)."""
+    if year is None or candidate_year is None:
+        return False
+    return int(candidate_year) - int(year) > _FUZZY_YEAR_TOLERANCE
 
 
 def search_tv_episode(

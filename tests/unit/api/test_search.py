@@ -136,9 +136,12 @@ class TestSearchByProviderId:
             "imdb",  # lowercase
         )
 
-        # Check that the call was made with normalized provider type
+        # Emby honours ``AnyProviderIdEquals=<provider>.<id>`` — ``Any{Provider}Id`` was
+        # never a real filter and returned the whole library.
         call_args = mock_client.request.call_args
-        assert "AnyImdbId" in str(call_args)
+        assert "AnyProviderIdEquals" in str(call_args)
+        assert "imdb.123" in str(call_args)
+        assert "AnyImdbId" not in str(call_args)
 
 
 class TestSearchTvEpisode:
