@@ -1,0 +1,187 @@
+"""Tests for emby_dedupe.cli.csfd — candidate selection, planning, payload, apply."""
+from __future__ import annotations
+
+import json
+from argparse import Namespace
+
+import httpx
+
+from emby_dedupe.api.csfd import CsfdFilm, CsfdHit
+from emby_dedupe.cli import csfd as cli
+from emby_dedupe.cli.csfd import (
+    ItemPlan,
+    build_payload,
+    is_candidate,
+    load_manual_map,
+    missing_fields,
+    plan_item,
+    resolve_film,
+    title_queries,
+)
+
+
+def _item(**over):
+    base = {"Id": "1", "Type": "Movie", "Name": "Tatranský durič", "ProductionYear": 2026,
+            "Path": "/Movies/Dokumenty/Tatransky duric (2026)/Tatransky duric (2026) - 1080p.mkv",
+            "ProviderIds": {}, "ImageTags": {}, "Genres": [], "Overview": "", "LockedFields": []}
+    base.update(over)
+    return base
+
+
+def _film(**over):
+    base = dict(url="https://www.csfd.sk/film/1885748-x/prehlad/", csfd_id="1885748",
+                title="Tatranský durič", year=2026, countries=["Slovensko"],
+                genres_sk=["Dokumentárny"], plot="Plot.", rating_pct=87,
+                poster_url="https://image.pmgstatic.com/p.jpg")
+    base.update(over)
+    return CsfdFilm(**base)
+
+
+def test_missing_fields_and_candidate_rules():
+    assert missing_fields(_item()) == ["poster", "overview", "genres"]
+    full = _item(ImageTags={"Primary": "t"}, Overview="x", Genres=["Documentary"])
+    assert missing_fields(full) == []
+    assert is_candidate(_item(), only_unmatched=False)
+    assert is_candidate(full, only_unmatched=False)                       # no provider id
+    assert not is_candidate(_item(ProviderIds={"Tmdb": "5"}, ImageTags={"Primary": "t"},
+                                  Overview="x", Genres=["D"]), only_unmatched=False)
+    assert is_candidate(_item(ProviderIds={"Tmdb": "5"}), only_unmatched=False)   # matched, no poster
+    assert not is_candidate(_item(ProviderIds={"Tmdb": "5"}), only_unmatched=True)
+    assert not is_candidate(_item(ProviderIds={"Csfd": "9"}), only_unmatched=False)  # done earlier
+    assert not is_candidate(_item(Type="Episode"), only_unmatched=False)
+
+
+def test_title_queries_use_name_folder_title_and_original_title_once():
+    item = _item(Name="Zkaza SOC", OriginalTitle="Zkaza SOC",
+                 Path="/Movies/Dokumenty/Zkaza Svetoveho obchodniho centra (2021) - 720p/Z.mkv")
+    assert title_queries(item) == ["Zkaza SOC", "Zkaza Svetoveho obchodniho centra"]
+    series = _item(Type="Series", Name="Na telo", Path="/Movies/Serials/Na telo (2026)")
+    assert title_queries(series) == ["Na telo"]
+
+
+def test_plan_item_fills_only_empty_fields():
+    plan = plan_item(_item(), _film())
+    assert plan.fields == {"Overview": "Plot.", "Genres": ["Documentary"], "CommunityRating": 8.7}
+    assert plan.poster is True and plan.has_changes
+    kept = _item(Overview="Existing", Genres=["Drama"], ImageTags={"Primary": "t"},
+                 CommunityRating=6.1, ProductionYear=None)
+    plan2 = plan_item(kept, _film(year=2024))
+    assert plan2.fields == {"ProductionYear": 2024} and plan2.poster is False
+    nothing = plan_item(kept, _film(year=None, poster_url=None))
+    assert not nothing.has_changes
+
+
+def test_build_payload_sets_fields_locks_and_provider_id():
+    item = _item(LockedFields=["Name"])
+    plan = plan_item(item, _film())
+    payload = build_payload(item, plan)
+    assert payload["Overview"] == "Plot." and payload["Genres"] == ["Documentary"]
+    assert payload["GenreItems"] == [{"Name": "Documentary", "Id": ""}]
+    assert payload["CommunityRating"] == 8.7
+    assert payload["ProviderIds"] == {"Csfd": "1885748"}
+    assert payload["LockedFields"] == ["Name", "Overview", "Genres"]
+    assert item["LockedFields"] == ["Name"]            # input not mutated
+
+
+def test_load_manual_map_parses_tsv(tmp_path):
+    f = tmp_path / "map.tsv"
+    f.write_text("# id\turl\n\n12\thttps://www.csfd.sk/film/1-x/\nbad line\n", encoding="utf-8")
+    assert load_manual_map(str(f)) == {"12": "https://www.csfd.sk/film/1-x/"}
+    assert load_manual_map(None) == {}
+
+
+class _FakeCsfd:
+    def __init__(self, hits, film):
+        self.hits, self._film, self.searched, self.fetched = hits, film, [], []
+
+    def search(self, query):
+        self.searched.append(query)
+        return self.hits
+
+    def film(self, url):
+        self.fetched.append(url)
+        return self._film
+
+    def fetch_poster(self, url):
+        return b"\xff\xd8", "image/jpeg"
+
+
+def test_resolve_film_prefers_manual_map_then_strict_search():
+    film = _film()
+    fake = _FakeCsfd([CsfdHit(film.url, "Tatranský durič", 2026, "film")], film)
+    got, reason = resolve_film(fake, _item(), {"1": "https://www.csfd.sk/film/manual/"})
+    assert got is film and reason == "manual map" and fake.fetched == ["https://www.csfd.sk/film/manual/"]
+    got, reason = resolve_film(fake, _item(), {})
+    assert got is film and reason == "matched 'Tatranský durič'"
+    none, reason = resolve_film(_FakeCsfd([], film), _item(), {})
+    assert none is None and "no unambiguous" in reason
+
+
+def test_run_fill_dry_run_and_doit_end_to_end(tmp_path, monkeypatch):
+    """Dry run posts nothing; --doit posts the item update and the poster."""
+    item = _item()
+    posted: list[tuple[str, bytes]] = []
+
+    def emby(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            posted.append((request.url.path, request.content))
+            return httpx.Response(204)
+        return httpx.Response(200, json={"Items": [item], "TotalRecordCount": 1})
+
+    film = _film()
+    fake = _FakeCsfd([CsfdHit(film.url, "Tatranský durič", 2026, "film")], film)
+    monkeypatch.setattr(cli, "CsfdClient", lambda *a, **k: fake)
+    monkeypatch.setattr(cli, "load_csfd_cache", lambda: {})
+    monkeypatch.setattr(cli, "save_csfd_cache", lambda cache: None)
+    monkeypatch.setattr(cli, "fetch_items_with_genres", lambda *a, **k: [item])
+    client = httpx.Client(transport=httpx.MockTransport(emby))
+    report = tmp_path / "r.tsv"
+    args = Namespace(doit=False, flaresolverr_url="http://fs/v1", report=str(report),
+                     library=["Dokumenty"], all_libraries=False)
+    cli._run_fill(client, "http://emby:8096", "u", ["lib"], args)
+    assert posted == []
+    assert "matched 'Tatranský durič'" in report.read_text(encoding="utf-8")
+
+    args.doit = True
+    cli._run_fill(client, "http://emby:8096", "u", ["lib"], args)
+    assert [p for p, _ in posted] == ["/Items/1", "/Items/1/Images/Primary"]
+    body = json.loads(posted[0][1])
+    assert body["Overview"] == "Plot." and body["ProviderIds"]["Csfd"] == "1885748"
+
+
+def test_item_plan_describe_and_apply_failure_path():
+    plan = ItemPlan("1", "X", film=_film(), fields={"Overview": "long"}, poster=True)
+    assert cli._describe(plan) == "Overview=…, poster"
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
+    assert cli._apply(client, "http://emby:8096", _FakeCsfd([], _film()), _item(), plan) is False
+
+
+def test_run_fill_saves_cache_periodically(monkeypatch):
+    items = [_item(Id=str(i), Name=f"T{i}") for i in range(1, 22)]
+    saves: list[int] = []
+    monkeypatch.setattr(cli, "CACHE_SAVE_EVERY", 10)
+    monkeypatch.setattr(cli, "CsfdClient", lambda *a, **k: _FakeCsfd([], _film()))
+    monkeypatch.setattr(cli, "load_csfd_cache", lambda: {})
+    monkeypatch.setattr(cli, "save_csfd_cache", lambda cache: saves.append(1))
+    monkeypatch.setattr(cli, "fetch_items_with_genres", lambda *a, **k: items)
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"Items": []})))
+    cli._run_fill(client, "http://emby:8096", "u", ["lib"],
+                  Namespace(doit=False, flaresolverr_url="http://fs/v1", report=None))
+    assert len(saves) == 3   # after item 10, item 20, and the final save
+
+
+def test_resolve_film_second_pass_verifies_original_title_on_page():
+    """Search shows the localized title; the page lists the original title we hold."""
+    localized = _film(title="Řecko z ptačí perspektivy", names=["Aerial Greece"], year=2021)
+    hits = [CsfdHit(localized.url, "Řecko z ptačí perspektivy", 2021, "series"),
+            CsfdHit("https://www.csfd.sk/film/2-krasy/prehlad/", "Krásy Řecka", 2013, "series")]
+    fake = _FakeCsfd(hits, localized)
+    item = _item(Type="Series", Name="Aerial Greece", ProductionYear=2021,
+                 Path="/Movies/Dokumenty/Aerial Greece (2021)")
+    got, reason = resolve_film(fake, item, {})
+    assert got is localized and reason == "verified 'Aerial Greece' via original title"
+    assert fake.fetched == [localized.url]          # only the same-year hit was fetched
+    # a same-year hit whose page does NOT list our title is rejected
+    other = _film(title="Něco jiného", names=["Something Else"], year=2021)
+    got, reason = resolve_film(_FakeCsfd(hits, other), item, {})
+    assert got is None and "no unambiguous" in reason

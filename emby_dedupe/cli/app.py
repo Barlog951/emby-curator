@@ -41,6 +41,8 @@ descriptions_app = typer.Typer(
     name="descriptions", help="Overview/description management."
 )
 app.add_typer(descriptions_app, name="descriptions")
+csfd_app = typer.Typer(name="csfd", help="Fill metadata and posters from ČSFD.")
+app.add_typer(csfd_app, name="csfd")
 
 # Shared help strings used across multiple genre subcommands
 _LOCK_OPT = "--lock/--no-lock"
@@ -762,3 +764,68 @@ def descriptions_fill(
 def main() -> None:
     """Entry point for the emby-dedupe CLI."""
     app()
+
+
+# ---------------------------------------------------------------------------
+# csfd subcommands
+# ---------------------------------------------------------------------------
+
+@csfd_app.callback(invoke_without_command=True)
+def csfd_callback(ctx: typer.Context) -> None:
+    """Fill metadata and posters from ČSFD."""
+    if ctx.invoked_subcommand is None:
+        typer.echo(ctx.get_help())
+        raise typer.Exit()
+
+
+@csfd_app.command("fill")
+def csfd_fill(
+    ctx: typer.Context,
+    doit: bool = typer.Option(False, "--doit", help=_DOIT_HELP),
+    only_unmatched: bool = typer.Option(
+        False, "--only-unmatched",
+        help="Only items with no TMDb/IMDb/TVDb id (skip matched items that merely lack a poster).",
+    ),
+    map_file: str | None = typer.Option(
+        None, "--map", help="TSV of <emby_id>\\t<csfd_url> for titles the search cannot resolve.",
+    ),
+    report: str | None = typer.Option(
+        None, "--report", help="Write a TSV of every candidate with its match result here.",
+    ),
+    flaresolverr_url: str = typer.Option(
+        "http://localhost:8191/v1", "--flaresolverr-url", envvar="DEDUPE_FLARESOLVERR_URL",
+        help="FlareSolverr endpoint used to get past ČSFD's bot check.",
+    ),
+    limit: int | None = typer.Option(None, "--limit", help="Cap the number of items processed."),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Bypass the on-disk ČSFD page cache."),
+    all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
+    item_ids: str | None = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
+) -> None:
+    """Fill overview, genres, year, rating and poster from ČSFD (csfd.sk).
+
+    Only EMPTY fields are filled and only unambiguous title+year matches are
+    used. Dry-run by default; --doit applies. Matched items get a Csfd provider
+    id so later runs skip them.
+    """
+    from argparse import Namespace
+
+    from emby_dedupe.cli.csfd import run_csfd_command
+
+    config: AppConfig = ctx.obj if ctx.obj else AppConfig()
+    args = Namespace(
+        host=config.host,
+        port=config.port,
+        api_key=config.api_key,
+        library=config.libraries or [],
+        verbosity=config.verbosity,
+        doit=doit or config.doit,
+        only_unmatched=only_unmatched,
+        map_file=map_file,
+        report=report,
+        flaresolverr_url=flaresolverr_url,
+        limit=limit,
+        no_cache=no_cache,
+        all_libraries=all_libraries,
+        item_ids=item_ids,
+    )
+    run_csfd_command(args)

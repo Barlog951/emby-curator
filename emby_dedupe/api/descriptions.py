@@ -504,7 +504,7 @@ def _apply_field_update(
         locked.append(lock_name)
 
 
-def _post_metadata_update(
+def post_item_update(
     client: httpx.Client, base_url: str, item_id: str, payload: dict,
 ) -> bool:
     """POST the payload to Emby and log success/failure.  Returns True on 2xx."""
@@ -584,7 +584,7 @@ def update_item_metadata(
     if year_changes:
         payload["ProductionYear"] = new_year
 
-    return _post_metadata_update(client, base_url, item_id, payload)
+    return post_item_update(client, base_url, item_id, payload)
 
 
 def update_item_overview(
