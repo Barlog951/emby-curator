@@ -61,7 +61,8 @@ class ItemPlan:
 
     @property
     def has_changes(self) -> bool:
-        return bool(self.fields) or self.poster
+        """True when something is written: a field, a poster, or just the Csfd id stamp."""
+        return bool(self.fields) or self.poster or self.film is not None
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +198,9 @@ def _describe(plan: ItemPlan) -> str:
     parts = [f"{k}={'…' if k == 'Overview' else v}" for k, v in plan.fields.items()]
     if plan.poster:
         parts.append("poster")
-    return ", ".join(parts) or "nothing to fill"
+    if not parts:
+        return "csfd id only" if plan.film else "nothing to fill"
+    return ", ".join(parts)
 
 
 def _apply(client: httpx.Client, base_url: str, csfd: CsfdClient, item: dict,
@@ -272,7 +275,7 @@ def _run_fill(client: httpx.Client, base_url: str, user_id: str,
                 save_csfd_cache(cache)  # a killed run keeps its lookups
             plan = _lookup(csfd, item, manual, stats)
             plans.append(plan)
-            if args.doit and plan.has_changes:
+            if args.doit and plan.has_changes:  # a bare match still stamps the Csfd id
                 stats["updated" if _apply(client, base_url, csfd, item, plan) else "failed"] += 1
     finally:
         if cache is not None:

@@ -67,8 +67,11 @@ def test_plan_item_fills_only_empty_fields():
                  CommunityRating=6.1, ProductionYear=None)
     plan2 = plan_item(kept, _film(year=2024))
     assert plan2.fields == {"ProductionYear": 2024} and plan2.poster is False
-    nothing = plan_item(kept, _film(year=None, poster_url=None))
-    assert not nothing.has_changes
+    bare = plan_item(kept, _film(year=None, poster_url=None))
+    assert bare.fields == {} and bare.poster is False
+    assert bare.has_changes                      # still worth a write: the Csfd id stamp
+    assert cli._describe(bare) == "csfd id only"
+    assert not ItemPlan("1", "x").has_changes    # unmatched: nothing to write
 
 
 def test_build_payload_sets_fields_locks_and_provider_id():
