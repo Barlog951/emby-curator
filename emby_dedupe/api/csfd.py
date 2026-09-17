@@ -33,7 +33,7 @@ CSFD_BASE = "https://www.csfd.sk"
 CACHE_PATH = Path.home() / ".cache" / "emby-dedupe" / "csfd-cache.json"
 FLARESOLVERR_TIMEOUT_MS = 60_000
 YEAR_TOLERANCE = 1
-POSTER_WIDTH = 420  # largest variant ČSFD serves via the resized cache
+POSTER_WIDTH = 1080  # ČSFD's resized cache serves up to w1080 (1080x1600); the raw file path is 403
 
 KIND_FILM = "film"
 KIND_SERIES = "series"

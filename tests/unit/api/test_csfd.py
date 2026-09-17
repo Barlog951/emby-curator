@@ -70,7 +70,7 @@ def test_parse_film_extracts_every_field_and_upgrades_poster():
     assert film.rating_pct == 87 and film.rating_10 == 8.7
     assert film.plot == "Dokumentárny film predstavuje najmladšie plemeno psa."  # source tag stripped
     assert film.poster_url == (
-        "https://image.pmgstatic.com/cache/resized/w420/files/images/film/posters/167/136/167136394_586fc2.jpg"
+        "https://image.pmgstatic.com/cache/resized/w1080/files/images/film/posters/167/136/167136394_586fc2.jpg"
     )
 
 
