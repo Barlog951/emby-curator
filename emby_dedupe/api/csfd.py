@@ -85,6 +85,16 @@ class CsfdCreator:
     photo_url: str | None    # None when ČSFD shows its placeholder silhouette
 
 
+@dataclass
+class CsfdCreatorProfile:
+    """Biographical facts from a ČSFD creator page (all optional)."""
+
+    birth_date: str | None = None    # ISO yyyy-mm-dd
+    birth_place: str | None = None
+    death_date: str | None = None
+    bio: str = ""
+
+
 ACTOR_WORDS = ("herec", "hereč")   # herec / herečka; the stem catches both
 CREATOR_PHOTO_SIZE = "w100h132crop"  # the largest portrait ČSFD serves for creators
 
@@ -196,6 +206,40 @@ _CREATOR_TITLE_RE = re.compile(r'<h3 class="user-title"><a href="(/tvorca/[^"]+)
 _CREATOR_INFO_RE = re.compile(r"<p>(.*?)</p>", re.S)
 _CREATOR_IMG_RE = re.compile(r'<img src="([^"]+)"')
 _H1_RE = re.compile(r"<h1[^>]*>(.*?)</h1>", re.S)
+
+
+_PROFILE_RE = re.compile(r'<div class="creator-profile-details">(.*?)</div>', re.S)
+_PROFILE_P_RE = re.compile(r"<p>(.*?)</p>", re.S)
+_PLACE_RE = re.compile(r'<span class="info-place">(.*?)</span>', re.S)
+_BIO_RE = re.compile(r'<div class="article-content article-content-justify">\s*<p>(.*?)</p>', re.S)
+_DATE_RE = re.compile(r"(\d{1,2})\.(\d{1,2})\.(\d{4})")
+
+
+def _iso_date(text: str) -> str | None:
+    match = _DATE_RE.search(text)
+    if not match:
+        return None
+    day, month, year = match.groups()
+    return f"{year}-{int(month):02d}-{int(day):02d}"
+
+
+def parse_creator_page(page: str) -> CsfdCreatorProfile:
+    """Birth/death dates, birthplace and the biography paragraph of a creator page."""
+    profile = CsfdCreatorProfile()
+    details = _PROFILE_RE.search(page)
+    for para in (_PROFILE_P_RE.findall(details.group(1)) if details else []):
+        place = _PLACE_RE.search(para)
+        text = _strip_tags(_PLACE_RE.sub("", para))
+        if text.startswith("nar."):
+            profile.birth_date = _iso_date(text)
+            profile.birth_place = _strip_tags(place.group(1)) if place else None
+        elif text.startswith("zom."):
+            profile.death_date = _iso_date(text)
+    bio = _BIO_RE.search(page)
+    if bio:
+        without_link = re.sub(r'<span class="span-more-small">.*?</span>', "", bio.group(1), flags=re.S)
+        profile.bio = _strip_tags(without_link)
+    return profile
 
 
 def _creator_from_article(article: str) -> CsfdCreator | None:
@@ -477,6 +521,16 @@ class CsfdClient:
         if self._cache is not None:
             self._cache[key] = [asdict(c) for c in creators]
         return creators
+
+    def creator(self, url: str) -> CsfdCreatorProfile:
+        """Biographical facts for a creator page; cached per URL."""
+        key = f"creator:{url}"
+        if self._cache is not None and key in self._cache:
+            return CsfdCreatorProfile(**self._cache[key])
+        profile = parse_creator_page(self._get_page(url))
+        if self._cache is not None:
+            self._cache[key] = asdict(profile)
+        return profile
 
     def film(self, url: str) -> CsfdFilm:
         """Fetch and parse one film/series page; cached per URL."""

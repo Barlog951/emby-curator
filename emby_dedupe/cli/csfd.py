@@ -27,6 +27,7 @@ from emby_dedupe.api.csfd import (
     KIND_SERIES,
     CsfdClient,
     CsfdCreator,
+    CsfdCreatorProfile,
     CsfdError,
     CsfdFilm,
     candidate_hits,
@@ -38,7 +39,12 @@ from emby_dedupe.api.csfd import (
     verify_match,
 )
 from emby_dedupe.api.descriptions import post_item_update
-from emby_dedupe.api.genres import fetch_items_by_ids, fetch_items_with_genres, get_user_id
+from emby_dedupe.api.genres import (
+    fetch_full_item,
+    fetch_items_by_ids,
+    fetch_items_with_genres,
+    get_user_id,
+)
 from emby_dedupe.api.item_images import upload_primary_image
 from emby_dedupe.cli.arguments import get_env_variable
 from emby_dedupe.cli.genres import _resolve_library_ids
@@ -363,12 +369,48 @@ def _write_people_report(path: str, rows: list[tuple[str, str, int, str, str]]) 
     logger.info(f"Report written: {path}")
 
 
-def _process_person(client: httpx.Client, base_url: str, csfd: CsfdClient, person: dict,
+MIN_BIO_CHARS = 40
+
+
+def person_updates(person: dict, profile: CsfdCreatorProfile) -> dict[str, object]:
+    """Biographical fields the profile can fill on a Person item — EMPTY ones only."""
+    updates: dict[str, object] = {}
+    if profile.bio and len(profile.bio) >= MIN_BIO_CHARS and not (person.get("Overview") or "").strip():
+        updates["Overview"] = profile.bio
+    if profile.birth_date and not person.get("PremiereDate"):
+        updates["PremiereDate"] = f"{profile.birth_date}T00:00:00.0000000Z"
+    if profile.death_date and not person.get("EndDate"):
+        updates["EndDate"] = f"{profile.death_date}T00:00:00.0000000Z"
+    if profile.birth_place and not person.get("ProductionLocations"):
+        updates["ProductionLocations"] = [profile.birth_place]
+    return updates
+
+
+def _fill_person_bio(client: httpx.Client, base_url: str, user_id: str, csfd: CsfdClient,
+                     person_id: str, creator: CsfdCreator) -> bool:
+    """Fetch the creator page and write birth/death/place/bio onto the Person if empty."""
+    profile = csfd.creator(creator.url)
+    full = fetch_full_item(client, base_url, user_id, person_id)
+    updates = person_updates(full, profile)
+    if not updates:
+        return False
+    payload = copy.deepcopy(full)
+    payload.update(updates)
+    return post_item_update(client, base_url, person_id, payload)
+
+
+def _process_person(client: httpx.Client, base_url: str, user_id: str, csfd: CsfdClient, person: dict,
                     stats: dict[str, int], doit: bool) -> tuple[str, str, int, str, str]:
-    """Resolve one actor on ČSFD and, with ``doit``, upload the portrait. Returns a report row."""
+    """Resolve one actor on ČSFD; with ``doit`` upload the portrait and fill the bio. Report row."""
     creator, outcome = _resolve_creator(csfd, person["Name"], stats)
     if creator and doit:
         stats["updated" if _upload_portrait(client, base_url, csfd, person["Id"], creator) else "failed"] += 1
+        try:
+            if _fill_person_bio(client, base_url, user_id, csfd, person["Id"], creator):
+                stats["bio"] += 1
+                outcome += "+bio"
+        except (CsfdError, httpx.HTTPError) as exc:
+            logger.warning(f"{person['Name']}: bio not filled: {exc}")
     return person["Id"], person["Name"], person["refs"], outcome, creator.url if creator else ""
 
 
@@ -382,12 +424,12 @@ def _run_people(client: httpx.Client, base_url: str, user_id: str,
     candidates = candidates[:limit] if limit else candidates
     logger.info(f"{len(candidates)} actor(s) without a photo, referenced >= {args.min_refs}x")
     rows: list[tuple[str, str, int, str, str]] = []
-    stats = {"matched": 0, "no_photo": 0, "ambiguous": 0, "updated": 0, "failed": 0, "errors": 0}
+    stats = {"matched": 0, "no_photo": 0, "ambiguous": 0, "updated": 0, "bio": 0, "failed": 0, "errors": 0}
     try:
         for index, person in enumerate(tqdm(candidates, desc="ČSFD people", unit="actor"), start=1):
             if cache is not None and index % CACHE_SAVE_EVERY == 0:
                 save_csfd_cache(cache)
-            rows.append(_process_person(client, base_url, csfd, person, stats, args.doit))
+            rows.append(_process_person(client, base_url, user_id, csfd, person, stats, args.doit))
     finally:
         if cache is not None:
             save_csfd_cache(cache)

@@ -250,12 +250,19 @@ def test_run_people_uploads_only_matched_real_photos(tmp_path, monkeypatch):
 
         def fetch_poster(self, url):
             return b"\xff\xd8", "image/jpeg"
+
+        def creator(self, url):
+            from emby_dedupe.api.csfd import CsfdCreatorProfile
+            return CsfdCreatorProfile("1940-02-03", "Zvolen", "2021-07-18",
+                                      "Narozen 3. února 1940 ve Zvolenu na Slovensku. Dramatik, prozaik a herec.")
     uploads: list[str] = []
 
     def emby(request: httpx.Request) -> httpx.Response:
         if request.method == "POST":
             uploads.append(request.url.path)
             return httpx.Response(204)
+        if "/Users/" in request.url.path:                       # fetch_full_item for the bio
+            return httpx.Response(200, json={"Id": "p1", "Name": "Milan Lasica", "Overview": ""})
         return httpx.Response(200, json={"Items": list(persons.values())})
     monkeypatch.setattr(cli, "CsfdClient", FakePeople)
     monkeypatch.setattr(cli, "load_csfd_cache", lambda: {})
@@ -265,9 +272,9 @@ def test_run_people_uploads_only_matched_real_photos(tmp_path, monkeypatch):
     report = tmp_path / "people.tsv"
     args = Namespace(doit=True, flaresolverr_url="http://fs/v1", report=str(report), min_refs=1, limit=None)
     cli._run_people(client, "http://emby:8096", "u", ["lib"], args)
-    assert uploads == ["/Items/p1/Images/Primary"]                      # Vašica has no photo: nothing uploaded
+    assert uploads == ["/Items/p1/Images/Primary", "/Items/p1"]        # portrait, then bio; Vašica: nothing
     text = report.read_text(encoding="utf-8")
-    assert "p1\tMilan Lasica\t1\tmatched" in text and "p2\tMilan Vašica\t1\tno_photo" in text
+    assert "p1\tMilan Lasica\t1\tmatched+bio" in text and "p2\tMilan Vašica\t1\tno_photo" in text
 
 
 def test_item_fetch_requests_people(monkeypatch):
@@ -280,3 +287,17 @@ def test_item_fetch_requests_people(monkeypatch):
     args = Namespace(item_ids=None, only_unmatched=False, limit=None)
     assert cli._fetch_candidates(httpx.Client(), "http://emby:8096", "u", ["lib"], args) == []
     assert "People" in seen["extra"]
+
+
+def test_person_updates_fill_only_empty_biographical_fields():
+    from emby_dedupe.api.csfd import CsfdCreatorProfile
+    profile = CsfdCreatorProfile("1940-02-03", "Zvolen, Slovenský štát", "2021-07-18",
+                                 "Narozen 3. února 1940 ve Zvolenu na Slovensku. Dramatik, prozaik a herec.")
+    empty = {"Overview": "", "PremiereDate": None, "EndDate": None, "ProductionLocations": []}
+    assert cli.person_updates(empty, profile) == {
+        "Overview": profile.bio, "PremiereDate": "1940-02-03T00:00:00.0000000Z",
+        "EndDate": "2021-07-18T00:00:00.0000000Z", "ProductionLocations": ["Zvolen, Slovenský štát"]}
+    filled = {"Overview": "TMDb bio", "PremiereDate": "1940-02-03T00:00:00Z", "EndDate": "x", "ProductionLocations": ["Zvolen"]}
+    assert cli.person_updates(filled, profile) == {}
+    short = CsfdCreatorProfile(bio="Too short.")
+    assert cli.person_updates(empty, short) == {}

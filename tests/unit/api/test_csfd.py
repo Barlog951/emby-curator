@@ -290,3 +290,29 @@ def test_client_search_creators_is_cached():
     assert client.search_creators("Milan Lasica")[0].name == "Milan Lasica"
     assert client.search_creators("Milan Lasica")[2].birth_year == 1971
     assert calls == [url] and "people:Milan Lasica" in cache
+
+
+CREATOR_PAGE_HTML = """
+<div class="creator-profile-details"> <p> nar. 03.02.1940 <span class="info-place"> Zvolen, Slovenský štát <img class="flag" title="Slovenský štát"> </span> </p>
+ <p> zom. 18.07.2021 <span class="info">(81 rokov)</span> <span class="info-place"> Bratislava, Slovensko <img class="flag"> </span> </p> </div>
+<div class="updated-box-content"> <article class="article article-white"> <div class="article-content article-content-justify">
+ <p> Narozen 3. února 1940 ve Zvolenu na Slovensku. Dramatik, prozaik, textař, herec a humorista… <span class="span-more-small">(<a href="/x/biografia/">viac</a>)</span> </p></div></article></div>
+"""
+
+
+def test_parse_creator_page_reads_birth_death_place_and_bio():
+    p = csfd.parse_creator_page(CREATOR_PAGE_HTML)
+    assert (p.birth_date, p.birth_place, p.death_date) == ("1940-02-03", "Zvolen, Slovenský štát", "2021-07-18")
+    assert p.bio.startswith("Narozen 3. února 1940") and p.bio.endswith("…")
+    empty = csfd.parse_creator_page("<h1>x</h1>")
+    assert (empty.birth_date, empty.death_date, empty.birth_place, empty.bio) == (None, None, None, "")
+
+
+def test_client_creator_is_cached():
+    calls: list[str] = []
+    url = "https://www.csfd.sk/tvorca/980-milan-lasica/prehlad/"
+    cache: dict = {}
+    client = CsfdClient(httpx.Client(transport=_flaresolverr_transport({url: CREATOR_PAGE_HTML}, calls)),
+                        "http://fs/v1", cache, calls_per_second=1000)
+    assert client.creator(url).birth_date == "1940-02-03"
+    assert client.creator(url).death_date == "2021-07-18" and calls == [url]
