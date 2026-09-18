@@ -102,6 +102,8 @@ class CsfdFilm:
     rating_pct: int | None = None
     poster_url: str | None = None
     names: list[str] = field(default_factory=list)
+    directors: list[str] = field(default_factory=list)
+    cast: list[list[str]] = field(default_factory=list)  # [name, role] pairs (role may be "")
 
     @property
     def all_titles(self) -> list[str]:
@@ -182,6 +184,12 @@ _RATING_RE = re.compile(r'class="film-rating-average[^"]*"[^>]*>(.*?)</', re.S)
 _POSTER_RE = re.compile(r'<div class="film-posters">.*?<img[^>]+src="([^"]+)"', re.S)
 _NAMES_RE = re.compile(r'<ul class="film-names">(.*?)</ul>', re.S)
 _NAME_LI_RE = re.compile(r"<li[^>]*>(.*?)</li>", re.S)
+_CREATORS_RE = re.compile(r'<div class="creators"[^>]*>(.*?)</div>\s*</div>\s*</div>', re.S)
+_CREATOR_LINK_RE = re.compile(
+    r'<a href="/tvorca/[^"]+">([^<]+)</a>(?:&nbsp;|\s)*(?:<span class="span-more-small"[^>]*>\(([^)]*)\)</span>)?'
+)
+DIRECTOR_HEADINGS = {"Réžia", "Režie"}
+CAST_HEADINGS = {"Hrajú", "Hrají"}
 _NAME_LINK_RE = re.compile(r'<span class="normal (?:more|less)-name-link">.*?</span>\s*</span>', re.S)
 _ID_RE = re.compile(r"/film/(\d+)-")
 
@@ -225,6 +233,25 @@ def _parse_names(page: str) -> list[str]:
     return names
 
 
+def _parse_creators(page: str) -> tuple[list[str], list[list[str]]]:
+    """Directors and cast (name, role) from the creators block; other professions ignored."""
+    block = _CREATORS_RE.search(page)
+    if not block:
+        return [], []
+    directors: list[str] = []
+    cast: list[list[str]] = []
+    for chunk in block.group(1).split("<h4>")[1:]:          # one chunk per profession heading
+        heading, _, body = chunk.partition("</h4>")
+        heading = heading.rstrip(":").strip()
+        for name, role in _CREATOR_LINK_RE.findall(body):
+            name = html.unescape(name).strip()
+            if heading in DIRECTOR_HEADINGS and name not in directors:
+                directors.append(name)
+            elif heading in CAST_HEADINGS and name not in [c[0] for c in cast]:
+                cast.append([name, html.unescape(role).strip()])
+    return directors, cast
+
+
 def _parse_poster(page: str) -> str | None:
     match = _POSTER_RE.search(page)
     if not match or match.group(1).startswith("data:"):
@@ -246,6 +273,7 @@ def parse_film(page: str, url: str) -> CsfdFilm:
     rating_text = _strip_tags(rating_match.group(1)) if rating_match else ""
     rating = int(rating_text.rstrip("%")) if rating_text.rstrip("%").isdigit() else None
     id_match = _ID_RE.search(url)
+    directors, cast = _parse_creators(page)
     return CsfdFilm(
         url=url,
         csfd_id=id_match.group(1) if id_match else "",
@@ -257,6 +285,8 @@ def parse_film(page: str, url: str) -> CsfdFilm:
         rating_pct=rating,
         poster_url=_parse_poster(page),
         names=_parse_names(page),
+        directors=directors,
+        cast=cast,
     )
 
 
@@ -370,7 +400,7 @@ class CsfdClient:
         """Fetch and parse one film/series page; cached per URL."""
         key = f"film:{url}"
         cached = self._cache.get(key) if self._cache is not None else None
-        if cached is not None and "names" in cached:  # entries from before names were parsed refetch
+        if cached is not None and "cast" in cached:  # entries from before cast was parsed refetch
             return CsfdFilm(**cached)
         film = parse_film(self._get_page(url), url)
         if self._cache is not None:
@@ -386,6 +416,11 @@ class CsfdClient:
             raise CsfdError(f"poster download failed for {url}: {exc}") from exc
         content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0]
         return resp.content, content_type
+
+
+def film_url(csfd_id: str) -> str:
+    """Canonical page URL for a ČSFD id (the site redirects to the slugged form)."""
+    return f"{CSFD_BASE}/film/{csfd_id}/prehlad/"
 
 
 def load_csfd_cache(path: Path = CACHE_PATH) -> dict:

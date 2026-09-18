@@ -28,6 +28,7 @@ from emby_dedupe.api.csfd import (
     CsfdError,
     CsfdFilm,
     candidate_hits,
+    film_url,
     load_csfd_cache,
     pick_match,
     save_csfd_cache,
@@ -85,6 +86,8 @@ def missing_fields(item: dict) -> list[str]:
         gaps.append("genres")
     if not item.get("ProductionYear"):
         gaps.append("year")
+    if not any(p.get("Type") == "Actor" for p in item.get("People") or []):
+        gaps.append("cast")
     return gaps
 
 
@@ -92,8 +95,8 @@ def is_candidate(item: dict, only_unmatched: bool) -> bool:
     """True when the item is worth a ČSFD lookup."""
     if item.get("Type") not in ("Movie", "Series"):
         return False
-    if (item.get("ProviderIds") or {}).get(CSFD_PROVIDER_KEY):
-        return False  # already resolved by an earlier run
+    if (item.get("ProviderIds") or {}).get(CSFD_PROVIDER_KEY) and not missing_fields(item):
+        return False  # resolved by an earlier run and nothing left to fill
     if only_unmatched:
         return not _has_provider(item)
     return not _has_provider(item) or bool(missing_fields(item))
@@ -124,6 +127,9 @@ def resolve_film(
     """Find the ČSFD page for an item: manual map first, then strict search."""
     if item["Id"] in manual:
         return csfd.film(manual[item["Id"]]), "manual map"
+    stamped = (item.get("ProviderIds") or {}).get(CSFD_PROVIDER_KEY)
+    if stamped:
+        return csfd.film(film_url(stamped)), "stored csfd id"
     kind = KIND_SERIES if item.get("Type") == "Series" else KIND_FILM
     year = item.get("ProductionYear")
     queries = title_queries(item)
@@ -158,8 +164,21 @@ def plan_item(item: dict, film: CsfdFilm, overwrite_poster: bool = False) -> Ite
         plan.fields["ProductionYear"] = film.year
     if item.get("CommunityRating") is None and film.rating_10 is not None:
         plan.fields["CommunityRating"] = film.rating_10
+    if "cast" in gaps and (film.cast or film.directors):
+        plan.fields["People"] = people_entries(film)
     plan.poster = ("poster" in gaps or overwrite_poster) and film.poster_url is not None
     return plan
+
+
+def people_entries(film: CsfdFilm) -> list[dict[str, str]]:
+    """Emby People entries: directors first, then the cast with ČSFD's role notes."""
+    entries = [{"Name": d, "Type": "Director"} for d in film.directors]
+    for name, role in film.cast:
+        entry = {"Name": name, "Type": "Actor"}
+        if role:
+            entry["Role"] = role
+        entries.append(entry)
+    return entries
 
 
 def build_payload(item: dict, plan: ItemPlan) -> dict:
@@ -168,8 +187,9 @@ def build_payload(item: dict, plan: ItemPlan) -> dict:
     locked = payload.setdefault("LockedFields", [])
     for key, value in plan.fields.items():
         payload[key] = value
-        if key in ("Overview", "Genres") and key not in locked:
-            locked.append(key)
+        lock_name = {"Overview": "Overview", "Genres": "Genres", "People": "Cast"}.get(key)
+        if lock_name and lock_name not in locked:
+            locked.append(lock_name)
     genres = plan.fields.get("Genres")
     if isinstance(genres, list):
         payload["GenreItems"] = [{"Name": g, "Id": ""} for g in genres]

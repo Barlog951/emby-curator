@@ -219,3 +219,25 @@ def test_client_refetches_cached_film_entries_that_predate_names():
                         "http://fs/v1", cache, calls_per_second=1000)
     assert client.film(url).names == ["Vykoupení z věznice Shawshank", "The Shawshank Redemption"]
     assert calls == [url] and "names" in cache[f"film:{url}"]
+
+
+CREATORS_HTML = """
+<h1>Tatranský durič</h1>
+<div class="creators" id="creators">
+ <div> <h4>Réžia:</h4> <a href="/tvorca/574343-pavol-balaz/prehlad/">Pavol Baláž</a> </div>
+ <div> <h4>Scenár:</h4> <a href="/tvorca/574343-pavol-balaz/prehlad/">Pavol Baláž</a>, <a href="/tvorca/478427-x/prehlad/">Ľubo Kľúčik</a> </div>
+ <div> <h4>Hrajú:</h4> <a href="/tvorca/24917-peter-rufus/prehlad/">Peter Rúfus</a>&nbsp;<span class="span-more-small" title="">(rozprávač)</span>, <a href="/tvorca/1-x/prehlad/">Jana Nov&aacute;</a> </div>
+ <div class="other-professions hidden"> <h4>Strih:</h4> <span> <a href="/tvorca/5-y/prehlad/">Cutter</a> </span> </div>
+ <span class="span-more-small">(<a href="javascript:void(0);" class="more">ďalšie profesie</a>)</span>
+</div> </div> </div>
+"""
+
+
+def test_parse_film_extracts_directors_and_cast_with_roles():
+    film = parse_film(CREATORS_HTML, "https://www.csfd.sk/film/1885748-x/prehlad/")
+    assert film.directors == ["Pavol Baláž"]
+    assert film.cast == [["Peter Rúfus", "rozprávač"], ["Jana Nová", ""]]   # writers/editors ignored
+
+
+def test_film_url_builds_id_only_page():
+    assert csfd.film_url("1885748") == "https://www.csfd.sk/film/1885748/prehlad/"

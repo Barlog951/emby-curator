@@ -23,7 +23,8 @@ from emby_dedupe.cli.csfd import (
 def _item(**over):
     base = {"Id": "1", "Type": "Movie", "Name": "Tatranský durič", "ProductionYear": 2026,
             "Path": "/Movies/Dokumenty/Tatransky duric (2026)/Tatransky duric (2026) - 1080p.mkv",
-            "ProviderIds": {}, "ImageTags": {}, "Genres": [], "Overview": "", "LockedFields": []}
+            "ProviderIds": {}, "ImageTags": {}, "Genres": [], "Overview": "", "LockedFields": [],
+            "People": [{"Name": "Some Actor", "Type": "Actor"}]}
     base.update(over)
     return base
 
@@ -47,7 +48,7 @@ def test_missing_fields_and_candidate_rules():
                                   Overview="x", Genres=["D"]), only_unmatched=False)
     assert is_candidate(_item(ProviderIds={"Tmdb": "5"}), only_unmatched=False)   # matched, no poster
     assert not is_candidate(_item(ProviderIds={"Tmdb": "5"}), only_unmatched=True)
-    assert not is_candidate(_item(ProviderIds={"Csfd": "9"}), only_unmatched=False)  # done earlier
+    assert is_candidate(_item(ProviderIds={"Csfd": "9"}), only_unmatched=False)   # stamped but still has gaps
     assert not is_candidate(_item(Type="Episode"), only_unmatched=False)
 
 
@@ -195,3 +196,28 @@ def test_plan_item_overwrite_poster_replaces_existing_art():
     assert plan_item(item, _film()).poster is False                      # default: keep what is there
     assert plan_item(item, _film(), overwrite_poster=True).poster is True
     assert plan_item(item, _film(poster_url=None), overwrite_poster=True).poster is False
+
+
+def test_cast_gap_fills_people_and_locks_cast():
+    film = _film(directors=["Pavol Baláž"], cast=[["Peter Rúfus", "rozprávač"], ["Jana Nová", ""]])
+    item = _item(People=[])
+    assert "cast" in missing_fields(item)
+    plan = plan_item(item, film)
+    assert plan.fields["People"] == [{"Name": "Pavol Baláž", "Type": "Director"},
+                                     {"Name": "Peter Rúfus", "Type": "Actor", "Role": "rozprávač"},
+                                     {"Name": "Jana Nová", "Type": "Actor"}]
+    assert "Cast" in build_payload(item, plan)["LockedFields"]
+    has_cast = _item(People=[{"Name": "X", "Type": "Actor"}])
+    assert "People" not in plan_item(has_cast, film).fields               # existing cast kept
+
+
+def test_stamped_items_are_recandidated_only_when_gaps_remain_and_use_stored_id():
+    done = _item(ProviderIds={"Csfd": "9"}, ImageTags={"Primary": "t"}, Overview="x", Genres=["D"],
+                 People=[{"Name": "X", "Type": "Actor"}])
+    assert not is_candidate(done, only_unmatched=False)
+    gap = _item(ProviderIds={"Csfd": "1885748"}, ImageTags={"Primary": "t"}, Overview="x", Genres=["D"], People=[])
+    assert is_candidate(gap, only_unmatched=False)
+    fake = _FakeCsfd([], _film())
+    got, reason = resolve_film(fake, gap, {})
+    assert reason == "stored csfd id" and fake.fetched == ["https://www.csfd.sk/film/1885748/prehlad/"]
+    assert fake.searched == []
