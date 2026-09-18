@@ -88,6 +88,7 @@ def fetch_items_with_genres(
     library_ids: list[str],
     user_id: str = "",
     item_types: str = "Movie,Series",
+    extra_fields: str = "",
 ) -> list[dict]:
     """Fetch all media items with full metadata, paginated.
 
@@ -112,7 +113,7 @@ def fetch_items_with_genres(
     base_params = {
         "Recursive": "true",
         "IncludeItemTypes": item_types,
-        "Fields": _GENRE_FIELDS,
+        "Fields": _GENRE_FIELDS + (f",{extra_fields}" if extra_fields else ""),
     }
 
     target_ids: list[str | None] = list(library_ids) if library_ids else [None]

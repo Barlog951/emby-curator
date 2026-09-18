@@ -267,3 +267,15 @@ def test_run_people_uploads_only_matched_real_photos(tmp_path, monkeypatch):
     assert uploads == ["/Items/p1/Images/Primary"]                      # Vašica has no photo: nothing uploaded
     text = report.read_text(encoding="utf-8")
     assert "p1\tMilan Lasica\t1\tmatched" in text and "p2\tMilan Vašica\t1\tno_photo" in text
+
+
+def test_item_fetch_requests_people(monkeypatch):
+    seen: dict = {}
+
+    def fake_fetch(client, base_url, library_ids, user_id, extra_fields=""):
+        seen["extra"] = extra_fields
+        return []
+    monkeypatch.setattr(cli, "fetch_items_with_genres", fake_fetch)
+    args = Namespace(item_ids=None, only_unmatched=False, limit=None)
+    assert cli._fetch_candidates(httpx.Client(), "http://emby:8096", "u", ["lib"], args) == []
+    assert "People" in seen["extra"]

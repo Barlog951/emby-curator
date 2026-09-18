@@ -48,6 +48,7 @@ from emby_dedupe.utils.logging import logger, set_logging_level
 PROVIDER_KEYS = ("Tmdb", "Imdb", "Tvdb")
 CSFD_PROVIDER_KEY = "Csfd"
 CACHE_SAVE_EVERY = 10
+ITEM_EXTRA_FIELDS = "People"  # the cast gap needs People, which the default item fetch omits
 VERIFY_FETCH_LIMIT = 2  # film pages fetched per query when no title matched outright
 _FOLDER_TITLE_RE = re.compile(r"^(.*?)\s*\((?:19|20)\d{2}(?:-\d{4})?\)")
 
@@ -257,9 +258,10 @@ def _fetch_candidates(client: httpx.Client, base_url: str, user_id: str,
                       library_ids: list[str], args: argparse.Namespace) -> list[dict]:
     item_ids = getattr(args, "item_ids", None)
     if item_ids:
-        items = fetch_items_by_ids(client, base_url, user_id, item_ids.split(","))
+        items = fetch_items_by_ids(client, base_url, user_id, item_ids.split(","),
+                                   fields=f"Genres,GenreItems,ProviderIds,LockedFields,Overview,ProductionYear,{ITEM_EXTRA_FIELDS}")
     else:
-        items = fetch_items_with_genres(client, base_url, library_ids, user_id)
+        items = fetch_items_with_genres(client, base_url, library_ids, user_id, extra_fields=ITEM_EXTRA_FIELDS)
     only_unmatched = getattr(args, "only_unmatched", False)
     candidates = [i for i in items if is_candidate(i, only_unmatched)]
     limit = getattr(args, "limit", None)
@@ -371,7 +373,7 @@ def _run_people(client: httpx.Client, base_url: str, user_id: str,
                 library_ids: list[str], args: argparse.Namespace) -> None:
     cache = None if getattr(args, "no_cache", False) else load_csfd_cache()
     csfd = CsfdClient(httpx.Client(), args.flaresolverr_url, cache)
-    items = fetch_items_with_genres(client, base_url, library_ids, user_id)
+    items = fetch_items_with_genres(client, base_url, library_ids, user_id, extra_fields=ITEM_EXTRA_FIELDS)
     candidates = photo_candidates(items, fetch_persons(client, base_url), args.min_refs)
     limit = getattr(args, "limit", None)
     candidates = candidates[:limit] if limit else candidates
