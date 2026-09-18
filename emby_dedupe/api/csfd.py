@@ -74,6 +74,21 @@ GENRE_MAP_SK_EN: dict[str, str] = {
 }
 
 
+@dataclass
+class CsfdCreator:
+    """One row of the 'Tvorcovia' (people) section of a ČSFD search page."""
+
+    url: str
+    name: str
+    occupation: str          # e.g. "herec / scenárista"; "" when ČSFD lists none
+    birth_year: int | None
+    photo_url: str | None    # None when ČSFD shows its placeholder silhouette
+
+
+ACTOR_WORDS = ("herec", "hereč")   # herec / herečka; the stem catches both
+CREATOR_PHOTO_SIZE = "w100h132crop"  # the largest portrait ČSFD serves for creators
+
+
 class CsfdError(RuntimeError):
     """Raised when ČSFD or FlareSolverr cannot serve a page."""
 
@@ -176,7 +191,64 @@ def parse_search(page: str) -> list[CsfdHit]:
     return hits
 
 
+_CREATOR_SECTION_RE = re.compile(r'<section[^>]+data-search-results="creators"[^>]*>(.*?)</section>', re.S)
+_CREATOR_TITLE_RE = re.compile(r'<h3 class="user-title"><a href="(/tvorca/[^"]+)">(.*?)</a>', re.S)
+_CREATOR_INFO_RE = re.compile(r"<p>(.*?)</p>", re.S)
+_CREATOR_IMG_RE = re.compile(r'<img src="([^"]+)"')
 _H1_RE = re.compile(r"<h1[^>]*>(.*?)</h1>", re.S)
+
+
+def _creator_from_article(article: str) -> CsfdCreator | None:
+    """One search-result row → CsfdCreator (None when it is not a person row)."""
+    title = _CREATOR_TITLE_RE.search(article)
+    if not title:
+        return None
+    info = _CREATOR_INFO_RE.search(article)
+    info_text = _strip_tags(info.group(1)) if info else ""
+    occupation, _, rest = info_text.partition(",")
+    born = "nar." in info_text
+    return CsfdCreator(
+        url=CSFD_BASE + title.group(1),
+        name=_strip_tags(title.group(2)),
+        occupation="" if "nar." in occupation else occupation.strip(),
+        birth_year=_first_int(rest) if born else None,
+        photo_url=_creator_photo(article),
+    )
+
+
+def _creator_photo(article: str) -> str | None:
+    """Portrait URL at the largest size ČSFD serves; None for the placeholder silhouette."""
+    img = _CREATOR_IMG_RE.search(article)
+    if not img or "creator/photos" not in img.group(1):
+        return None
+    src = img.group(1)
+    absolute = "https:" + src if src.startswith("//") else src
+    return re.sub(r"/cache/resized/w\d+h\d+crop/", f"/cache/resized/{CREATOR_PHOTO_SIZE}/", absolute)
+
+
+def parse_creator_search(page: str) -> list[CsfdCreator]:
+    """People rows of a ČSFD search page; a placeholder image means no photo."""
+    section = _CREATOR_SECTION_RE.search(page)
+    if not section:
+        return []
+    creators = (_creator_from_article(a) for a in _ARTICLE_RE.findall(section.group(1)))
+    return [c for c in creators if c is not None]
+
+
+def pick_creator(creators: list[CsfdCreator], name: str) -> CsfdCreator | None:
+    """The one creator with a real photo whose name equals ``name``; actors win ties.
+
+    Same-name people are common on ČSFD, so when several match the name and more
+    than one is an actor (or none is), the choice is ambiguous and nothing is returned.
+    """
+    wanted = normalize_title(name)
+    same = [c for c in creators if c.photo_url and normalize_title(c.name) == wanted]
+    if len(same) == 1:
+        return same[0]
+    actors = [c for c in same if any(w in c.occupation.lower() for w in ACTOR_WORDS)]
+    return actors[0] if len(actors) == 1 else None
+
+
 _ORIGIN_RE = re.compile(r'<div class="origin">(.*?)</div>', re.S)
 _GENRES_RE = re.compile(r'<div class="genres">(.*?)</div>', re.S)
 _PLOT_RE = re.compile(r'<div class="plot-(?:full|preview)">(.*?)</div>', re.S)
@@ -395,6 +467,16 @@ class CsfdClient:
         if self._cache is not None:
             self._cache[key] = [asdict(h) for h in hits]
         return hits
+
+    def search_creators(self, query: str) -> list[CsfdCreator]:
+        """People rows for a search; cached per query."""
+        key = f"people:{query}"
+        if self._cache is not None and key in self._cache:
+            return [CsfdCreator(**c) for c in self._cache[key]]
+        creators = parse_creator_search(self._get_page(f"{CSFD_BASE}/hladat/?q={quote(query, safe='')}"))
+        if self._cache is not None:
+            self._cache[key] = [asdict(c) for c in creators]
+        return creators
 
     def film(self, url: str) -> CsfdFilm:
         """Fetch and parse one film/series page; cached per URL."""

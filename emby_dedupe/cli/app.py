@@ -834,3 +834,40 @@ def csfd_fill(
         item_ids=item_ids,
     )
     run_csfd_command(args)
+
+
+@csfd_app.command("people")
+def csfd_people(
+    ctx: typer.Context,
+    doit: bool = typer.Option(False, "--doit", help=_DOIT_HELP),
+    min_refs: int = typer.Option(
+        2, "--min-refs", help="Only actors appearing in at least this many library items (default 2)."
+    ),
+    report: str | None = typer.Option(None, "--report", help="Write a TSV of every actor and its result."),
+    flaresolverr_url: str = typer.Option(
+        "http://localhost:8191/v1", "--flaresolverr-url", envvar="DEDUPE_FLARESOLVERR_URL",
+        help="FlareSolverr endpoint used to get past ČSFD's bot check.",
+    ),
+    limit: int | None = typer.Option(None, "--limit", help="Cap the number of actors processed."),
+    no_cache: bool = typer.Option(False, "--no-cache", help="Bypass the on-disk ČSFD page cache."),
+    all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
+) -> None:
+    """Give actors without a photo their ČSFD portrait (real photos only, never placeholders).
+
+    Only actors referenced by library items are considered, most-used first. A
+    name must match exactly one ČSFD person with a photo (actors win ties);
+    anything ambiguous is skipped. Dry-run by default; --doit uploads.
+    """
+    from argparse import Namespace
+
+    from emby_dedupe.cli.csfd import run_csfd_people_command
+
+    config: AppConfig = ctx.obj if ctx.obj else AppConfig()
+    args = Namespace(
+        host=config.host, port=config.port, api_key=config.api_key,
+        library=config.libraries or [], verbosity=config.verbosity,
+        doit=doit or config.doit, min_refs=min_refs, report=report,
+        flaresolverr_url=flaresolverr_url, limit=limit, no_cache=no_cache,
+        all_libraries=all_libraries,
+    )
+    run_csfd_people_command(args)

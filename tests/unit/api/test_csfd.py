@@ -241,3 +241,52 @@ def test_parse_film_extracts_directors_and_cast_with_roles():
 
 def test_film_url_builds_id_only_page():
     assert csfd.film_url("1885748") == "https://www.csfd.sk/film/1885748/prehlad/"
+
+
+PEOPLE_SEARCH_HTML = """
+<section class="main-box" data-search-results="creators" id="creators">
+ <article class="article article-user-30"><figure class="article-img"><a href="/tvorca/980-milan-lasica/prehlad/" title="Milan Lasica">
+  <img src="//image.pmgstatic.com/cache/resized/w45h60crop/files/images/creator/photos/000/268/268172_01e38f.jpg" srcset="x 1x" alt="Milan Lasica"></a></figure>
+  <div class="article-content"><header class="article-header"><h3 class="user-title"><a href="/tvorca/980-milan-lasica/prehlad/">Milan Lasica</a></h3></header>
+  <p> <span class="info">herec / scenárista / režisér</span>, nar. 1940 </p></div></article>
+ <article class="article article-user-30"><figure class="article-img"><a href="/tvorca/673248-milan-vasica/prehlad/" title="Milan Vašica">
+  <img src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" class="empty-image" alt="Milan Vašica"></a></figure>
+  <div class="article-content"><header class="article-header"><h3 class="user-title"><a href="/tvorca/673248-milan-vasica/prehlad/">Milan Vašica</a></h3></header>
+  <p> <span class="info">skladateľ</span> </p></div></article>
+ <article class="article article-user-30"><figure class="article-img"><a href="/tvorca/5-milan-lasica/prehlad/" title="Milan Lasica">
+  <img src="//image.pmgstatic.com/cache/resized/w45h60crop/files/images/creator/photos/000/001/1_aa.jpg" alt="Milan Lasica"></a></figure>
+  <div class="article-content"><header class="article-header"><h3 class="user-title"><a href="/tvorca/5-milan-lasica/prehlad/">Milan Lasica</a></h3></header>
+  <p> <span class="info">producent</span>, nar. 1971 </p></div></article>
+</section>
+"""
+
+
+def test_parse_creator_search_reads_people_and_skips_placeholder_photos():
+    people = csfd.parse_creator_search(PEOPLE_SEARCH_HTML)
+    assert [(p.name, p.occupation, p.birth_year) for p in people] == [
+        ("Milan Lasica", "herec / scenárista / režisér", 1940), ("Milan Vašica", "skladateľ", None),
+        ("Milan Lasica", "producent", 1971)]
+    assert people[0].photo_url == ("https://image.pmgstatic.com/cache/resized/w100h132crop/files/images/"
+                                   "creator/photos/000/268/268172_01e38f.jpg")
+    assert people[1].photo_url is None                       # ČSFD silhouette = no photo
+
+
+def test_pick_creator_exact_name_with_photo_actors_win_ties():
+    people = csfd.parse_creator_search(PEOPLE_SEARCH_HTML)
+    assert csfd.pick_creator(people, "milan lasica").url.endswith("/980-milan-lasica/prehlad/")  # actor beats producer
+    assert csfd.pick_creator(people, "Milan Vašica") is None                                  # no photo
+    assert csfd.pick_creator(people, "Someone Else") is None
+    two_actors = [csfd.CsfdCreator("u1", "Jan Novák", "herec", 1950, "https://p/1.jpg"),
+                  csfd.CsfdCreator("u2", "Jan Novák", "herec", 1980, "https://p/2.jpg")]
+    assert csfd.pick_creator(two_actors, "Jan Novák") is None                                # ambiguous
+
+
+def test_client_search_creators_is_cached():
+    calls: list[str] = []
+    url = "https://www.csfd.sk/hladat/?q=Milan%20Lasica"
+    cache: dict = {}
+    client = CsfdClient(httpx.Client(transport=_flaresolverr_transport({url: PEOPLE_SEARCH_HTML}, calls)),
+                        "http://fs/v1", cache, calls_per_second=1000)
+    assert client.search_creators("Milan Lasica")[0].name == "Milan Lasica"
+    assert client.search_creators("Milan Lasica")[2].birth_year == 1971
+    assert calls == [url] and "people:Milan Lasica" in cache

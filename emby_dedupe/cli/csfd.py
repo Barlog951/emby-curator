@@ -11,6 +11,7 @@ the titles the search cannot resolve by itself.
 from __future__ import annotations
 
 import argparse
+import collections
 import copy
 import re
 import sys
@@ -25,11 +26,13 @@ from emby_dedupe.api.csfd import (
     KIND_FILM,
     KIND_SERIES,
     CsfdClient,
+    CsfdCreator,
     CsfdError,
     CsfdFilm,
     candidate_hits,
     film_url,
     load_csfd_cache,
+    pick_creator,
     pick_match,
     save_csfd_cache,
     verify_match,
@@ -312,6 +315,137 @@ def _run_fill(client: httpx.Client, base_url: str, user_id: str,
         f"ČSFD fill ({mode}): matched {stats['matched']}, unmatched {stats['unmatched']}, "
         f"errors {stats['errors']}, updated {stats['updated']}, failed {stats['failed']}"
     )
+
+
+# ---------------------------------------------------------------------------
+# people: portraits for actors no provider has a photo for
+# ---------------------------------------------------------------------------
+
+def actor_reference_counts(items: list[dict]) -> collections.Counter[str]:
+    """How many library items each actor (by Emby person id) appears in."""
+    counts: collections.Counter[str] = collections.Counter()
+    for item in items:
+        for person in item.get("People") or []:
+            if person.get("Type") == "Actor" and person.get("Id"):
+                counts[person["Id"]] += 1
+    return counts
+
+
+def fetch_persons(client: httpx.Client, base_url: str) -> dict[str, dict]:
+    """All Person items keyed by id (only ImageTags/Name are needed)."""
+    resp = client.get(f"{base_url}/Persons", params={"Recursive": "true", "Fields": "ImageTags", "Limit": 500000})
+    resp.raise_for_status()
+    return {p["Id"]: p for p in resp.json().get("Items", [])}
+
+
+def photo_candidates(items: list[dict], persons: dict[str, dict], min_refs: int) -> list[dict]:
+    """Referenced actors without a Primary image, most-used first."""
+    counts = actor_reference_counts(items)
+    out = []
+    for pid, n in counts.most_common():
+        person = persons.get(pid)
+        if person is None or n < min_refs:
+            continue
+        if "Primary" not in (person.get("ImageTags") or {}):
+            out.append({"Id": pid, "Name": person.get("Name", ""), "refs": n})
+    return out
+
+
+def _write_people_report(path: str, rows: list[tuple[str, str, int, str, str]]) -> None:
+    lines = ["person_id\tname\trefs\tresult\tcsfd_url"]
+    lines += [f"{pid}\t{name}\t{refs}\t{outcome}\t{url}" for pid, name, refs, outcome, url in rows]
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    logger.info(f"Report written: {path}")
+
+
+def _process_person(client: httpx.Client, base_url: str, csfd: CsfdClient, person: dict,
+                    stats: dict[str, int], doit: bool) -> tuple[str, str, int, str, str]:
+    """Resolve one actor on ČSFD and, with ``doit``, upload the portrait. Returns a report row."""
+    creator, outcome = _resolve_creator(csfd, person["Name"], stats)
+    if creator and doit:
+        stats["updated" if _upload_portrait(client, base_url, csfd, person["Id"], creator) else "failed"] += 1
+    return person["Id"], person["Name"], person["refs"], outcome, creator.url if creator else ""
+
+
+def _run_people(client: httpx.Client, base_url: str, user_id: str,
+                library_ids: list[str], args: argparse.Namespace) -> None:
+    cache = None if getattr(args, "no_cache", False) else load_csfd_cache()
+    csfd = CsfdClient(httpx.Client(), args.flaresolverr_url, cache)
+    items = fetch_items_with_genres(client, base_url, library_ids, user_id)
+    candidates = photo_candidates(items, fetch_persons(client, base_url), args.min_refs)
+    limit = getattr(args, "limit", None)
+    candidates = candidates[:limit] if limit else candidates
+    logger.info(f"{len(candidates)} actor(s) without a photo, referenced >= {args.min_refs}x")
+    rows: list[tuple[str, str, int, str, str]] = []
+    stats = {"matched": 0, "no_photo": 0, "ambiguous": 0, "updated": 0, "failed": 0, "errors": 0}
+    try:
+        for index, person in enumerate(tqdm(candidates, desc="ČSFD people", unit="actor"), start=1):
+            if cache is not None and index % CACHE_SAVE_EVERY == 0:
+                save_csfd_cache(cache)
+            rows.append(_process_person(client, base_url, csfd, person, stats, args.doit))
+    finally:
+        if cache is not None:
+            save_csfd_cache(cache)
+    if getattr(args, "report", None):
+        _write_people_report(args.report, rows)
+    mode = "applied" if args.doit else "dry run — re-run with --doit to apply"
+    logger.info(f"ČSFD people ({mode}): " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+
+
+def _resolve_creator(csfd: CsfdClient, name: str, stats: dict[str, int]) -> tuple[CsfdCreator | None, str]:
+    try:
+        creators = csfd.search_creators(name)
+    except CsfdError as exc:
+        stats["errors"] += 1
+        logger.warning(f"{name}: {exc}")
+        return None, f"error: {exc}"
+    creator = pick_creator(creators, name)
+    if creator:
+        stats["matched"] += 1
+        return creator, "matched"
+    same_name = [c for c in creators if c.name.casefold() == name.casefold()]
+    key = "ambiguous" if len(same_name) > 1 else "no_photo"
+    stats[key] += 1
+    return None, key
+
+
+def _upload_portrait(client: httpx.Client, base_url: str, csfd: CsfdClient,
+                     person_id: str, creator: CsfdCreator) -> bool:
+    try:
+        data, content_type = csfd.fetch_poster(creator.photo_url or "")
+    except CsfdError as exc:
+        logger.warning(f"{creator.name}: {exc}")
+        return False
+    return upload_primary_image(client, base_url, person_id, data, content_type)
+
+
+def run_csfd_people_command(args: argparse.Namespace) -> None:
+    """Entry point for ``csfd people``."""
+    set_logging_level(getattr(args, "verbosity", 0), get_env_variable("DEDUPE_LOGGING"))
+    if not args.host or not args.api_key:
+        logger.error("Missing host (--host / DEDUPE_EMBY_HOST) or api-key (-a / DEDUPE_EMBY_API_KEY)")
+        sys.exit(1)
+    libraries = args.library or []
+    if not libraries and not getattr(args, "all_libraries", False):
+        logger.error("Missing library (-l / --all-libraries)")
+        sys.exit(1)
+    port = int(args.port) if isinstance(args.port, str) else args.port
+    validated_host, validated_port = handle_host_and_port(args.host, port)
+    base_url = f"{validated_host}:{validated_port}"
+    try:
+        client = httpx.Client(headers={"X-Emby-Token": args.api_key}, timeout=120)
+        if not check_emby_connection(client, f"{base_url}/System/Info"):
+            logger.error(f"Unable to connect to Emby at {base_url}.")
+            sys.exit(1)
+        user_id = get_user_id(client, base_url)
+        library_ids = _resolve_library_ids(client, base_url, args.api_key, libraries, args.all_libraries)
+        _run_people(client, base_url, user_id, library_ids, args)
+    except EmbyServerConnectionError as e:
+        logger.error(str(e))
+        sys.exit(1)
+    except httpx.HTTPError as e:
+        logger.error(f"HTTP error: {e}")
+        sys.exit(1)
 
 
 def run_csfd_command(args: argparse.Namespace) -> None:
