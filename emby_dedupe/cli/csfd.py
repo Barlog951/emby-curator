@@ -192,7 +192,9 @@ def build_payload(item: dict, plan: ItemPlan) -> dict:
     locked = payload.setdefault("LockedFields", [])
     for key, value in plan.fields.items():
         payload[key] = value
-        lock_name = {"Overview": "Overview", "Genres": "Genres", "People": "Cast"}.get(key)
+        # No lock for People: Emby 4.9 has no "Cast" lock enum and silently drops the
+        # whole LockedFields list when one is present (verified 2026-09-18).
+        lock_name = {"Overview": "Overview", "Genres": "Genres"}.get(key)
         if lock_name and lock_name not in locked:
             locked.append(lock_name)
     genres = plan.fields.get("Genres")

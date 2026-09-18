@@ -207,7 +207,7 @@ def test_cast_gap_fills_people_and_locks_cast():
                                      {"Name": "Peter Rúfus", "Type": "Actor", "Role": "rozprávač"},
                                      {"Name": "Jana Nová", "Type": "Actor"},
                                      {"Name": "Adolf Hitler", "Type": "Actor", "Role": "archívne zábery"}]
-    assert "Cast" in build_payload(item, plan)["LockedFields"]
+    assert "Cast" not in build_payload(item, plan)["LockedFields"]   # no such lock enum in Emby
     has_cast = _item(People=[{"Name": "X", "Type": "Actor"}])
     assert "People" not in plan_item(has_cast, film).fields               # existing cast kept
 
