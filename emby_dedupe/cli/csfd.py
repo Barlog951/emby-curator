@@ -48,7 +48,8 @@ from emby_dedupe.utils.logging import logger, set_logging_level
 PROVIDER_KEYS = ("Tmdb", "Imdb", "Tvdb")
 CSFD_PROVIDER_KEY = "Csfd"
 CACHE_SAVE_EVERY = 10
-ITEM_EXTRA_FIELDS = "People"  # the cast gap needs People, which the default item fetch omits
+ITEM_EXTRA_FIELDS = "People"
+ROLE_ABBREVIATIONS = {"a.z.": "archívne zábery"}  # ČSFD's shorthand for archive footage  # the cast gap needs People, which the default item fetch omits
 VERIFY_FETCH_LIMIT = 2  # film pages fetched per query when no title matched outright
 _FOLDER_TITLE_RE = re.compile(r"^(.*?)\s*\((?:19|20)\d{2}(?:-\d{4})?\)")
 
@@ -180,7 +181,7 @@ def people_entries(film: CsfdFilm) -> list[dict[str, str]]:
     for name, role in film.cast:
         entry = {"Name": name, "Type": "Actor"}
         if role:
-            entry["Role"] = role
+            entry["Role"] = ROLE_ABBREVIATIONS.get(role, role)
         entries.append(entry)
     return entries
 

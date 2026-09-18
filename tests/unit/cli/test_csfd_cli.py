@@ -199,13 +199,14 @@ def test_plan_item_overwrite_poster_replaces_existing_art():
 
 
 def test_cast_gap_fills_people_and_locks_cast():
-    film = _film(directors=["Pavol Baláž"], cast=[["Peter Rúfus", "rozprávač"], ["Jana Nová", ""]])
+    film = _film(directors=["Pavol Baláž"], cast=[["Peter Rúfus", "rozprávač"], ["Jana Nová", ""], ["Adolf Hitler", "a.z."]])
     item = _item(People=[])
     assert "cast" in missing_fields(item)
     plan = plan_item(item, film)
     assert plan.fields["People"] == [{"Name": "Pavol Baláž", "Type": "Director"},
                                      {"Name": "Peter Rúfus", "Type": "Actor", "Role": "rozprávač"},
-                                     {"Name": "Jana Nová", "Type": "Actor"}]
+                                     {"Name": "Jana Nová", "Type": "Actor"},
+                                     {"Name": "Adolf Hitler", "Type": "Actor", "Role": "archívne zábery"}]
     assert "Cast" in build_payload(item, plan)["LockedFields"]
     has_cast = _item(People=[{"Name": "X", "Type": "Actor"}])
     assert "People" not in plan_item(has_cast, film).fields               # existing cast kept
