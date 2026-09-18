@@ -852,11 +852,13 @@ def csfd_people(
     no_cache: bool = typer.Option(False, "--no-cache", help="Bypass the on-disk ČSFD page cache."),
     all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
 ) -> None:
-    """Give actors without a photo their ČSFD portrait (real photos only, never placeholders).
+    """Give actors their ČSFD portrait and biography (real photos only, never placeholders).
 
-    Only actors referenced by library items are considered, most-used first. A
-    name must match exactly one ČSFD person with a photo (actors win ties);
-    anything ambiguous is skipped. Dry-run by default; --doit uploads.
+    Actors referenced by library items that lack a photo or a biography are
+    considered, most-used first. A name must match exactly one ČSFD person
+    (actors win ties); anything ambiguous is skipped. The portrait is uploaded
+    only where none exists; birth/death date, birthplace and biography fill
+    empty fields only. Dry-run by default; --doit applies.
     """
     from argparse import Namespace
 

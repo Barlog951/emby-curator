@@ -343,22 +343,34 @@ def actor_reference_counts(items: list[dict]) -> collections.Counter[str]:
 
 
 def fetch_persons(client: httpx.Client, base_url: str) -> dict[str, dict]:
-    """All Person items keyed by id (only ImageTags/Name are needed)."""
-    resp = client.get(f"{base_url}/Persons", params={"Recursive": "true", "Fields": "ImageTags", "Limit": 500000})
+    """All Person items keyed by id (ImageTags and Overview decide the gaps)."""
+    resp = client.get(f"{base_url}/Persons",
+                      params={"Recursive": "true", "Fields": "ImageTags,Overview", "Limit": 500000})
     resp.raise_for_status()
     return {p["Id"]: p for p in resp.json().get("Items", [])}
 
 
+def person_gaps(person: dict) -> list[str]:
+    """Which of photo / bio a Person item lacks."""
+    gaps = []
+    if "Primary" not in (person.get("ImageTags") or {}):
+        gaps.append("photo")
+    if not (person.get("Overview") or "").strip():
+        gaps.append("bio")
+    return gaps
+
+
 def photo_candidates(items: list[dict], persons: dict[str, dict], min_refs: int) -> list[dict]:
-    """Referenced actors without a Primary image, most-used first."""
+    """Referenced actors missing a photo or a biography, most-used first."""
     counts = actor_reference_counts(items)
     out = []
     for pid, n in counts.most_common():
         person = persons.get(pid)
         if person is None or n < min_refs:
             continue
-        if "Primary" not in (person.get("ImageTags") or {}):
-            out.append({"Id": pid, "Name": person.get("Name", ""), "refs": n})
+        gaps = person_gaps(person)
+        if gaps:
+            out.append({"Id": pid, "Name": person.get("Name", ""), "refs": n, "gaps": gaps})
     return out
 
 
@@ -401,10 +413,12 @@ def _fill_person_bio(client: httpx.Client, base_url: str, user_id: str, csfd: Cs
 
 def _process_person(client: httpx.Client, base_url: str, user_id: str, csfd: CsfdClient, person: dict,
                     stats: dict[str, int], doit: bool) -> tuple[str, str, int, str, str]:
-    """Resolve one actor on ČSFD; with ``doit`` upload the portrait and fill the bio. Report row."""
-    creator, outcome = _resolve_creator(csfd, person["Name"], stats)
+    """Resolve one actor on ČSFD; with ``doit`` upload the portrait (if missing) and fill the bio."""
+    gaps = person.get("gaps") or ["photo"]
+    creator, outcome = _resolve_creator(csfd, person["Name"], stats, need_photo="photo" in gaps)
     if creator and doit:
-        stats["updated" if _upload_portrait(client, base_url, csfd, person["Id"], creator) else "failed"] += 1
+        if "photo" in gaps and creator.photo_url:
+            stats["updated" if _upload_portrait(client, base_url, csfd, person["Id"], creator) else "failed"] += 1
         try:
             if _fill_person_bio(client, base_url, user_id, csfd, person["Id"], creator):
                 stats["bio"] += 1
@@ -422,7 +436,7 @@ def _run_people(client: httpx.Client, base_url: str, user_id: str,
     candidates = photo_candidates(items, fetch_persons(client, base_url), args.min_refs)
     limit = getattr(args, "limit", None)
     candidates = candidates[:limit] if limit else candidates
-    logger.info(f"{len(candidates)} actor(s) without a photo, referenced >= {args.min_refs}x")
+    logger.info(f"{len(candidates)} actor(s) missing a photo or biography, referenced >= {args.min_refs}x")
     rows: list[tuple[str, str, int, str, str]] = []
     stats = {"matched": 0, "no_photo": 0, "ambiguous": 0, "updated": 0, "bio": 0, "failed": 0, "errors": 0}
     try:
@@ -439,14 +453,15 @@ def _run_people(client: httpx.Client, base_url: str, user_id: str,
     logger.info(f"ČSFD people ({mode}): " + ", ".join(f"{k} {v}" for k, v in stats.items()))
 
 
-def _resolve_creator(csfd: CsfdClient, name: str, stats: dict[str, int]) -> tuple[CsfdCreator | None, str]:
+def _resolve_creator(csfd: CsfdClient, name: str, stats: dict[str, int],
+                     need_photo: bool = True) -> tuple[CsfdCreator | None, str]:
     try:
         creators = csfd.search_creators(name)
     except CsfdError as exc:
         stats["errors"] += 1
         logger.warning(f"{name}: {exc}")
         return None, f"error: {exc}"
-    creator = pick_creator(creators, name)
+    creator = pick_creator(creators, name, need_photo)
     if creator:
         stats["matched"] += 1
         return creator, "matched"

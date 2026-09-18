@@ -275,6 +275,7 @@ def test_pick_creator_exact_name_with_photo_actors_win_ties():
     people = csfd.parse_creator_search(PEOPLE_SEARCH_HTML)
     assert csfd.pick_creator(people, "milan lasica").url.endswith("/980-milan-lasica/prehlad/")  # actor beats producer
     assert csfd.pick_creator(people, "Milan Vašica") is None                                  # no photo
+    assert csfd.pick_creator(people, "Milan Vašica", need_photo=False).occupation == "skladateľ"  # bio-only use
     assert csfd.pick_creator(people, "Someone Else") is None
     two_actors = [csfd.CsfdCreator("u1", "Jan Novák", "herec", 1950, "https://p/1.jpg"),
                   csfd.CsfdCreator("u2", "Jan Novák", "herec", 1980, "https://p/2.jpg")]

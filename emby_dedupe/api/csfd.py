@@ -279,14 +279,15 @@ def parse_creator_search(page: str) -> list[CsfdCreator]:
     return [c for c in creators if c is not None]
 
 
-def pick_creator(creators: list[CsfdCreator], name: str) -> CsfdCreator | None:
-    """The one creator with a real photo whose name equals ``name``; actors win ties.
+def pick_creator(creators: list[CsfdCreator], name: str, need_photo: bool = True) -> CsfdCreator | None:
+    """The one creator whose name equals ``name``; actors win ties.
 
-    Same-name people are common on ČSFD, so when several match the name and more
-    than one is an actor (or none is), the choice is ambiguous and nothing is returned.
+    With ``need_photo`` only people with a real portrait count. Same-name people
+    are common on ČSFD, so when several match the name and more than one is an
+    actor (or none is), the choice is ambiguous and nothing is returned.
     """
     wanted = normalize_title(name)
-    same = [c for c in creators if c.photo_url and normalize_title(c.name) == wanted]
+    same = [c for c in creators if (c.photo_url or not need_photo) and normalize_title(c.name) == wanted]
     if len(same) == 1:
         return same[0]
     actors = [c for c in same if any(w in c.occupation.lower() for w in ACTOR_WORDS)]

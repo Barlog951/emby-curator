@@ -228,16 +228,20 @@ def test_photo_candidates_are_referenced_photoless_actors_most_used_first():
     items = [_item(Id="1", People=[{"Id": "p1", "Name": "A", "Type": "Actor"}, {"Id": "p2", "Name": "B", "Type": "Actor"},
                                    {"Id": "d1", "Name": "D", "Type": "Director"}]),
              _item(Id="2", People=[{"Id": "p1", "Name": "A", "Type": "Actor"}, {"Id": "p3", "Name": "C", "Type": "Actor"}])]
-    persons = {"p1": {"Id": "p1", "Name": "A", "ImageTags": {}}, "p2": {"Id": "p2", "Name": "B", "ImageTags": {"Primary": "x"}},
-               "p3": {"Id": "p3", "Name": "C", "ImageTags": {}}}
-    assert cli.photo_candidates(items, persons, min_refs=1) == [{"Id": "p1", "Name": "A", "refs": 2}, {"Id": "p3", "Name": "C", "refs": 1}]
-    assert cli.photo_candidates(items, persons, min_refs=2) == [{"Id": "p1", "Name": "A", "refs": 2}]
+    persons = {"p1": {"Id": "p1", "Name": "A", "ImageTags": {}},
+               "p2": {"Id": "p2", "Name": "B", "ImageTags": {"Primary": "x"}, "Overview": "has a bio"},
+               "p3": {"Id": "p3", "Name": "C", "ImageTags": {"Primary": "x"}}}
+    assert cli.photo_candidates(items, persons, min_refs=1) == [
+        {"Id": "p1", "Name": "A", "refs": 2, "gaps": ["photo", "bio"]}, {"Id": "p3", "Name": "C", "refs": 1, "gaps": ["bio"]}]
+    assert cli.photo_candidates(items, persons, min_refs=2) == [{"Id": "p1", "Name": "A", "refs": 2, "gaps": ["photo", "bio"]}]
 
 
 def test_run_people_uploads_only_matched_real_photos(tmp_path, monkeypatch):
     items = [_item(Id="1", People=[{"Id": "p1", "Name": "Milan Lasica", "Type": "Actor"},
-                                   {"Id": "p2", "Name": "Milan Vašica", "Type": "Actor"}])]
-    persons = {"p1": {"Id": "p1", "Name": "Milan Lasica", "ImageTags": {}}, "p2": {"Id": "p2", "Name": "Milan Vašica", "ImageTags": {}}}
+                                   {"Id": "p2", "Name": "Milan Vašica", "Type": "Actor"},
+                                   {"Id": "p3", "Name": "Milan Lasica", "Type": "Actor"}])]
+    persons = {"p1": {"Id": "p1", "Name": "Milan Lasica", "ImageTags": {}}, "p2": {"Id": "p2", "Name": "Milan Vašica", "ImageTags": {}},
+               "p3": {"Id": "p3", "Name": "Milan Lasica", "ImageTags": {"Primary": "tmdb"}}}   # has photo, no bio
     lasica = CsfdCreator("https://www.csfd.sk/tvorca/980/", "Milan Lasica", "herec", 1940, "https://image.pmgstatic.com/p.jpg")
     vasica = CsfdCreator("https://www.csfd.sk/tvorca/673248/", "Milan Vašica", "skladateľ", None, None)
 
@@ -262,7 +266,8 @@ def test_run_people_uploads_only_matched_real_photos(tmp_path, monkeypatch):
             uploads.append(request.url.path)
             return httpx.Response(204)
         if "/Users/" in request.url.path:                       # fetch_full_item for the bio
-            return httpx.Response(200, json={"Id": "p1", "Name": "Milan Lasica", "Overview": ""})
+            pid = request.url.path.rsplit("/", 1)[-1]
+            return httpx.Response(200, json={"Id": pid, "Name": "Milan Lasica", "Overview": ""})
         return httpx.Response(200, json={"Items": list(persons.values())})
     monkeypatch.setattr(cli, "CsfdClient", FakePeople)
     monkeypatch.setattr(cli, "load_csfd_cache", lambda: {})
@@ -272,9 +277,11 @@ def test_run_people_uploads_only_matched_real_photos(tmp_path, monkeypatch):
     report = tmp_path / "people.tsv"
     args = Namespace(doit=True, flaresolverr_url="http://fs/v1", report=str(report), min_refs=1, limit=None)
     cli._run_people(client, "http://emby:8096", "u", ["lib"], args)
-    assert uploads == ["/Items/p1/Images/Primary", "/Items/p1"]        # portrait, then bio; Vašica: nothing
+    # p1: portrait then bio; p2: nothing (no photo, no bio on ČSFD); p3: bio only — its photo is kept
+    assert uploads == ["/Items/p1/Images/Primary", "/Items/p1", "/Items/p3"]
     text = report.read_text(encoding="utf-8")
     assert "p1\tMilan Lasica\t1\tmatched+bio" in text and "p2\tMilan Vašica\t1\tno_photo" in text
+    assert "p3\tMilan Lasica\t1\tmatched+bio" in text
 
 
 def test_item_fetch_requests_people(monkeypatch):
