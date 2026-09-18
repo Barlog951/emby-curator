@@ -188,3 +188,10 @@ def test_resolve_film_second_pass_verifies_original_title_on_page():
     other = _film(title="Něco jiného", names=["Something Else"], year=2021)
     got, reason = resolve_film(_FakeCsfd(hits, other), item, {})
     assert got is None and "no unambiguous" in reason
+
+
+def test_plan_item_overwrite_poster_replaces_existing_art():
+    item = _item(ImageTags={"Primary": "frame"}, Overview="x", Genres=["Documentary"])
+    assert plan_item(item, _film()).poster is False                      # default: keep what is there
+    assert plan_item(item, _film(), overwrite_poster=True).poster is True
+    assert plan_item(item, _film(poster_url=None), overwrite_poster=True).poster is False

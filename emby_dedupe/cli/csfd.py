@@ -142,8 +142,12 @@ def resolve_film(
     return None, "no unambiguous ČSFD match"
 
 
-def plan_item(item: dict, film: CsfdFilm) -> ItemPlan:
-    """Decide which EMPTY fields the ČSFD data can fill."""
+def plan_item(item: dict, film: CsfdFilm, overwrite_poster: bool = False) -> ItemPlan:
+    """Decide which EMPTY fields the ČSFD data can fill.
+
+    ``overwrite_poster`` uploads ČSFD artwork even when a Primary image exists —
+    used to replace fallback frame posters with real art on hand-mapped items.
+    """
     plan = ItemPlan(item_id=item["Id"], name=item.get("Name", item["Id"]), film=film)
     gaps = missing_fields(item)
     if "overview" in gaps and film.plot:
@@ -154,7 +158,7 @@ def plan_item(item: dict, film: CsfdFilm) -> ItemPlan:
         plan.fields["ProductionYear"] = film.year
     if item.get("CommunityRating") is None and film.rating_10 is not None:
         plan.fields["CommunityRating"] = film.rating_10
-    plan.poster = "poster" in gaps and film.poster_url is not None
+    plan.poster = ("poster" in gaps or overwrite_poster) and film.poster_url is not None
     return plan
 
 
@@ -239,7 +243,8 @@ def _fetch_candidates(client: httpx.Client, base_url: str, user_id: str,
     return candidates[:limit] if limit else candidates
 
 
-def _lookup(csfd: CsfdClient, item: dict, manual: dict[str, str], stats: dict[str, int]) -> ItemPlan:
+def _lookup(csfd: CsfdClient, item: dict, manual: dict[str, str], stats: dict[str, int],
+            overwrite_poster: bool = False) -> ItemPlan:
     """Resolve one item on ČSFD and plan its fills; errors and misses become empty plans."""
     name = item.get("Name", "")
     try:
@@ -253,7 +258,7 @@ def _lookup(csfd: CsfdClient, item: dict, manual: dict[str, str], stats: dict[st
         logger.info(f"UNMATCHED  {name} ({item.get('ProductionYear')})")
         return ItemPlan(item["Id"], name, reason=reason)
     stats["matched"] += 1
-    plan = plan_item(item, film)
+    plan = plan_item(item, film, overwrite_poster)
     plan.reason = reason
     logger.info(f"MATCH      {name} -> {film.url}  [{_describe(plan)}]")
     return plan
@@ -273,7 +278,7 @@ def _run_fill(client: httpx.Client, base_url: str, user_id: str,
         for index, item in enumerate(tqdm(candidates, desc="ČSFD", unit="item"), start=1):
             if cache is not None and index % CACHE_SAVE_EVERY == 0:
                 save_csfd_cache(cache)  # a killed run keeps its lookups
-            plan = _lookup(csfd, item, manual, stats)
+            plan = _lookup(csfd, item, manual, stats, getattr(args, "overwrite_poster", False))
             plans.append(plan)
             if args.doit and plan.has_changes:  # a bare match still stamps the Csfd id
                 stats["updated" if _apply(client, base_url, csfd, item, plan) else "failed"] += 1

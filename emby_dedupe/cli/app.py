@@ -792,6 +792,10 @@ def csfd_fill(
     report: str | None = typer.Option(
         None, "--report", help="Write a TSV of every candidate with its match result here.",
     ),
+    overwrite_poster: bool = typer.Option(
+        False, "--overwrite-poster",
+        help="Upload ČSFD artwork even if a poster exists (replace fallback frame posters).",
+    ),
     flaresolverr_url: str = typer.Option(
         "http://localhost:8191/v1", "--flaresolverr-url", envvar="DEDUPE_FLARESOLVERR_URL",
         help="FlareSolverr endpoint used to get past ČSFD's bot check.",
@@ -822,6 +826,7 @@ def csfd_fill(
         only_unmatched=only_unmatched,
         map_file=map_file,
         report=report,
+        overwrite_poster=overwrite_poster,
         flaresolverr_url=flaresolverr_url,
         limit=limit,
         no_cache=no_cache,
