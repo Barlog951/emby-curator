@@ -1,10 +1,12 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "emby-curator"
-version = "3.0.2"
+version = "3.1.0"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
 description = "Curate Emby libraries: deduplicate, localize genres & descriptions, clean up stale media, and analyze missing episodes"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -15,7 +17,6 @@ authors = [
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: End Users/Desktop",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",

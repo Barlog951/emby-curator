@@ -5,10 +5,41 @@ All notable changes to **Emby Curator** are documented here.
 This project is a maintained fork of [emby-dedupe](https://github.com/troykelly/emby-dedupe)
 by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.0.
 
-## [Unreleased]
+## [3.1.0] — 2026-09-22
+
+### Added
+
+- **`csfd fill`**: fills metadata for titles that TMDb, TVDb and IMDb can't identify, using csfd.sk
+  (reached through FlareSolverr). It fills only EMPTY fields: Slovak overview, genres (mapped to
+  English), year, rating, directors and actors with their roles, and a 1080×1600 poster. It accepts
+  only unambiguous matches and stamps a `Csfd` provider id so later runs skip the item. `--map <tsv>`
+  applies hand-resolved matches, and `--overwrite-poster` replaces fallback frame posters with ČSFD
+  artwork. ČSFD's `a.z.` role shorthand is expanded to `archívne zábery`.
+- **`csfd people`**: portraits for actors that no provider has a photo for, using real photos only
+  (never ČSFD's silhouette placeholder). It also fills biography, birth and death dates and birthplace.
+
+### Fixed
+
+- **Series cleanup never deleted anything.** The fold-delete guard treated a series folder like a
+  media file and refused every series. Series cleanup now works, and a refused item shows the reason
+  in the report.
+- **Deletion guard:** a duplicate with no known path is now refused. Before, it was deleted with no
+  fold-delete protection at all.
+- **TV search:** a series whose provider id or year contradicts the one requested is never accepted.
+  A substring match once mapped *Malcolm in the Middle* to *The Middle* and dropped 149 episodes as
+  duplicates.
+- **Checker:** looks series up with `AnyProviderIdEquals` and compares provider-id keys
+  case-insensitively. 877 series stored under `IMDB` were invisible to the check, which led to
+  titles already in the library being downloaded again.
+- **Reports:** show the path the guard actually used instead of `unknown`. They also record what
+  happened to duplicates the guard refused (fold-safe delete now runs before the report is written).
+- **ČSFD:** never sends a `Cast` lock. Emby has no such value and drops the whole `LockedFields`
+  list when it gets one.
 
 ### Security
 
+- Removed the last place a report could embed the live Emby API key (the Excluded Media section).
+- Removed a real Emby API key from a public test file.
 - Require `anyio>=4.14.2` (pulled in through httpx) to fix CVE-2026-63374 and CVE-2026-64847.
 
 ### Changed
