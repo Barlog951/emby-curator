@@ -4,12 +4,11 @@ HTML report generation for the Emby Dedupe tool.
 
 import os
 import tempfile
-import time
 from typing import Any
 
 from tqdm import tqdm
 
-from emby_dedupe.reports.common import calculate_report_statistics
+from emby_dedupe.reports.common import calculate_report_statistics, write_temp_report
 from emby_dedupe.utils.logging import logger
 
 
@@ -445,9 +444,6 @@ def generate_html_report(base_url: str, decisions: list[dict[str, Any]], metadat
     # Create a temporary file with the HTML content
     # In a directory that will be accessible from a web browser
     temp_dir = tempfile.gettempdir()
-    report_timestamp = int(time.time())
-    temp_filename = f"emby_dedupe_report_{report_timestamp}.html"
-    temp_path = os.path.join(temp_dir, temp_filename)
 
     # Copy the CSS file to the same directory
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -463,9 +459,8 @@ def generate_html_report(base_url: str, decisions: list[dict[str, Any]], metadat
         # If copying fails, log the error but continue without the CSS
         logger.error(f"Failed to copy CSS file: {e}")
 
-    # Write the HTML file
-    with open(temp_path, 'w', encoding='utf-8') as f:
-        f.write(html_content)
+    # Write the HTML file (unique name: see write_temp_report)
+    temp_path = write_temp_report(html_content, "emby_dedupe_report_", temp_dir)
 
     logger.info(f"HTML report generated at: {temp_path}")
     return temp_path

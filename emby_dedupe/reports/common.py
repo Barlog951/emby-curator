@@ -2,6 +2,9 @@
 Common reporting functions used by both markdown and HTML reports.
 """
 
+import os
+import tempfile
+import time
 from typing import Any
 
 from emby_dedupe.utils.formatting import format_file_size
@@ -104,3 +107,25 @@ def format_size(size_bytes: int) -> str:
     Thin wrapper over the shared ``utils.formatting.format_file_size`` (zero/None → "0 B").
     """
     return format_file_size(size_bytes, zero_label="0 B")
+
+
+def write_temp_report(html_content: str, prefix: str, temp_dir: str) -> str:
+    """Write an HTML report to a new, uniquely named file in ``temp_dir``.
+
+    The name keeps a readable ``{prefix}{unix_ts}_`` stem, and ``mkstemp`` adds a random
+    suffix and creates the file atomically. A plain ``{prefix}{unix_ts}.html`` name only
+    has one-second resolution: two reports written in the same second shared a file and
+    silently overwrote each other.
+
+    Args:
+        html_content: Rendered HTML to write.
+        prefix: File-name prefix, e.g. ``"emby_cleanup_report_"``.
+        temp_dir: Directory for the file (the report's CSS is copied beside it).
+
+    Returns:
+        Absolute path of the written file.
+    """
+    fd, path = tempfile.mkstemp(prefix=f"{prefix}{int(time.time())}_", suffix=".html", dir=temp_dir)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(html_content)
+    return path

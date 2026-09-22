@@ -24,7 +24,7 @@ from emby_dedupe.models.cleanup import (
     CleanupConfig,
     SeriesCleanupCandidate,
 )
-from emby_dedupe.reports.common import format_size
+from emby_dedupe.reports.common import format_size, write_temp_report
 from emby_dedupe.reports.images import inline_images_in_place
 from emby_dedupe.utils.logging import logger
 
@@ -502,7 +502,6 @@ def _save_cleanup_html_report(html_content: str, no_open: bool = False) -> str:
         Absolute path of the saved HTML file.
     """
     temp_dir = tempfile.gettempdir()
-    temp_path = os.path.join(temp_dir, f"emby_cleanup_report_{int(time.time())}.html")
 
     # Copy CSS alongside HTML so the relative <link href="report.css"> resolves
     pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -512,8 +511,7 @@ def _save_cleanup_html_report(html_content: str, no_open: bool = False) -> str:
     else:
         logger.warning(f"CSS file not found at {css_src}; report may be unstyled.")
 
-    with open(temp_path, "w", encoding="utf-8") as fh:
-        fh.write(html_content)
+    temp_path = write_temp_report(html_content, "emby_cleanup_report_", temp_dir)
 
     logger.info(f"Cleanup HTML report saved to: {temp_path}")
 

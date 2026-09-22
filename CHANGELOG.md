@@ -33,6 +33,9 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
   titles already in the library being downloaded again.
 - **Reports:** show the path the guard actually used instead of `unknown`. They also record what
   happened to duplicates the guard refused (fold-safe delete now runs before the report is written).
+- **HTML reports could overwrite each other.** File names had one-second resolution, so two reports
+  written in the same second shared a file. Each report now gets a unique file (created atomically,
+  readable only by its owner).
 - **ČSFD:** never sends a `Cast` lock. Emby has no such value and drops the whole `LockedFields`
   list when it gets one.
 

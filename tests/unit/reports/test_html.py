@@ -1,6 +1,7 @@
 """
 Tests for HTML report generation
 """
+import os
 from unittest.mock import MagicMock, patch
 
 from emby_dedupe.reports.html import (
@@ -250,57 +251,53 @@ class TestHtmlReports:
                 pass
 
     @patch('emby_dedupe.reports.html.format_html_report')
-    @patch('tempfile.gettempdir')
-    @patch('time.time')
-    def test_generate_html_report(self, mock_time, mock_tempdir, mock_format_html):
-        """Test HTML report generation to a file."""
-        # Setup mocks
+    def test_generate_html_report(self, mock_format_html, tmp_path):
+        """The report is written to a uniquely named file in the temp dir."""
         base_url = "http://example.com"
         decisions = [{"keep": {"id": "123"}, "delete": [{"id": "456"}]}]
         mock_format_html.return_value = "<html>Test content</html>"
-        mock_tempdir.return_value = "/tmp"
-        mock_time.return_value = 1234567890
 
-        # Create a simple mock for file operations
-        m = MagicMock()
-        m_handle = MagicMock()
-        m.return_value.__enter__.return_value = m_handle
+        with patch('tempfile.gettempdir', return_value=str(tmp_path)), \
+             patch('emby_dedupe.reports.common.time.time', return_value=1234567890), \
+             patch('shutil.copy2'):
+            result = generate_html_report(base_url, decisions)
 
-        # Create a mock for path joining
-        path_join_mock = MagicMock(return_value="/tmp/emby_dedupe_report_1234567890.html")
-
-        # Patch the necessary functions
-        with patch('builtins.open', m):
-            with patch('os.path.join', path_join_mock):
-                with patch('shutil.copy2'):
-                    result = generate_html_report(base_url, decisions)
-
-        # Verify the result is the file path
-        assert "emby_dedupe_report_1234567890.html" in result
+        assert os.path.dirname(result) == str(tmp_path)
+        assert os.path.basename(result).startswith("emby_dedupe_report_1234567890_")
+        assert result.endswith(".html")
+        with open(result, encoding="utf-8") as fh:
+            assert fh.read() == "<html>Test content</html>"
 
     @patch('emby_dedupe.reports.html.format_html_report')
-    def test_generate_html_report_with_css_error(self, mock_format_html):
-        """Test HTML report generation handling CSS copy errors gracefully."""
-        # Setup
+    def test_generate_html_report_with_css_error(self, mock_format_html, tmp_path):
+        """A failed CSS copy is logged and the report is still written."""
         base_url = "http://emby.server"
         decisions = [{"keep": {"id": "123"}, "delete": [{"id": "456"}]}]
-
         mock_format_html.return_value = "<html>Test content</html>"
 
-        # Mock shutil.copy2 to raise an IOError
-        with patch('shutil.copy2', side_effect=OSError("Test error")):
-            # Mock open to avoid actual file operations
-            with patch('builtins.open', MagicMock()):
-                # Mock logger to check error is logged
-                with patch('emby_dedupe.reports.html.logger'):
-                    # Mock os.path.join
-                    with patch('os.path.join', return_value="/tmp/report.html"):
-                        with patch('tempfile.gettempdir', return_value="/tmp"):
-                            with patch('time.time', return_value=1234567890):
-                                result = generate_html_report(base_url, decisions)
+        with patch('shutil.copy2', side_effect=OSError("Test error")), \
+             patch('tempfile.gettempdir', return_value=str(tmp_path)), \
+             patch('emby_dedupe.reports.html.logger') as mock_logger:
+            result = generate_html_report(base_url, decisions)
 
-                                # Just verify the function returns some string
-                                assert isinstance(result, str)
+        mock_logger.error.assert_called_once()
+        assert os.path.isfile(result)
+
+    @patch('emby_dedupe.reports.html.format_html_report')
+    def test_reports_in_same_second_do_not_overwrite(self, mock_format_html, tmp_path):
+        """Regression: two reports in the same second shared one file and overwrote each other."""
+        mock_format_html.side_effect = ["<html>first</html>", "<html>second</html>"]
+        with patch('tempfile.gettempdir', return_value=str(tmp_path)), \
+             patch('emby_dedupe.reports.common.time.time', return_value=1234567890), \
+             patch('shutil.copy2'):
+            first = generate_html_report("http://x", [])
+            second = generate_html_report("http://x", [])
+
+        assert first != second
+        with open(first, encoding="utf-8") as fh:
+            assert fh.read() == "<html>first</html>"
+        with open(second, encoding="utf-8") as fh:
+            assert fh.read() == "<html>second</html>"
 
     @patch('jinja2.Environment')
     @patch('jinja2.FileSystemLoader')

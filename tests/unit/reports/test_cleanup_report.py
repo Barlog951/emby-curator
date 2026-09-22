@@ -206,6 +206,22 @@ class TestSaveCleanupHtmlReport:
             mock_open.assert_not_called()
             os.unlink(path)  # cleanup
 
+    def test_reports_in_same_second_do_not_overwrite(self, tmp_path):
+        """Regression: the name had 1-second resolution, so two reports in the same second
+        (e.g. parallel test workers) shared one file and overwrote each other."""
+        with patch("emby_dedupe.reports.cleanup.tempfile.gettempdir", return_value=str(tmp_path)), \
+             patch("emby_dedupe.reports.common.time.time", return_value=1234567890), \
+             patch("emby_dedupe.reports.cleanup.shutil.copy2"), \
+             patch("emby_dedupe.reports.cleanup.webbrowser.open"):
+            first = _save_cleanup_html_report("<html>first</html>", no_open=True)
+            second = _save_cleanup_html_report("<html>second</html>", no_open=True)
+        assert first != second
+        assert os.path.basename(first).startswith("emby_cleanup_report_1234567890_")
+        with open(first, encoding="utf-8") as f:
+            assert f.read() == "<html>first</html>"
+        with open(second, encoding="utf-8") as f:
+            assert f.read() == "<html>second</html>"
+
     def test_browser_opened_when_no_open_false(self):
         """no_open=False triggers webbrowser.open()."""
         with patch("emby_dedupe.reports.cleanup.shutil.copy2"), \
