@@ -5,6 +5,19 @@ All notable changes to **Emby Curator** are documented here.
 This project is a maintained fork of [emby-dedupe](https://github.com/troykelly/emby-dedupe)
 by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.0.
 
+## [Unreleased]
+
+### Security
+
+- Require `anyio>=4.14.2` (pulled in through httpx) to fix CVE-2026-63374 and CVE-2026-64847.
+
+### Changed
+
+- Dependency refresh: `typer` 0.27.2, `tqdm` 4.70.1, `python-dotenv` 1.2.3 and `rank-torrent-name`
+  1.11.1. Dev tools: `mypy` 2.3.1, `ruff` 0.16.8 and `pytest` 9.1.1.
+- `requirements.txt` now lists `typer` and `lingua-language-detector`, so the CI `pip-audit` scan
+  covers every runtime dependency.
+
 ## [3.0.2] — 2026-07-30
 
 ### Fixed
