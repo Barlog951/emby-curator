@@ -83,8 +83,8 @@
                         <div class="stat-label">Size Kept</div>
                     </div>
                     <div class="stat-item">
-                        <div class="stat-value">{{ formatted_size_to_delete }}</div>
-                        <div class="stat-label">Size Removed</div>
+                        <div class="stat-value">{{ formatted_space_saved }}</div>
+                        <div class="stat-label">{% if deletion_attempted %}Size Removed{% else %}Size to Remove{% endif %}</div>
                     </div>
                     <div class="stat-item">
                         <div class="stat-value">{{ percentage_saved }}%</div>

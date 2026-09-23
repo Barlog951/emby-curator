@@ -23,6 +23,11 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ### Fixed
 
+- **Dedupe report summary under-counted deletions and over-counted space.** Duplicates removed
+  file-only by `--fold-safe-delete` were counted as "skipped". "Size Removed" also added up every
+  planned duplicate, including the ones the safety guard kept on disk. A real run's report said "10
+  deleted, 12 skipped, 26 GB removed", when the truth was 14 deleted and 8 kept. Only files actually
+  removed now count, and a dry run's figure is labelled "Size to Remove".
 - **`csfd fill` only ever searched by the item's Name.** Emby leaves out `OriginalTitle` and `Path`
   unless asked, and the item fetch never asked. The strict matcher (whose matches are applied) now
   also searches Emby's `OriginalTitle`. The folder title is deliberately *not* used there: a live

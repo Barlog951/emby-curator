@@ -701,3 +701,31 @@ class TestHtmlReportHelpers:
 
         assert result["status_class"] == "status-pending"
         assert result["status_text"] == "Pending"
+
+
+def _group(status):
+    item = {"id": "d", "name": "Dup", "quality_description": {"size": 1_000_000_000}}
+    if status:
+        item["deletion_result"] = {"status": status}
+    return {"keep": {"id": "k", "name": "Keep", "serverid": "s", "quality_description": {"size": 2_000_000_000}},
+            "delete": [item]}
+
+
+def test_rendered_space_label_and_value_follow_what_really_happened():
+    """Regression 2026-09-23: 'Size Removed' summed every planned duplicate, including the ones
+    the safety guard kept on disk; a dry run now says 'Size to Remove'."""
+    from emby_dedupe.reports.html import format_html_report
+    doit = format_html_report("http://emby", [_group("fold_safe_removed"), _group("skipped_unsafe")])
+    from emby_dedupe.reports.common import format_size
+    assert "Size Removed" in doit and "Size to Remove" not in doit
+    removed, planned = format_size(1_000_000_000), format_size(2_000_000_000)
+    assert f'<div class="stat-value">{removed}</div>' in doit        # only the fold-safe removal
+    assert f'<div class="stat-value">{planned}</div>' not in doit    # not the guard-kept one too
+    dry = format_html_report("http://emby", [_group(None)])
+    assert "Size to Remove" in dry
+
+
+def test_fold_safe_group_is_headed_as_deleted():
+    from emby_dedupe.reports.html import _process_decision_group
+    assert _process_decision_group(_group("fold_safe_removed"), "http://emby")["has_deleted_items"] is True
+    assert _process_decision_group(_group("skipped_unsafe"), "http://emby")["has_deleted_items"] is False

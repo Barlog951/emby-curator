@@ -236,7 +236,7 @@ def _process_decision_group(decision: dict[str, Any], base_url: str) -> dict[str
 
     for item in delete_items:
         processed_item = _process_delete_item(item, base_url, keep_item['serverid'])
-        if processed_item["status_text"] == "Deleted":
+        if processed_item["status_class"] == "status-success":  # Emby delete or fold-safe removal
             has_deleted_items = True
         processed_delete_items.append(processed_item)
 
@@ -289,6 +289,8 @@ def _prepare_template_data(base_url: str, stats: dict[str, Any], language_priori
         "skipped_deletions": stats["skipped_deletions"],
         "formatted_size_to_keep": stats["formatted_size_to_keep"],
         "formatted_size_to_delete": stats["formatted_size_to_delete"],
+        "formatted_space_saved": stats["formatted_space_saved"],
+        "deletion_attempted": stats["deletion_attempted"],
         "percentage_saved": f"{stats['percentage_saved']:.1f}",
 
         # Language priority info

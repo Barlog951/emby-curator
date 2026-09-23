@@ -29,15 +29,23 @@ def _safe_int_conversion(value: Any) -> int:
         return 0
 
 
-def _process_deletion_status(item: dict[str, Any], stats: dict[str, Any]) -> None:
-    """Update stats based on deletion status (in-place)."""
+# Statuses that mean the file is really gone: an Emby delete, or the file-only removal
+# --fold-safe-delete makes for a duplicate the guard refused. Counting only "success"
+# reported real fold-safe deletions as "skipped" and their space as unreclaimed.
+DELETED_STATUSES = frozenset({"success", "fold_safe_removed"})
+
+
+def _process_deletion_status(item: dict[str, Any], stats: dict[str, Any]) -> bool:
+    """Update stats based on deletion status (in-place). True when the file is really gone."""
     deletion_status = item.get("deletion_result", {}).get("status", "skipped")
-    if deletion_status == "success":
+    if deletion_status in DELETED_STATUSES:
         stats["deleted_items"] += 1
-    elif deletion_status == "failed":
+        return True
+    if deletion_status == "failed":
         stats["failed_deletions"] += 1
     else:
         stats["skipped_deletions"] += 1
+    return False
 
 
 def calculate_report_statistics(decisions: list[dict[str, Any]]) -> dict[str, Any]:
@@ -59,6 +67,8 @@ def calculate_report_statistics(decisions: list[dict[str, Any]]) -> dict[str, An
         "skipped_deletions": 0,
         "total_size_to_delete": 0,
         "total_size_to_keep": 0,
+        "total_size_removed": 0,
+        "deletion_attempted": False,
     }
 
     valid_decisions = [d for d in decisions if _is_valid_decision(d)]
@@ -76,17 +86,23 @@ def calculate_report_statistics(decisions: list[dict[str, Any]]) -> dict[str, An
         # Process delete items
         for item in delete_items:
             stats["total_items_to_delete"] += 1
-            _process_deletion_status(item, stats)
+            removed = _process_deletion_status(item, stats)
+            stats["deletion_attempted"] |= "deletion_result" in item
 
             delete_size = _safe_int_conversion(item.get("quality_description", {}).get("size", 0))
             stats["total_size_to_delete"] += delete_size
+            if removed:
+                stats["total_size_removed"] += delete_size
 
-    # Calculate space savings
-    stats["space_saved"] = stats["total_size_to_delete"]
+    # Space savings: after a real (--doit) run, only what was actually removed; a dry run
+    # shows the planned total. Duplicates the guard kept are still on disk.
+    stats["space_saved"] = (
+        stats["total_size_removed"] if stats["deletion_attempted"] else stats["total_size_to_delete"]
+    )
     stats["percentage_saved"] = 0.0
     total_size = stats["total_size_to_keep"] + stats["total_size_to_delete"]
     if total_size > 0:
-        stats["percentage_saved"] = (stats["total_size_to_delete"] / total_size) * 100.0
+        stats["percentage_saved"] = (stats["space_saved"] / total_size) * 100.0
 
     # Format byte sizes to human-readable format
     stats["formatted_size_to_delete"] = format_size(stats["total_size_to_delete"])
