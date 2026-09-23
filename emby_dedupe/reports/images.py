@@ -141,6 +141,7 @@ def inline_images_in_place(
     context: object,
     api_key: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT,
+    prefetched: dict[str, str] | None = None,
 ) -> None:
     """Inline every poster in a render context, in place, wherever it lives.
 
@@ -152,12 +153,18 @@ def inline_images_in_place(
 
     Any URL that cannot be inlined is still written **without** its credential — a
     broken image is acceptable, leaking the key is not.
+
+    ``prefetched`` maps poster URLs to ``data:`` URIs fetched earlier: a cleanup run
+    fetches the posters of the items it is about to delete, because afterwards Emby
+    no longer has them.
     """
     holders = list(_iter_image_holders(context))
     if not holders:
         return
 
-    replacements = inline_poster_urls([h["image_url"] for h in holders], api_key, timeout)
+    known = {u: v for u, v in (prefetched or {}).items() if v.startswith("data:")}
+    to_fetch = [h["image_url"] for h in holders if h["image_url"] not in known]
+    replacements = {**inline_poster_urls(to_fetch, api_key, timeout), **known}
     for holder in holders:
         url = holder["image_url"]
         holder["image_url"] = replacements.get(url) or strip_credentials(url)

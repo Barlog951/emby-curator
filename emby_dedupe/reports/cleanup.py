@@ -15,6 +15,7 @@ import shutil
 import tempfile
 import time
 import webbrowser
+from collections.abc import Iterable
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -25,7 +26,7 @@ from emby_dedupe.models.cleanup import (
     SeriesCleanupCandidate,
 )
 from emby_dedupe.reports.common import format_size, write_temp_report
-from emby_dedupe.reports.images import inline_images_in_place
+from emby_dedupe.reports.images import inline_images_in_place, inline_poster_urls
 from emby_dedupe.utils.logging import logger
 
 # ---------------------------------------------------------------------------
@@ -350,11 +351,7 @@ def _movie_candidate_to_dict(c: CleanupCandidate, base_url: str, api_key: str) -
         "size_human": format_size(c.size_bytes),
         "path": c.path,
         "deletion_result": c.deletion_result,
-        "image_url": (
-            f"{base_url}/Items/{c.item_id}/Images/Primary"
-            f"?maxWidth=200&api_key={api_key}"
-            if api_key else ""
-        ),
+        "image_url": poster_url(base_url, c.item_id, api_key),
     }
 
 
@@ -381,12 +378,30 @@ def _series_candidate_to_dict(c: SeriesCleanupCandidate, base_url: str, api_key:
         "size_human": format_size(c.size_bytes),
         "path": c.path,
         "deletion_result": c.deletion_result,
-        "image_url": (
-            f"{base_url}/Items/{c.item_id}/Images/Primary"
-            f"?maxWidth=200&api_key={api_key}"
-            if api_key else ""
-        ),
+        "image_url": poster_url(base_url, c.item_id, api_key),
     }
+
+
+def poster_url(base_url: str, item_id: str, api_key: str) -> str:
+    """The report's poster URL for an item ('' without a key). Inlined before rendering,
+    so the key in it never reaches the report file."""
+    if not api_key:
+        return ""
+    return f"{base_url}/Items/{item_id}/Images/Primary?maxWidth=200&api_key={api_key}"
+
+
+def prefetch_cleanup_posters(
+    base_url: str, candidates: Iterable[CleanupCandidate | SeriesCleanupCandidate], api_key: str,
+) -> dict[str, str]:
+    """Fetch the posters of the items about to be deleted, while Emby still has them.
+
+    The report is rendered after the deletions; by then a deleted item's image is gone,
+    so the one poster that matters most in a cleanup report used to be the one missing
+    (V/H/S/99, 2026-09-23). Returns ``{poster_url: data URI}`` for the ones fetched.
+    """
+    urls = [u for u in (poster_url(base_url, c.item_id, api_key) for c in candidates) if u]
+    fetched = inline_poster_urls(urls, api_key)
+    return {u: v for u, v in fetched.items() if v.startswith("data:")}
 
 
 def _generate_cleanup_html_report(
@@ -401,6 +416,7 @@ def _generate_cleanup_html_report(
     series_stats: dict | None = None,
     movie_near_miss: list[CleanupCandidate] | None = None,
     series_near_miss: list[SeriesCleanupCandidate] | None = None,
+    prefetched_posters: dict[str, str] | None = None,
 ) -> str:
     """Render the cleanup report as an HTML string using Jinja2.
 
@@ -482,7 +498,7 @@ def _generate_cleanup_html_report(
     # Embed the posters so the API key never reaches the report file. This walks the
     # whole context rather than a list of sections, so adding a section to the template
     # cannot reintroduce the leak (see reports.images.inline_images_in_place).
-    inline_images_in_place(context, api_key)
+    inline_images_in_place(context, api_key, prefetched=prefetched_posters)
 
     return template.render(**context)
 

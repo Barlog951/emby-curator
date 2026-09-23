@@ -49,6 +49,7 @@ from emby_dedupe.reports.cleanup import (
     _format_cleanup_report_json,
     _generate_cleanup_html_report,
     _save_cleanup_html_report,
+    prefetch_cleanup_posters,
 )
 from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.logging import logger
@@ -314,6 +315,19 @@ def _output_report(
         )
 
 
+def _prefetch_doomed_posters(
+    base_url: str, api_key: str, will_report: bool,
+    doomed: list[CleanupCandidate | SeriesCleanupCandidate],
+) -> dict[str, str]:
+    """Fetch the posters of what is about to be deleted, for a --doit run with an HTML report.
+
+    After the delete Emby no longer has them, and the report is rendered last.
+    """
+    if not (will_report and doomed):
+        return {}
+    return prefetch_cleanup_posters(base_url, doomed, api_key)
+
+
 def _execute_cleanup(
     client: httpx.Client,
     base_url: str,
@@ -381,6 +395,10 @@ def _execute_cleanup(
         movie_near_miss=movie_near_miss, series_near_miss=series_near_miss,
     )
 
+    prefetched = _prefetch_doomed_posters(
+        base_url, api_key, doit and (html_report or html_only), [*candidates, *series_candidates],
+    )
+
     if doit and candidates:
         _perform_deletions(client, base_url, candidates, username, password, api_key, "movies")
     if doit and series_candidates:
@@ -393,6 +411,7 @@ def _execute_cleanup(
             server_id=server_id, api_key=api_key,
             series_candidates=series_for_report, series_stats=series_stats,
             movie_near_miss=movie_near_miss, series_near_miss=series_near_miss,
+            prefetched_posters=prefetched,
         )
         report_path = _save_cleanup_html_report(html_content, no_open=no_open)
         print(f"\nHTML report: {report_path}")
