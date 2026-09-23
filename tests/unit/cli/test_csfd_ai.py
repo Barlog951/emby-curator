@@ -353,3 +353,14 @@ def test_strict_matcher_uses_emby_original_title():
     got, reason = cli.resolve_film(csfd, item, {})
     assert got is film and reason.endswith("via original title")
     assert "Zauberhaftes Albanien" in csfd.searched
+
+
+def test_write_payload_keeps_its_proven_shape():
+    """Path and OriginalTitle are fetched only for matching (2026-09-23). They must not start
+    appearing in the full-object POST that every --doit write sends to Emby."""
+    item = _item(OriginalTitle="El Conde")
+    plan = cli.plan_item(item, _film())
+    payload = cli.build_payload(item, plan)
+    assert "Path" not in payload and "OriginalTitle" not in payload
+    assert payload["Name"] == "The Count" and payload["ProviderIds"]["Csfd"] == "100"
+    assert item["Path"] and item["OriginalTitle"] == "El Conde"  # the fetched item is untouched

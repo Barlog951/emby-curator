@@ -61,6 +61,7 @@ CACHE_SAVE_EVERY = 10
 # matcher's second title, Path for the AI path's folder name (neither was requested before
 # 2026-09-23, so only the Name was ever looked up).
 ITEM_EXTRA_FIELDS = "People,Path,OriginalTitle"
+READ_ONLY_FIELDS = ("Path", "OriginalTitle")  # fetched for matching, never written back
 ROLE_ABBREVIATIONS = {"a.z.": "archívne zábery"}  # ČSFD's shorthand for archive footage
 VERIFY_FETCH_LIMIT = 2  # film pages fetched per query when no title matched outright
 _FOLDER_TITLE_RE = re.compile(r"^(.*?)\s*\((?:19|20)\d{2}(?:-\d{4})?\)")
@@ -366,6 +367,11 @@ def write_ai_review(path: str, suggestions: list[AiSuggestion], model: str) -> N
 def build_payload(item: dict, plan: ItemPlan) -> dict:
     """Full-object POST body: the item plus the planned fields and locks."""
     payload = copy.deepcopy(item)
+    # Fetched only for matching. Keep them out of the write, so the POST has the same shape
+    # as the hundreds of writes that preceded their fetch (Emby's full-object update has
+    # surprised us before: a 'Cast' lock silently dropped all LockedFields).
+    for read_only in READ_ONLY_FIELDS:
+        payload.pop(read_only, None)
     locked = payload.setdefault("LockedFields", [])
     for key, value in plan.fields.items():
         payload[key] = value
