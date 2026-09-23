@@ -54,6 +54,11 @@ The following architectures are supported in the latest Docker version:
   folder* (a movie folder or per-episode subfolder), not just the file. The deletion path
   refuses any delete that would fold-delete a folder containing the item being **kept**, so
   a duplicate co-located with its keeper is never destroyed together with it.
+- **ČSFD metadata** (`csfd fill`): for titles TMDb/TVDb/IMDb can't identify, fills only *empty*
+  fields (Slovak overview, genres, year, rating, directors and cast, 1080px poster) from
+  [csfd.sk](https://www.csfd.sk), accepting only unambiguous title + year matches. Optional
+  `--ai-match` asks [TypeSafe](https://typesafe.ai)'s Jev model to pick among the plausible
+  candidates when the rules can't decide. It is review-only by default.
 - Multi-platform support (Docker and Python)
 
 ## Installation
@@ -100,6 +105,11 @@ emby-curator [shared options] SUBCOMMAND [subcommand options]
 | `genres audit` | Read-only report of genre health |
 | `genres normalize` | Fix variant genre names |
 | `genres fix` | Fill missing genres from TMDB/OMDb |
+| `genres process` | Normalize + fix in one pass (used by the webhook listener) |
+| `cleanup` | Find stale, unwatched media (dynamic rating-decay protection) |
+| `descriptions fill` | Localize Overview/Tagline/Name (SK/CZ) and backfill ProductionYear |
+| `csfd fill` | Fill metadata, posters and cast from ČSFD for titles TMDb/TVDb can't identify |
+| `csfd people` | ČSFD portraits, biographies and birth/death dates for actors |
 | `check` | Check if media should be downloaded |
 | `missing-episodes` | Find missing TV episodes |
 
@@ -144,6 +154,8 @@ The following environment variables can be used to configure the tool:
 - `DEDUPE_LANG_PRIO`: Comma-separated list of language codes in priority order (e.g., 'slo,cze,eng'). Media items with higher priority languages will be kept.
 - `DEDUPE_EXCLUDE_IDS`: Comma-separated list of provider IDs to exclude from deduplication (e.g., 'tt1234567,123456'). Works with IMDB (tt prefix), TMDB, and TVDB IDs.
 - `DEDUPE_EXCLUDE`: Comma-separated list of terms to exclude from deduplication. If a movie title contains any of these terms, it will be skipped.
+- `DEDUPE_FLARESOLVERR_URL`: FlareSolverr endpoint used by the `csfd` commands to get past ČSFD's bot check (default `http://localhost:8191/v1`).
+- `DEDUPE_TYPESAFE_API_KEY`: TypeSafe API key for `csfd fill --ai-match` (`TYPESAFE_API_KEY` is accepted too). Never pass it on the command line.
 
 ## Command-line Arguments
 
@@ -348,6 +360,39 @@ emby-curator --host "http://your-emby-server" --api-key "your_api_key" --library
 
 # Target specific items (used by webhook listener)
 emby-curator --host "http://your-emby-server" --api-key "your_api_key" --doit genres normalize --item-ids 123,456
+```
+
+### ČSFD Metadata
+
+The `csfd` commands reach csfd.sk through a [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr)
+container (`docker run -d -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest`). They only fill
+**empty** fields, and they are dry runs unless `--doit` is given. A matched item gets a `Csfd`
+provider id, so later runs skip it.
+
+```shell
+# Preview what ČSFD would fill (dry run) and write a TSV report
+emby-curator --host "http://your-emby-server" --api-key "your_api_key" csfd fill --all-libraries --report csfd.tsv
+
+# Apply, with a hand-made map for titles the search can't resolve
+emby-curator --host "http://your-emby-server" --api-key "your_api_key" csfd fill --all-libraries --map csfd-map.tsv --doit
+
+# Portraits and biographies for actors with no photo (most-used actors first)
+emby-curator --host "http://your-emby-server" --api-key "your_api_key" csfd people --all-libraries --limit 500 --doit
+```
+
+The map file (`--map`) has one `<emby_id><TAB><csfd_url>` per line, and `#` starts a comment.
+A line `<emby_id><TAB>-` records that a title has no ČSFD entry, so it is never searched or suggested again.
+
+**AI match fallback (`--ai-match`).** When the strict rules find no unambiguous match, TypeSafe's Jev
+model chooses among the year-plausible candidates, or answers "none". Each candidate is described with its
+country and original titles. Only the item's title, year, type and folder name are sent. By default the
+picks are **suggestions only**: they are written to `--ai-review-file` (default `csfd-ai-review.tsv`) in
+map format. Delete the lines you reject and append the rest to your map. `--ai-auto` applies picks at or
+above `--ai-threshold` (default 0.9). Run review-only for a while before enabling it.
+
+```shell
+export DEDUPE_TYPESAFE_API_KEY=...   # from https://console.typesafe.ai
+emby-curator --host "http://your-emby-server" --api-key "your_api_key" csfd fill --all-libraries --map csfd-map.tsv --ai-match --doit
 ```
 
 ## Python API
