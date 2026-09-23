@@ -112,6 +112,8 @@ TMDB_CANONICAL_GENRES: frozenset[str] = frozenset({
 ENV_DEDUPE_TMDB_API_KEY = "DEDUPE_TMDB_API_KEY"
 ENV_DEDUPE_OMDB_API_KEY = "DEDUPE_OMDB_API_KEY"
 ENV_DEDUPE_OMDB_API_KEYS = "DEDUPE_OMDB_API_KEYS"  # comma-separated for rotation
+ENV_DEDUPE_TYPESAFE_API_KEY = "DEDUPE_TYPESAFE_API_KEY"  # `csfd fill --ai-match`
+ENV_TYPESAFE_API_KEY = "TYPESAFE_API_KEY"  # the vendor SDK's name, accepted as a fallback
 
 # Default port values
 DEFAULT_PORT_HTTP = 80

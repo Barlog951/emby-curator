@@ -232,3 +232,6 @@ redownload-list.json
 
 # local-only project reference (migrated from gitignored CLAUDE.md)
 .claude/skills/emby-dedupe-reference/
+
+# marimo >= 0.24 session snapshots (hold live library/playback data)
+__marimo__/

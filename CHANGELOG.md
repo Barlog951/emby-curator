@@ -5,6 +5,31 @@ All notable changes to **Emby Curator** are documented here.
 This project is a maintained fork of [emby-dedupe](https://github.com/troykelly/emby-dedupe)
 by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.0.
 
+## [Unreleased]
+
+### Added
+
+- **`csfd fill --ai-match`** (opt-in): for titles the strict matcher leaves unmatched, TypeSafe's
+  Jev model picks among the year-plausible ČSFD candidates, or answers "none". Each candidate is
+  described with its country and original titles, which is what tells same-title, same-year films
+  apart. Suggestions are **review-only** by default and go to `--ai-review-file` (default
+  `csfd-ai-review.tsv`) as a ready-to-use `--map` file. `--ai-auto` applies picks at or above
+  `--ai-threshold` (default 0.9). The model is pinned (`--ai-model`, default `jev-1.13.0`). Only the
+  title, year, type and folder name are sent, never the full path. An API outage never fails the
+  run, and a rejected key turns the fallback off for the rest of the run. The key is read from
+  `DEDUPE_TYPESAFE_API_KEY` (or `TYPESAFE_API_KEY`).
+- **Never-match marker for `--map`:** a line `<emby_id><TAB>-` records that a title has no ČSFD
+  entry, so it is never searched or suggested again. Older versions ignore these lines.
+
+### Fixed
+
+- **`csfd fill` only ever searched by the item's Name.** Emby leaves out `OriginalTitle` and `Path`
+  unless asked, and the item fetch never asked. The strict matcher (whose matches are applied) now
+  also searches Emby's `OriginalTitle`. The folder title is deliberately *not* used there: a live
+  check found folders naming a different film than Emby's metadata (folder `Peninsula (2020)`, item
+  "Buklog: The Ritual System"). The folder title only feeds `--ai-match`, which sees both and
+  suggests for review.
+
 ## [3.1.0] — 2026-09-22
 
 ### Added

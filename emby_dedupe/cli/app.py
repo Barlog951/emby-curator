@@ -780,7 +780,7 @@ def csfd_callback(ctx: typer.Context) -> None:
 
 @csfd_app.command("fill")
 def csfd_fill(
-    ctx: typer.Context,
+    ctx: typer.Context,  # NOSONAR — typer CLI requires one param per CLI option; cannot reduce
     doit: bool = typer.Option(False, "--doit", help=_DOIT_HELP),
     only_unmatched: bool = typer.Option(
         False, "--only-unmatched",
@@ -804,6 +804,24 @@ def csfd_fill(
     no_cache: bool = typer.Option(False, "--no-cache", help="Bypass the on-disk ČSFD page cache."),
     all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
     item_ids: str | None = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
+    ai_match: bool = typer.Option(
+        False, "--ai-match",
+        help="For items the strict matcher leaves unmatched, ask TypeSafe Jev to pick among the "
+             "plausible ČSFD candidates. Review-only unless --ai-auto. Key: DEDUPE_TYPESAFE_API_KEY.",
+    ),
+    ai_auto: bool = typer.Option(
+        False, "--ai-auto", help="Apply AI picks at or above --ai-threshold (default: suggest only).",
+    ),
+    ai_threshold: float = typer.Option(
+        0.9, "--ai-threshold", min=0.5, max=1.0, help="Confidence an AI pick needs to be auto-applied.",
+    ),
+    ai_review_file: str = typer.Option(
+        "csfd-ai-review.tsv", "--ai-review-file",
+        help="Where AI suggestions are written, in --map format (delete rejects, append the rest).",
+    ),
+    ai_model: str | None = typer.Option(
+        None, "--ai-model", help="TypeSafe model (default: the pinned version the thresholds were measured on).",
+    ),
 ) -> None:
     """Fill overview, genres, year, rating and poster from ČSFD (csfd.sk).
 
@@ -832,6 +850,11 @@ def csfd_fill(
         no_cache=no_cache,
         all_libraries=all_libraries,
         item_ids=item_ids,
+        ai_match=ai_match,
+        ai_auto=ai_auto,
+        ai_threshold=ai_threshold,
+        ai_review_file=ai_review_file,
+        ai_model=ai_model,
     )
     run_csfd_command(args)
 

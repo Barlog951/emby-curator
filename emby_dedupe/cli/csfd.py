@@ -30,6 +30,7 @@ from emby_dedupe.api.csfd import (
     CsfdCreatorProfile,
     CsfdError,
     CsfdFilm,
+    CsfdHit,
     candidate_hits,
     film_url,
     load_csfd_cache,
@@ -46,16 +47,21 @@ from emby_dedupe.api.genres import (
     get_user_id,
 )
 from emby_dedupe.api.item_images import upload_primary_image
+from emby_dedupe.api.typesafe import DEFAULT_MODEL, TypesafeClient, TypesafeError
 from emby_dedupe.cli.arguments import get_env_variable
 from emby_dedupe.cli.genres import _resolve_library_ids
+from emby_dedupe.utils.constants import ENV_DEDUPE_TYPESAFE_API_KEY, ENV_TYPESAFE_API_KEY
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.logging import logger, set_logging_level
 
 PROVIDER_KEYS = ("Tmdb", "Imdb", "Tvdb")
 CSFD_PROVIDER_KEY = "Csfd"
 CACHE_SAVE_EVERY = 10
-ITEM_EXTRA_FIELDS = "People"
-ROLE_ABBREVIATIONS = {"a.z.": "archívne zábery"}  # ČSFD's shorthand for archive footage  # the cast gap needs People, which the default item fetch omits
+# Emby omits these unless asked: People for the cast gap, OriginalTitle for the strict
+# matcher's second title, Path for the AI path's folder name (neither was requested before
+# 2026-09-23, so only the Name was ever looked up).
+ITEM_EXTRA_FIELDS = "People,Path,OriginalTitle"
+ROLE_ABBREVIATIONS = {"a.z.": "archívne zábery"}  # ČSFD's shorthand for archive footage
 VERIFY_FETCH_LIMIT = 2  # film pages fetched per query when no title matched outright
 _FOLDER_TITLE_RE = re.compile(r"^(.*?)\s*\((?:19|20)\d{2}(?:-\d{4})?\)")
 
@@ -113,13 +119,22 @@ def is_candidate(item: dict, only_unmatched: bool) -> bool:
     return not _has_provider(item) or bool(missing_fields(item))
 
 
-def title_queries(item: dict) -> list[str]:
-    """Distinct search strings for an item: its Name, folder title, original title."""
+def folder_name(item: dict) -> str:
+    """The item's own folder: a movie's parent directory, a series' directory."""
+    path = Path(item.get("Path") or "")
+    return path.parent.name if item.get("Type") == "Movie" else path.name
+
+
+def title_queries(item: dict, include_folder: bool = True) -> list[str]:
+    """Distinct search strings for an item: its Name, folder title, original title.
+
+    The folder title is not Emby's metadata: it can name a different film than the item's
+    Name (folder ``Peninsula (2020)`` holding an item Emby calls "Buklog: The Ritual System",
+    2026-09-23). The strict matcher, whose matches are applied, therefore passes
+    ``include_folder=False``; the folder only feeds the reviewed AI path.
+    """
     queries: list[str] = []
-    folder = Path(item.get("Path") or "").name
-    if item.get("Type") == "Movie":
-        folder = Path(item.get("Path") or "").parent.name
-    folder_match = _FOLDER_TITLE_RE.match(folder)
+    folder_match = _FOLDER_TITLE_RE.match(folder_name(item)) if include_folder else None
     for candidate in (item.get("Name"), folder_match.group(1) if folder_match else None,
                       item.get("OriginalTitle")):
         text = (candidate or "").strip()
@@ -143,7 +158,7 @@ def resolve_film(
         return csfd.film(film_url(stamped)), "stored csfd id"
     kind = KIND_SERIES if item.get("Type") == "Series" else KIND_FILM
     year = item.get("ProductionYear")
-    queries = title_queries(item)
+    queries = title_queries(item, include_folder=False)  # Emby's own titles only: see title_queries
     searches = {query: csfd.search(query) for query in queries}
     for query, hits in searches.items():
         hit = pick_match(hits, query, year, kind)
@@ -192,6 +207,162 @@ def people_entries(film: CsfdFilm) -> list[dict[str, str]]:
     return entries
 
 
+# ---------------------------------------------------------------------------
+# AI fallback (--ai-match): TypeSafe Jev picks among the plausible candidates
+# ---------------------------------------------------------------------------
+
+AI_MAX_CANDIDATES = 8  # each candidate costs one film-page fetch through FlareSolverr
+AI_REVIEW_MIN = 0.5  # below this a pick is noise, not even worth a review line
+AI_DEFAULT_THRESHOLD = 0.9
+AI_NONE = "none"
+# An episode or season page (/film/<series>/<episode>/) carries its series' id: matching
+# one would stamp the series with an episode's plot and poster, so they are never offered.
+_SUBPAGE_RE = re.compile(r"/film/\d+-[^/]+/\d+-")
+AI_INSTRUCTIONS = (
+    "Which ČSFD database entry is the SAME film or series as the library item? Use its title "
+    "(it may be in Slovak, Czech, English or another language), its folder name (which often "
+    "holds the real or original title), its year and its type. Bonus clips or extras of a show "
+    "belong to that show. A candidate whose country or original titles contradict the library "
+    "item, including its folder name, is NOT the same title. If no candidate is clearly the "
+    "same title, answer none."
+)
+
+
+@dataclass
+class AiSuggestion:
+    """One Jev pick: applied (``--ai-auto`` above threshold) or left for review."""
+
+    item_id: str
+    name: str
+    year: int | None
+    film: CsfdFilm
+    confidence: float
+    applied: bool = False
+
+
+def ai_candidates(csfd: CsfdClient, item: dict) -> list[CsfdHit]:
+    """Year- and kind-plausible hits across all of the item's title queries, deduplicated.
+
+    ``candidate_hits`` is the deterministic guard: Jev never sees a candidate the
+    year rules already exclude, so it cannot pick one either.
+    """
+    kind = KIND_SERIES if item.get("Type") == "Series" else KIND_FILM
+    seen: set[str] = set()
+    out: list[CsfdHit] = []
+    for query in title_queries(item):
+        for hit in candidate_hits(csfd.search(query), item.get("ProductionYear"), kind):
+            if hit.url not in seen and not _SUBPAGE_RE.search(hit.url):
+                seen.add(hit.url)
+                out.append(hit)
+    return out[:AI_MAX_CANDIDATES]
+
+
+def ai_state(item: dict) -> dict[str, object]:
+    """What Jev sees about the library item: titles, year, type and folder, never the full path."""
+    state: dict[str, object] = {
+        "title": item.get("Name") or "",
+        "year": item.get("ProductionYear"),
+        "type": item.get("Type") or "",
+        "folder_name": folder_name(item),
+    }
+    if item.get("OriginalTitle") and item["OriginalTitle"] != item.get("Name"):
+        state["original_title"] = item["OriginalTitle"]
+    return state
+
+
+def describe_candidate(hit: CsfdHit, film: CsfdFilm) -> str:
+    """One option line: title, year and kind, plus the country and original titles that
+    tell same-title-same-year films apart (El Conde vs the Korean *Count*, 2026-09-23)."""
+    text = f"{film.title} ({film.year or hit.year or '?'}), {hit.kind}"
+    if film.countries:
+        text += f"; country: {', '.join(film.countries)}"
+    if film.names:
+        text += f"; original titles: {', '.join(film.names[:3])}"
+    return text
+
+
+def ai_pick(csfd: CsfdClient, ai: TypesafeClient, item: dict) -> tuple[CsfdFilm, float] | None:
+    """Ask Jev which candidate is this item. None when there is nothing to ask or it says none."""
+    options: dict[str, tuple[CsfdHit, CsfdFilm]] = {}
+    for hit in ai_candidates(csfd, item):
+        try:
+            film = csfd.film(hit.url)
+        except CsfdError as exc:
+            logger.debug(f"{item.get('Name')}: candidate {hit.url} skipped: {exc}")
+            continue
+        # Keyed by position, not csfd_id: ids are not unique across a series and its pages.
+        options[f"c{len(options) + 1}"] = (hit, film)
+    if not options:
+        return None  # a lone "none" option is not a question worth paying for
+    criteria: dict[str, str | None] = {key: describe_candidate(*pair) for key, pair in options.items()}
+    criteria[AI_NONE] = "None of the candidates is the same title as the library item."
+    answer = ai.choose(ai_state(item), AI_INSTRUCTIONS, criteria)
+    if answer.choice not in options:
+        return None
+    return options[answer.choice][1], answer.confidence
+
+
+class AiMatcher:
+    """Runs the AI fallback for one ``csfd fill`` run and keeps what it suggested."""
+
+    def __init__(self, client: TypesafeClient, auto: bool = False,
+                 threshold: float = AI_DEFAULT_THRESHOLD) -> None:
+        self.client = client
+        self.auto = auto
+        self.threshold = threshold
+        self.suggestions: list[AiSuggestion] = []
+        self.errors = 0
+        self.disabled = False
+
+    def resolve(self, csfd: CsfdClient, item: dict) -> AiSuggestion | None:
+        """Ask Jev about an item the strict matcher left unmatched.
+
+        Returns the suggestion (``applied`` says whether to use it now), or None.
+        A TypeSafe failure never fails the run: the item just stays unmatched, and
+        a rejected key switches the fallback off for the rest of the run.
+        """
+        if self.disabled:
+            return None
+        try:
+            picked = ai_pick(csfd, self.client, item)
+        except TypesafeError as exc:
+            self.errors += 1
+            logger.warning(f"{item.get('Name')}: AI match failed: {exc}")
+            if exc.fatal:
+                self.disabled = True
+                logger.error("AI matching disabled for the rest of this run")
+            return None
+        if picked is None or picked[1] < AI_REVIEW_MIN:
+            return None
+        film, confidence = picked
+        suggestion = AiSuggestion(
+            item_id=item["Id"], name=item.get("Name", ""), year=item.get("ProductionYear"),
+            film=film, confidence=confidence, applied=self.auto and confidence >= self.threshold,
+        )
+        self.suggestions.append(suggestion)
+        return suggestion
+
+
+def write_ai_review(path: str, suggestions: list[AiSuggestion], model: str) -> None:
+    """Write suggestions as a ready-to-use ``--map`` file.
+
+    Map lines are strictly ``<id>\\t<url>``: ``load_manual_map`` splits on the FIRST tab,
+    so anything after the URL would become part of it. Titles go on their own ``#`` line.
+    Applied picks are listed commented out, for the record and for undo.
+    """
+    lines = [
+        f"# csfd fill --ai-match suggestions ({model}). Delete the lines you reject, append the rest",
+        "# to your --map file. To stop an item from being suggested again, map it to '-'.",
+    ]
+    for s in sorted(suggestions, key=lambda s: -s.confidence):
+        status = "AUTO-APPLIED" if s.applied else "REVIEW"
+        lines.append(f"# {s.confidence:.2f} {status} | {s.name} ({s.year or '?'}) -> "
+                     f"{s.film.title} ({s.film.year or '?'})")
+        lines.append(f"{'# ' if s.applied else ''}{s.item_id}\t{s.film.url}")
+    Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    logger.info(f"AI suggestions written: {path} ({len(suggestions)})")
+
+
 def build_payload(item: dict, plan: ItemPlan) -> dict:
     """Full-object POST body: the item plus the planned fields and locks."""
     payload = copy.deepcopy(item)
@@ -229,6 +400,25 @@ def load_manual_map(path: str | None) -> dict[str, str]:
         if item_id and url.startswith("http"):
             mapping[item_id.strip()] = url.strip()
     return mapping
+
+
+NEVER_MATCH = "-"
+
+
+def load_never_match(path: str | None) -> set[str]:
+    """Item ids mapped to ``-``: confirmed to have no ČSFD entry, so never search or suggest them.
+
+    ``load_manual_map`` ignores these lines (the value is not a URL), so older versions
+    read the same file safely.
+    """
+    if not path:
+        return set()
+    ids: set[str] = set()
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        item_id, _, value = line.strip().partition("\t")
+        if item_id and not item_id.startswith("#") and value.strip() == NEVER_MATCH:
+            ids.add(item_id.strip())
+    return ids
 
 
 def _describe(plan: ItemPlan) -> str:
@@ -277,12 +467,42 @@ def _fetch_candidates(client: httpx.Client, base_url: str, user_id: str,
     return candidates[:limit] if limit else candidates
 
 
+def _ai_fallback(csfd: CsfdClient, ai: AiMatcher, item: dict,
+                 reason: str) -> tuple[CsfdFilm | None, str]:
+    """Ask Jev about a strict-match miss; return the film only when it is auto-applied."""
+    suggestion = ai.resolve(csfd, item)
+    if suggestion is None:
+        return None, reason
+    if suggestion.applied:
+        return suggestion.film, f"ai match ({suggestion.confidence:.2f})"
+    return None, f"ai suggestion ({suggestion.confidence:.2f}): review {suggestion.film.url}"
+
+
+def _make_ai_matcher(args: argparse.Namespace) -> AiMatcher | None:
+    """The AI fallback for this run, or None when --ai-match is off. Exits if the key is missing."""
+    if not getattr(args, "ai_match", False):
+        return None
+    key = get_env_variable(ENV_DEDUPE_TYPESAFE_API_KEY) or get_env_variable(ENV_TYPESAFE_API_KEY)
+    if not key:
+        logger.error(f"--ai-match needs a TypeSafe API key in {ENV_DEDUPE_TYPESAFE_API_KEY}")
+        sys.exit(1)
+    model = getattr(args, "ai_model", None) or DEFAULT_MODEL
+    return AiMatcher(TypesafeClient(key, model=model), auto=getattr(args, "ai_auto", False),
+                     threshold=getattr(args, "ai_threshold", None) or AI_DEFAULT_THRESHOLD)
+
+
 def _lookup(csfd: CsfdClient, item: dict, manual: dict[str, str], stats: dict[str, int],
-            overwrite_poster: bool = False) -> ItemPlan:
+            overwrite_poster: bool = False, ai: AiMatcher | None = None,
+            never: frozenset[str] | set[str] = frozenset()) -> ItemPlan:
     """Resolve one item on ČSFD and plan its fills; errors and misses become empty plans."""
     name = item.get("Name", "")
+    if item["Id"] in never:
+        stats["unmatched"] += 1
+        return ItemPlan(item["Id"], name, reason="marked no-match in map")
     try:
         film, reason = resolve_film(csfd, item, manual)
+        if film is None and ai is not None:
+            film, reason = _ai_fallback(csfd, ai, item, reason)
     except CsfdError as exc:
         stats["errors"] += 1
         logger.warning(f"{name}: {exc}")
@@ -303,6 +523,8 @@ def _run_fill(client: httpx.Client, base_url: str, user_id: str,
     cache = None if getattr(args, "no_cache", False) else load_csfd_cache()
     csfd = CsfdClient(httpx.Client(), args.flaresolverr_url, cache)
     manual = load_manual_map(getattr(args, "map_file", None))
+    never = load_never_match(getattr(args, "map_file", None))
+    ai = _make_ai_matcher(args)
     candidates = _fetch_candidates(client, base_url, user_id, library_ids, args)
     logger.info(f"{len(candidates)} candidate item(s) for ČSFD lookup")
 
@@ -312,20 +534,38 @@ def _run_fill(client: httpx.Client, base_url: str, user_id: str,
         for index, item in enumerate(tqdm(candidates, desc="ČSFD", unit="item"), start=1):
             if cache is not None and index % CACHE_SAVE_EVERY == 0:
                 save_csfd_cache(cache)  # a killed run keeps its lookups
-            plan = _lookup(csfd, item, manual, stats, getattr(args, "overwrite_poster", False))
+            plan = _lookup(csfd, item, manual, stats, getattr(args, "overwrite_poster", False), ai, never)
             plans.append(plan)
             if args.doit and plan.has_changes:  # a bare match still stamps the Csfd id
                 stats["updated" if _apply(client, base_url, csfd, item, plan) else "failed"] += 1
     finally:
-        if cache is not None:
-            save_csfd_cache(cache)
+        _end_run(cache, ai)
     if getattr(args, "report", None):
         _write_report(args.report, plans)
+    if ai is not None:
+        _finish_ai(ai, args)
     mode = "applied" if args.doit else "dry run — re-run with --doit to apply"
     logger.info(
         f"ČSFD fill ({mode}): matched {stats['matched']}, unmatched {stats['unmatched']}, "
         f"errors {stats['errors']}, updated {stats['updated']}, failed {stats['failed']}"
     )
+
+
+def _end_run(cache: dict | None, ai: AiMatcher | None) -> None:
+    """Persist the page cache and close the TypeSafe connection, even after an error."""
+    if cache is not None:
+        save_csfd_cache(cache)
+    if ai is not None:
+        ai.client.close()
+
+
+def _finish_ai(ai: AiMatcher, args: argparse.Namespace) -> None:
+    """Write the review file and log what the AI fallback did."""
+    write_ai_review(getattr(args, "ai_review_file", None) or "csfd-ai-review.tsv", ai.suggestions,
+                    getattr(args, "ai_model", None) or DEFAULT_MODEL)
+    applied = sum(1 for s in ai.suggestions if s.applied)
+    logger.info(f"AI fallback: {len(ai.suggestions)} suggestion(s), {applied} auto-applied, "
+                f"{ai.errors} error(s){' (disabled: key rejected)' if ai.disabled else ''}")
 
 
 # ---------------------------------------------------------------------------
