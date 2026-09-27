@@ -15,6 +15,7 @@ co-located pair slips through (old files, manual ops, a converter miss).
 """
 import logging
 import posixpath
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,82 @@ def _under(path: str | None, folder: str | None) -> bool:
     if not path or not folder:
         return False
     return path == folder or path.startswith(folder + "/")
+
+
+# ---------------------------------------------------------------------------
+# Episode identity: season folders
+# ---------------------------------------------------------------------------
+# 2026-09-27 data loss: Initial D keeps one folder per stage (S01 … S06) but names every
+# stage's files "S01Exx". Emby and the filename both said S01E10, so S04/…S01E10 and
+# S05/…S01E10 were grouped as duplicates and 23 distinct episodes were deleted. The
+# season FOLDER is evidence of identity too, and it disagreed.
+
+# "S05", "Season 5", "Staffel 5", "Série 7", "7. Série", "5. séria", "Sezona 2" …
+_SEASON_DIR_RE = re.compile(
+    r"^(?:s|season|staffel|s[eé]rie|s[eé]ria|sezona|sez[oó]na)\s*[._ -]?\s*(\d{1,3})$"
+    r"|^(\d{1,3})\s*\.?\s*(?:season|staffel|s[eé]rie|s[eé]ria|sezona|sez[oó]na)$",
+    re.IGNORECASE,
+)
+_EPISODE_RE = re.compile(r"[Ss](\d{1,3})[ ._-]?[Ee](\d{1,4})")
+# A release/season-pack folder: "Wednesday.S02.2160p", "Show.S02E05-E08.1080p".
+_PACK_SEASON_RE = re.compile(r"(?:^|[._ \-\[])[Ss](\d{1,2})(?=$|[Ee]\d|[._ \-\]])")
+
+
+def _dir_season(name: str) -> int | None:
+    """Season a single folder name stands for, or None."""
+    match = _SEASON_DIR_RE.match(name.strip())
+    if match:
+        return int(match.group(1) or match.group(2))
+    seasons = {int(m) for m in _PACK_SEASON_RE.findall(name)}
+    return seasons.pop() if len(seasons) == 1 else None  # "S01-S09" says nothing
+
+
+def folder_season(path: str | None) -> int | None:
+    """Season number of the nearest season-like folder above the file, or None (flat layout).
+
+    Looks at the file's own folder, then one level up, so ``S01/7. Série/x.mkv`` is
+    season 7 (a season-7 set nested in S01) and ``S05/extras/x.mkv`` is season 5. A
+    season-pack folder counts too (``Wednesday.S02.2160p`` is season 2).
+    """
+    parts = _norm(path).split("/")[:-1]
+    for name in reversed(parts[-2:]):
+        season = _dir_season(name)
+        if season is not None:
+            return season
+    return None
+
+
+def filename_season(path: str | None) -> int | None:
+    """Season from the file name's SxxEyy, or None when the name has no SxxEyy."""
+    match = _EPISODE_RE.search(posixpath.basename(_norm(path)))
+    return int(match.group(1)) if match else None
+
+
+def _season_label(season: int | None) -> str:
+    return "flat folder" if season is None else f"S{season:02d}"
+
+
+def episode_identity_conflict(keeper_path: str | None, delete_path: str | None) -> str | None:
+    """Why deleting ``delete_path`` as a copy of ``keeper_path`` could delete a DIFFERENT
+    episode, or None when the folders agree.
+
+    Only episode files (an SxxEyy name) are judged. Refuses when the two files sit in
+    different season folders (or one flat, one in a season folder), or when the
+    duplicate's own season folder contradicts its file name. That is the exact
+    signature of the Initial D loss. A missed duplicate only costs disk space; a
+    wrong one costs an episode.
+    """
+    file_season = filename_season(delete_path)
+    if file_season is None:
+        return None
+    keeper_folder, delete_folder = folder_season(keeper_path), folder_season(delete_path)
+    if keeper_folder != delete_folder:
+        return (f"different season folders (keeper {_season_label(keeper_folder)}, duplicate "
+                f"{_season_label(delete_folder)}): may be a different episode")
+    if delete_folder is not None and delete_folder != file_season:
+        return (f"season folder {_season_label(delete_folder)} contradicts the file name's "
+                f"S{file_season:02d}: episode identity is ambiguous")
+    return None
 
 
 def is_delete_safe(

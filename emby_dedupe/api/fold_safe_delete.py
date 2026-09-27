@@ -56,10 +56,14 @@ FOLD_SAFE_DURATION_FLOOR_SECONDS = 15  # ignore sub-15s absolute differences
 _TICKS_PER_SECOND = 10_000_000  # Emby RunTimeTicks resolution
 
 
-def _duration_review_reason(keeper_ticks, delete_ticks) -> str | None:
-    """Return a needs-review reason when durations are unknown or diverge, else None."""
+def duration_mismatch(keeper_ticks, delete_ticks) -> str | None:
+    """Reason when BOTH durations are known and diverge beyond tolerance, else None.
+
+    Also the dedupe Emby-delete gate: a large runtime gap means different content, e.g.
+    Rust (140 min) filed by Emby as Runt (92 min), or a "(2)" copy that is another episode.
+    """
     if not keeper_ticks or not delete_ticks:
-        return "duration-unknown (cannot verify same content)"
+        return None
     keeper_s = keeper_ticks / _TICKS_PER_SECOND
     delete_s = delete_ticks / _TICKS_PER_SECOND
     diff = abs(keeper_s - delete_s)
@@ -67,6 +71,13 @@ def _duration_review_reason(keeper_ticks, delete_ticks) -> str | None:
                   FOLD_SAFE_DURATION_FLOOR_SECONDS):
         return f"duration-mismatch (keeper {keeper_s:.0f}s vs delete {delete_s:.0f}s)"
     return None
+
+
+def _duration_review_reason(keeper_ticks, delete_ticks) -> str | None:
+    """Return a needs-review reason when durations are unknown or diverge, else None."""
+    if not keeper_ticks or not delete_ticks:
+        return "duration-unknown (cannot verify same content)"
+    return duration_mismatch(keeper_ticks, delete_ticks)
 
 
 def plan_fold_safe_deletes(decisions: list) -> list:

@@ -14,8 +14,11 @@ from emby_dedupe.api.client import delete_item, fetch_items_details
 from emby_dedupe.api.deletion_guard import (
     collect_delete_paths,
     collect_known_paths,
+    episode_identity_conflict,
+    folder_season,
     is_delete_safe,
 )
+from emby_dedupe.api.fold_safe_delete import duration_mismatch
 from emby_dedupe.api.metadata import get_image_url, rate_media_items
 from emby_dedupe.models.disjoint_set import DisjointSet
 from emby_dedupe.reports import markdown
@@ -411,6 +414,16 @@ def _verify_movie_group(items, all_items_dict) -> tuple[bool, set]:
     return is_movie_group, movie_providers
 
 
+def _season_dir_key(path: str) -> str:
+    """Grouping-key part for the file's season folder: ``DIR_S5`` or ``DIR_FLAT``.
+
+    Episodes in different season folders are never duplicates of each other, whatever
+    their names say (Initial D, 2026-09-27: every stage's files were named S01Exx).
+    """
+    season = folder_season(path)
+    return "DIR_FLAT" if season is None else f"DIR_S{season}"
+
+
 def _create_series_key(item_data) -> str:
     """
     Create series grouping key from item metadata.
@@ -442,6 +455,7 @@ def _create_series_key(item_data) -> str:
             path_season, path_episode = _extract_episode_key_from_path(filename)
             if path_season and path_episode:
                 series_key = f"{series_key}|PATH_S{path_season}E{path_episode}"
+            series_key = f"{series_key}|{_season_dir_key(path)}"
 
         return series_key
     else:
@@ -494,7 +508,7 @@ def _classify_item_by_episode_path(item) -> tuple[str | None, bool]:
         path_season, path_episode = _extract_episode_key_from_path(filename)
 
         if path_season and path_episode:
-            path_key = f"{series_name}|S{path_season}E{path_episode}"
+            path_key = f"{series_name}|S{path_season}E{path_episode}|{_season_dir_key(item_path)}"
 
             if logger.isEnabledFor(logging.DEBUG):
                 logger.debug(f"Item {item.get('Id', 'unknown')} - Path-extracted episode: S{path_season}E{path_episode} - {filename}")
@@ -584,6 +598,11 @@ def _deduplicate_by_path(items_details) -> list:
     return unique_items
 
 
+# Audio language tags that say nothing: Emby reports "und" for untagged tracks, our
+# extraction substitutes "unknown".
+_UNKNOWN_LANGUAGES = frozenset({"", "unknown", "und"})
+
+
 def _calculate_language_scores(rated_items, lang_priorities) -> None:
     """
     Calculate language priority scores for all items (mutates in-place).
@@ -601,7 +620,7 @@ def _calculate_language_scores(rated_items, lang_priorities) -> None:
 
     for item in rated_items:
         languages = item.get("quality_description", {}).get("audio", {}).get("languages", [])
-        languages = [lang.lower() for lang in languages if lang and lang != "unknown"]
+        languages = [lang.lower() for lang in languages if lang and lang.lower() not in _UNKNOWN_LANGUAGES]
         normalized_languages = [lang_mapping.get(lang, lang) for lang in languages]
 
         lang_score = 9999
@@ -622,7 +641,7 @@ def _calculate_language_scores(rated_items, lang_priorities) -> None:
 def _get_clean_languages(item) -> list:
     """Extract and clean language list from item."""
     languages = item.get("quality_description", {}).get("audio", {}).get("languages", [])
-    return [lang for lang in languages if lang and lang != "unknown"]
+    return [lang for lang in languages if lang and lang.lower() not in _UNKNOWN_LANGUAGES]
 
 
 def _log_override_decision(override: bool, is_single_lang: bool, best_quality_item: dict, best_quality_langs: list, best_lang_item: dict, best_lang_langs: list, quality_ratio: float) -> None:
@@ -1108,6 +1127,19 @@ def determine_items_to_delete(duplicate_ids: list, all_items_details: list, lang
         rated_items[0]["selected_by_language_priority"] = False
         rated_items[0]["changed_by_language_priority"] = False
 
+    # Step 5: language priority must never delete the best-quality copy when that copy's
+    # audio language is unknown: it may BE the priority language, just untagged. Count
+    # Duckula, 2026-09-27: "S01E09 - 720p BluRay CZ" (no audio tag) was deleted to keep a
+    # tagged English 480p. Neither answer is knowable, so the group is left alone.
+    if (lang_priorities and default_top_item is not None
+            and rated_items[0]["id"] != default_top_item["id"]
+            and not _get_clean_languages(default_top_item)):
+        logger.warning(
+            f"Skipping group {duplicate_ids}: language priority would delete the best copy "
+            f"(id={default_top_item['id']}), whose audio language is unknown. Both kept."
+        )
+        return {"keep": {}, "delete": []}
+
     # The first item in the sorted list is the one to keep; the rest are duplicates
     item_to_keep = rated_items[0]
     items_to_delete = rated_items[1:]
@@ -1222,6 +1254,30 @@ def process_duplicate_groups(
     return decisions, exclusion_metadata
 
 
+def _different_content_reason(item: dict, keeper: dict) -> str | None:
+    """Why ``item`` may not be a copy of ``keeper`` at all, or None.
+
+    Two independent tells: the episode sits in a different season folder (Initial D,
+    2026-09-27), or the running time differs well beyond tolerance (Rust filed as Runt,
+    a "(2)" copy that is another episode).
+    """
+    return (episode_identity_conflict(keeper.get("path"), item.get("path"))
+            or duration_mismatch(keeper.get("runtime_ticks"), item.get("runtime_ticks")))
+
+
+def _refuse_different_content(item: dict, keeper: dict) -> str | None:
+    """Delete-time backstop: refuse a delete when the "duplicate" may be different content.
+
+    Returns the reason when refused (and records it on the item), else None. Deliberately
+    does NOT set the fold-safe marker: --fold-safe-delete removes guard-refused duplicates
+    file-only, and these may be different episodes or films, not duplicates.
+    """
+    reason = _different_content_reason(item, keeper)
+    if reason:
+        item["deletion_result"] = {"id": item["id"], "status": "skipped_unsafe", "error": reason}
+    return reason
+
+
 def _mark_guard_refused(item: dict, keeper_path: str | None, reason: str) -> None:
     """Tag a delete item the safety guard refused, so the fold-safe deletion pass can find
     it later. Records the keeper + delete paths and the reason. Set on BOTH the --doit and
@@ -1246,6 +1302,14 @@ def _warn_unsafe_deletions(
     for decision in decisions:
         keeper_path = (decision.get("keep") or {}).get("path")
         for item in decision.get("delete", []):
+            conflict = _different_content_reason(item, decision.get("keep") or {})
+            if conflict:
+                unsafe += 1
+                logger.warning(
+                    "SAFETY GUARD would REFUSE deletion of id=%s under --doit — %s (delete=%r keeper=%r).",
+                    item["id"], conflict, item.get("path"), keeper_path,
+                )
+                continue
             safe, reason = is_delete_safe(
                 keeper_path, item.get("path"), known_paths, delete_paths
             )
@@ -1370,10 +1434,20 @@ def _execute_one_deletion(
     except Exception as e:
         logger.warning(f"Error setting image URL for deleted item: {e}")
 
-    # SAFETY GUARD: never issue an Emby delete that would fold-delete a folder holding
+    # SAFETY GUARD 1: never delete a "duplicate" that may be different content: another
+    # season folder (the Initial D loss, 2026-09-27) or a clearly different running time.
+    conflict = _refuse_different_content(item, (decision or {}).get("keep") or {"path": keeper_path})
+    # SAFETY GUARD 2: never issue an Emby delete that would fold-delete a folder holding
     # the keeper (the data-loss bug). Refuse and skip — keep both files.
-    safe, reason = is_delete_safe(keeper_path, item.get("path"), known_paths, delete_paths)
-    if not safe:
+    safe, reason = (True, "") if conflict else is_delete_safe(
+        keeper_path, item.get("path"), known_paths, delete_paths
+    )
+    if conflict:
+        logger.warning(
+            f"SAFETY GUARD refused the delete of id={item['id']} — {conflict} "
+            f"(delete={item.get('path')!r} keeper={keeper_path!r}). Both files kept."
+        )
+    elif not safe:
         # Pre-format into ONE f-string with no positional args, so logging never runs
         # ``msg % args`` (immune to stray % in paths or an arg-count mismatch — this line
         # crashed twice before via stale bytecode).

@@ -23,6 +23,21 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ### Fixed
 
+- **Dedupe deleted distinct episodes stored as one folder per season** (data loss, 2026-09-27).
+  Duplicates were keyed on Emby's season/episode and the file name's SxxEyy only; the season
+  **folder** was ignored. A series with one folder per stage but every file named `S01Exx`
+  (*Initial D*: `S05/… S01E10`, `S04/… S01E10 (3)`) therefore had different episodes grouped and
+  deleted. Now:
+  - the season folder (`S05`, `Season 5`, `7. Série`, `Staffel 5`, season-pack folders like
+    `Show.S02.1080p`) is part of the grouping key, so files in different season folders never group;
+  - a delete-time backstop refuses any delete whose season folders disagree, or whose file sits in a
+    season folder that contradicts its own SxxEyy;
+  - the same backstop refuses a delete when the running times differ beyond tolerance (Emby had filed
+    *Rust*, 140 min, under *Runt*'s id, 92 min; a "(2)" copy of an episode was 18.6 vs 22.5 min).
+  These refusals never mark the item for `--fold-safe-delete`, so it cannot remove them file-only either.
+- **Language priority deleted a better copy whose audio language was just untagged** (*Count Duckula*:
+  a Czech 720p BluRay with no audio tag was deleted to keep a tagged English 480p). When the best-quality
+  copy's language is unknown (`unknown` or `und`), the group is now left alone.
 - **Dedupe report summary under-counted deletions and over-counted space.** Duplicates removed
   file-only by `--fold-safe-delete` were counted as "skipped". "Size Removed" also added up every
   planned duplicate, including the ones the safety guard kept on disk. A real run's report said "10
