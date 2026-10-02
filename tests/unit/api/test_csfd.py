@@ -317,3 +317,13 @@ def test_client_creator_is_cached():
                         "http://fs/v1", cache, calls_per_second=1000)
     assert client.creator(url).birth_date == "1940-02-03"
     assert client.creator(url).death_date == "2021-07-18" and calls == [url]
+
+
+def test_parse_film_series_origin_has_no_bracket_in_the_country():
+    """Real series markup (Národní klenoty): the year range in brackets used to leave "Česko (" as the country."""
+    page = (
+        '<h1>Národní klenoty</h1><div class="origin">Česko <span class="bullet"></span> \n\t\t'
+        '<span>(2012–2017) <span class="bullet"></span> </span>12 h 34 min (Minutáž: 26 min)\n\t</div>'
+    )
+    film = parse_film(page, "https://www.csfd.sk/film/314255-narodni-klenoty/prehlad/")
+    assert film.countries == ["Česko"] and film.year == 2012

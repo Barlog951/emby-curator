@@ -5,6 +5,28 @@ All notable changes to **Emby Curator** are documented here.
 This project is a maintained fork of [emby-dedupe](https://github.com/troykelly/emby-dedupe)
 by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.0.
 
+## [Unreleased]
+
+### Added
+
+- **`genres origin`**: gives Czech and Slovak movies and TV series one extra genre (default
+  `Česko-slovenský`, set with `--genre-name`), so they can be browsed in Emby's Genres view. A title
+  counts when TMDb gives its original language as Czech or Slovak, or when it is a non-English
+  co-production with Czechia, Slovakia or Czechoslovakia. English-language films that TMDb lists as
+  Czech only because they were shot in Prague don't count. Titles TMDb doesn't know fall back to the
+  first country of origin on ČSFD. A film whose Emby metadata names only other countries is skipped,
+  because Emby then holds the wrong TMDb id. Dry run by default. Existing genres are kept, and the
+  command never removes the genre, so one added by hand is kept too. Each run lists the tagged titles
+  the rules no longer back, for a person to review. `genres audit --suggest` no longer flags the genre
+  as unknown.
+- The genre webhook listener runs `genres origin` on newly added items, right after `genres process`.
+
+### Fixed
+
+- **ČSFD gave a series' country as `Česko (`.** On a series page the year range sits in brackets
+  after the country, and the bracket stayed in the country name. This affected the country shown to
+  `csfd fill --ai-match`, and it would have kept Czech series out of `genres origin`.
+
 ## [3.2.0] — 2026-10-01
 
 ### Added

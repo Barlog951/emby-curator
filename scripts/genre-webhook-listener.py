@@ -6,8 +6,9 @@ Receives ItemAdded webhooks from Emby, debounces for DEBOUNCE_SECONDS,
 then runs TWO pipelines for all queued items:
 
 1. ``genres process --validate`` — normalize variant genre names + fill gaps
-   from TMDB/OMDb.  For episodes, queued under the parent SeriesId because
-   genres live on the Series.
+   from TMDB/OMDb, then ``genres origin`` — the "Česko-slovenský" genre for
+   Czech/Slovak movies and series.  For episodes, queued under the parent
+   SeriesId because genres live on the Series.
 2. ``descriptions fill --update-title`` — replace English Overview/Tagline
    with Slovak/Czech from TMDB, with title-language policy.  For episodes,
    queued by Episode ID because each episode has its own Overview.
@@ -96,6 +97,11 @@ def _run_pipelines() -> None:
         _run_subprocess(
             "genres process",
             [cli, "genres", "process", "--doit", "--validate", "--item-ids", ",".join(genre_ids)],
+        )
+        # after process, so it adds to the genres process just wrote
+        _run_subprocess(
+            "genres origin",
+            [cli, "genres", "origin", "--doit", "--item-ids", ",".join(genre_ids)],
         )
 
     # === Pipeline 2: descriptions ===

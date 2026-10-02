@@ -312,10 +312,13 @@ _ID_RE = re.compile(r"/film/(\d+)-")
 
 
 def _parse_origin(fragment: str) -> tuple[list[str], int | None]:
-    """'Slovensko / Česko, 2026, 31 min' -> (countries, year)."""
+    """'Slovensko / Česko, 2026, 31 min' -> (countries, year).
+
+    A series reads 'Česko (2012–2017) 12 h 34 min': the "(" before the year range ends the countries.
+    """
     text = _strip_tags(fragment)
     year = _first_int(text)
-    head = text.split(str(year))[0] if year else text
+    head = (text.split(str(year))[0] if year else text).split("(")[0]
     countries = [c.strip() for c in re.split(r"[,/]", head) if c.strip()]
     return countries, year
 

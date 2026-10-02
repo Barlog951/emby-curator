@@ -106,6 +106,7 @@ emby-curator [shared options] SUBCOMMAND [subcommand options]
 | `genres normalize` | Fix variant genre names |
 | `genres fix` | Fill missing genres from TMDB/OMDb |
 | `genres process` | Normalize + fix in one pass (used by the webhook listener) |
+| `genres origin` | Add a "Česko-slovenský" genre to Czech/Slovak movies and TV series |
 | `cleanup` | Find stale, unwatched media (dynamic rating-decay protection) |
 | `descriptions fill` | Localize Overview/Tagline/Name (SK/CZ) and backfill ProductionYear |
 | `csfd fill` | Fill metadata, posters and cast from ČSFD for titles TMDb/TVDb can't identify |
@@ -195,6 +196,7 @@ emby-curator ... dedupe [OPTIONS]
 emby-curator ... genres audit [--suggest]
 emby-curator ... genres normalize [--doit] [--repair-dupes] [--item-ids IDS]
 emby-curator ... genres fix [--doit] [--gaps-only | --validate] [--item-ids IDS]
+emby-curator ... genres origin [--doit] [--genre-name NAME] [--item-ids IDS]
 ```
 
 ## Examples
@@ -360,7 +362,26 @@ emby-curator --host "http://your-emby-server" --api-key "your_api_key" --library
 
 # Target specific items (used by webhook listener)
 emby-curator --host "http://your-emby-server" --api-key "your_api_key" --doit genres normalize --item-ids 123,456
+
+# Preview which movies and series are Czech/Slovak, then give them the extra genre
+emby-curator --host "http://your-emby-server" --api-key "your_api_key" genres origin --all-libraries
+emby-curator --host "http://your-emby-server" --api-key "your_api_key" genres origin --all-libraries --doit
 ```
+
+`genres origin` adds one extra genre (default `Česko-slovenský`, change it with `--genre-name`) to
+Czech and Slovak movies and TV series, so viewers can browse them in the Genres view. The English
+genres stay, and the command never removes the genre, so one you add by hand is kept. A title counts
+when TMDb gives its original language as Czech or Slovak, or when it is a non-English co-production
+with Czechia, Slovakia or Czechoslovakia (e.g. *A Royal Affair*). English-language films that TMDb
+lists as Czech only because they were shot in Prague (*The Bourne Identity*) don't count. For titles
+TMDb doesn't know, the first country of origin on ČSFD decides (that lookup uses FlareSolverr; see
+below). It needs `DEDUPE_TMDB_API_KEY`.
+
+Every run also re-checks the titles that already have the genre and lists the ones the rules no
+longer back, for example an item Emby has since re-identified. It doesn't remove the genre from them.
+For automatic upkeep, run it monthly with `--all-libraries --doit` for the whole library, and have the
+webhook listener (`scripts/genre-webhook-listener.py`) run it with `--item-ids` right after `genres
+process` on newly added items.
 
 ### ČSFD Metadata
 

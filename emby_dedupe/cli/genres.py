@@ -29,6 +29,7 @@ from emby_dedupe.api.genres import (
     update_item_genres,
 )
 from emby_dedupe.cli.arguments import get_env_variable, override_warning
+from emby_dedupe.cli.genre_origin import run_origin
 from emby_dedupe.utils.constants import (
     ENV_DEDUPE_EMBY_API_KEY,
     ENV_DEDUPE_EMBY_HOST,
@@ -681,6 +682,8 @@ def run_genres_command(args: argparse.Namespace) -> None:
             _run_fix(client, base_url, user_id, library_ids, args, item_ids=item_ids)
         elif args.action == "process":
             _run_process(client, base_url, user_id, library_ids, args, item_ids=item_ids)
+        elif args.action == "origin":
+            run_origin(client, base_url, user_id, library_ids, args, item_ids=item_ids)
         else:
             _run_normalize(client, base_url, user_id, library_ids, args, item_ids=item_ids)
 

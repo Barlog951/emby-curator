@@ -46,6 +46,7 @@ app.add_typer(csfd_app, name="csfd")
 
 # Shared help strings used across multiple genre subcommands
 _LOCK_OPT = "--lock/--no-lock"
+_FLARESOLVERR_URL = "http://localhost:8191/v1"
 _LOCK_HELP = "Lock genres after update."
 _ALL_LIBS_HELP = "Scan all Emby libraries."
 _ITEM_IDS_HELP = "Comma-separated Emby item IDs to process (skips full library scan)."
@@ -646,11 +647,47 @@ def genres_fix(
     )
 
 
+@genres_app.command("origin")
+def genres_origin(
+    ctx: typer.Context,
+    doit: bool = typer.Option(False, "--doit", help=_DOIT_HELP),
+    lock: bool = typer.Option(True, _LOCK_OPT, help=_LOCK_HELP),
+    genre_name: str | None = typer.Option(
+        None, "--genre-name", help="Genre given to Czech/Slovak films (default: Česko-slovenský)."
+    ),
+    tmdb_api_key: str | None = typer.Option(
+        None, "--tmdb-api-key", envvar="DEDUPE_TMDB_API_KEY", help=_TMDB_KEY_HELP
+    ),
+    flaresolverr_url: str = typer.Option(
+        _FLARESOLVERR_URL, "--flaresolverr-url", envvar="DEDUPE_FLARESOLVERR_URL",
+        help="FlareSolverr endpoint, for ČSFD-only titles missing from the ČSFD cache.",
+    ),
+    all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
+    item_ids: str | None = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
+) -> None:
+    """Add a Czech/Slovak genre to Czech/Slovak films (TMDb language, then ČSFD origin).
+
+    Additive only: existing genres stay and the genre is never removed. Movies only.
+    """
+    _run_genres_subcommand(
+        ctx,
+        action="origin",
+        doit=doit,
+        lock=lock,
+        genre_name=genre_name,
+        tmdb_api_key=tmdb_api_key,
+        flaresolverr_url=flaresolverr_url,
+        all_libraries=all_libraries,
+        item_ids=item_ids,
+    )
+
+
 def _run_genres_subcommand(ctx: typer.Context, **kwargs) -> None:
     """Shared dispatcher: build an argparse-like Namespace and call run_genres_command."""
     from argparse import Namespace
 
     from emby_dedupe.cli.genres import run_genres_command
+    from emby_dedupe.utils.constants import ORIGIN_GENRE_DEFAULT
 
     config: AppConfig = ctx.obj if ctx.obj else AppConfig()
 
@@ -674,6 +711,8 @@ def _run_genres_subcommand(ctx: typer.Context, **kwargs) -> None:
         gaps_only=kwargs.get("gaps_only", False),
         validate=kwargs.get("validate", False),
         tmdb_api_key=kwargs.get("tmdb_api_key", None),
+        genre_name=kwargs.get("genre_name") or ORIGIN_GENRE_DEFAULT,
+        flaresolverr_url=kwargs.get("flaresolverr_url", _FLARESOLVERR_URL),
     )
 
     run_genres_command(args)
@@ -797,7 +836,7 @@ def csfd_fill(
         help="Upload ČSFD artwork even if a poster exists (replace fallback frame posters).",
     ),
     flaresolverr_url: str = typer.Option(
-        "http://localhost:8191/v1", "--flaresolverr-url", envvar="DEDUPE_FLARESOLVERR_URL",
+        _FLARESOLVERR_URL, "--flaresolverr-url", envvar="DEDUPE_FLARESOLVERR_URL",
         help="FlareSolverr endpoint used to get past ČSFD's bot check.",
     ),
     limit: int | None = typer.Option(None, "--limit", help="Cap the number of items processed."),
@@ -868,7 +907,7 @@ def csfd_people(
     ),
     report: str | None = typer.Option(None, "--report", help="Write a TSV of every actor and its result."),
     flaresolverr_url: str = typer.Option(
-        "http://localhost:8191/v1", "--flaresolverr-url", envvar="DEDUPE_FLARESOLVERR_URL",
+        _FLARESOLVERR_URL, "--flaresolverr-url", envvar="DEDUPE_FLARESOLVERR_URL",
         help="FlareSolverr endpoint used to get past ČSFD's bot check.",
     ),
     limit: int | None = typer.Option(None, "--limit", help="Cap the number of actors processed."),

@@ -89,6 +89,9 @@ GENRE_NORMALIZATION_MAP = {
     "tv film": "TV Movie",          # Emby variant of TMDB "TV Movie" (75 items)
 }
 
+# Extra genre `genres origin` gives Czech/Slovak films (kept next to the English ones)
+ORIGIN_GENRE_DEFAULT = "Česko-slovenský"
+
 # TMDB canonical genre names — the authoritative list used for audit suggestions.
 # Anything found in Emby that is NOT in this set and NOT already in
 # GENRE_NORMALIZATION_MAP is flagged as unknown by `genres audit --suggest`.
@@ -106,6 +109,8 @@ TMDB_CANONICAL_GENRES: frozenset[str] = frozenset({
     # 2026-05-27 audit additions — legitimate distinct Emby categories
     "TV Movie", "Anime", "Travel", "Food", "Game Show",
     "Martial Arts", "Indie", "Home and Garden",
+    # Our own: Czech/Slovak films, added by `genres origin`
+    ORIGIN_GENRE_DEFAULT,
 })
 
 # Environment variable names for Phase 2 external APIs (define early)
