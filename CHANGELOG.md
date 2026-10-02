@@ -5,7 +5,7 @@ All notable changes to **Emby Curator** are documented here.
 This project is a maintained fork of [emby-dedupe](https://github.com/troykelly/emby-dedupe)
 by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.0.
 
-## [Unreleased]
+## [3.3.0] — 2026-10-02
 
 ### Added
 

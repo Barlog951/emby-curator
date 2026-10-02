@@ -665,9 +665,10 @@ def genres_origin(
     all_libraries: bool = typer.Option(False, "--all-libraries", help=_ALL_LIBS_HELP),
     item_ids: str | None = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
 ) -> None:
-    """Add a Czech/Slovak genre to Czech/Slovak films (TMDb language, then ČSFD origin).
+    """Add a Czech/Slovak genre to Czech/Slovak movies and TV series (TMDb language, then ČSFD origin).
 
-    Additive only: existing genres stay and the genre is never removed. Movies only.
+    Additive only: existing genres stay and the genre is never removed. Tagged titles the
+    rules no longer back are listed as "check:" lines.
     """
     _run_genres_subcommand(
         ctx,
