@@ -28,6 +28,10 @@ def _movie(*locations: str) -> dict:
     (_movie("Czech Republic", "Slovakia"), {"lang": "en", "countries": ["CZ", "SK"]}, False),
     # The Color of Magic — Emby says UK, yet the TMDb id it holds is a Czech entry: wrong id, refuse
     (_movie("United Kingdom"), {"lang": "cs", "countries": ["CZ"]}, False),
+    # The Thaw (Odwilż) — Polish HBO series; TMDb's only Czech link is HBO Europe's Prague registration
+    (_movie(), {"lang": "pl", "countries": ["PL", "CZ"], "companies": ["HBO Europe"]}, False),
+    # The Shamer's Daughter — a real Czech co-producer (Sirena Film) still counts
+    (_movie(), {"lang": "da", "countries": ["DK", "CZ"], "companies": ["Sirena Film"]}, True),
     # an ordinary foreign film
     (_movie("France"), {"lang": "fr", "countries": ["FR"]}, False),
 ])
@@ -81,10 +85,11 @@ def test_fetch_reads_language_and_countries_and_caches():
         "original_language": "cs",
         "production_countries": [{"iso_3166_1": "CZ"}, {"iso_3166_1": "SK"}],
         "origin_country": ["CZ", "XC"],
+        "production_companies": [{"name": "Česká televize", "origin_country": "CZ"}, {"name": "HBO", "origin_country": "US"}],
     })
     cache: dict = {}
     first = fetch_tmdb_origin(client, MagicMock(), "42", cache)
-    assert first == {"lang": "cs", "countries": ["CZ", "SK", "XC"]}
+    assert first == {"lang": "cs", "countries": ["CZ", "SK", "XC"], "companies": ["Česká televize"]}
     assert fetch_tmdb_origin(client, MagicMock(), "42", cache) == first
     assert client.get.call_count == 1
     assert "tmdb_42_movie" not in cache  # never collides with fetch_tmdb_genres' list-valued keys
@@ -95,7 +100,7 @@ def test_tv_series_use_the_tv_endpoint_and_their_own_cache_key():
     client = MagicMock()
     client.get.return_value = _response(200, {"original_language": "cs", "origin_country": ["CZ"]})
     cache: dict = {"origin_tmdb_movie_42": {"lang": "en", "countries": ["US"]}}
-    assert fetch_tmdb_origin(client, MagicMock(), "42", cache, "tv") == {"lang": "cs", "countries": ["CZ"]}
+    assert fetch_tmdb_origin(client, MagicMock(), "42", cache, "tv") == {"lang": "cs", "countries": ["CZ"], "companies": []}
     assert client.get.call_args.args[0].endswith("/tv/42")
     assert cache["origin_tmdb_movie_42"]["lang"] == "en"
 
@@ -119,3 +124,13 @@ def test_the_monthly_genre_jobs_keep_the_origin_genre():
     assert normalize_genre_name(ORIGIN_GENRE_DEFAULT, GENRE_NORMALIZATION_MAP) == ORIGIN_GENRE_DEFAULT
     assert suggest_genre_mappings({ORIGIN_GENRE_DEFAULT: 700}) == []
     assert ORIGIN_GENRE_DEFAULT in compare_genres(["Drama", ORIGIN_GENRE_DEFAULT], ["Drama", "Comedy"])["merged"]
+
+
+def test_entries_cached_before_companies_were_stored_are_refetched():
+    client = MagicMock()
+    client.get.return_value = _response(200, {"original_language": "pl", "production_companies": [
+        {"name": "HBO Europe", "origin_country": "CZ"}]})
+    cache: dict = {"origin_tmdb_tv_99145": {"lang": "pl", "countries": ["PL", "CZ"]}, "origin_tmdb_movie_1": {"missing": True}}
+    assert fetch_tmdb_origin(client, MagicMock(), "99145", cache, "tv")["companies"] == ["HBO Europe"]
+    assert fetch_tmdb_origin(client, MagicMock(), "1", cache) == {"missing": True}
+    assert client.get.call_count == 1

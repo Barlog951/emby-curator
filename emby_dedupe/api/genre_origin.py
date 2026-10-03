@@ -14,6 +14,10 @@ Signals, in order of trust:
 A film whose Emby metadata names only other countries while TMDb says ``cs`` is
 refused: Emby holds the wrong TMDb id (seen live: *The Color of Magic*, a UK film,
 filed under a Czech TMDb entry).
+
+A co-production whose only Czech/Slovak company is the Prague office of a foreign
+broadcaster is refused too: TMDb lists *The Thaw* (a Polish HBO series) as Czech only
+because HBO Europe is registered in Prague.
 """
 
 import httpx
@@ -25,6 +29,8 @@ _LANGUAGES = frozenset({"cs", "sk"})
 _TMDB_COUNTRIES = frozenset({"CZ", "SK", "XC"})  # XC = Czechoslovakia on TMDb
 _EMBY_COUNTRIES = frozenset({"Czech Republic", "Czechia", "Slovakia", "Czechoslovakia"})
 _CSFD_COUNTRIES = frozenset({"Česko", "Slovensko", "Československo"})
+# Registered in Prague, but commissions series all over Europe: not a Czech co-producer.
+_NOT_COPRODUCERS = frozenset({"HBO Europe"})
 
 # Separate prefix from fetch_tmdb_genres' "tmdb_<id>_<type>" keys, whose values are lists.
 # The media type is part of the key: TMDb movie and TV ids overlap.
@@ -48,8 +54,9 @@ def fetch_tmdb_origin(
         has no such title; None when the request failed.
     """
     key = f"{_CACHE_PREFIX}{media_type}_{tmdb_id}"
-    if key in cache:
-        return cache[key]
+    cached = cache.get(key)
+    if cached is not None and ("companies" in cached or cached.get("missing")):  # older entries lack companies
+        return cached
     limiter.acquire()
     try:
         response = client.get(f"{TMDB_BASE}/{media_type}/{tmdb_id}")
@@ -63,7 +70,10 @@ def fetch_tmdb_origin(
         return None
     countries = [c.get("iso_3166_1", "") for c in data.get("production_countries") or []]
     countries += [c for c in data.get("origin_country") or [] if c not in countries]
-    cache[key] = {"lang": data.get("original_language") or "", "countries": countries}
+    companies = [
+        c.get("name", "") for c in data.get("production_companies") or [] if c.get("origin_country") in _TMDB_COUNTRIES
+    ]
+    cache[key] = {"lang": data.get("original_language") or "", "countries": countries, "companies": companies}
     return cache[key]
 
 
@@ -85,6 +95,9 @@ def _classify_tmdb(locations: set[str], tmdb: dict) -> tuple[bool, str]:
     if lang in _LANGUAGES:
         return True, f"TMDb original language {lang}"
     if set(tmdb.get("countries") or []) & _TMDB_COUNTRIES and lang != "en":
+        companies = set(tmdb.get("companies") or [])
+        if companies and companies <= _NOT_COPRODUCERS:
+            return False, f"only Czech link is {', '.join(sorted(companies))}, a foreign broadcaster's Prague office"
         return True, f"CZ/SK co-production in {lang or 'no language'}"
     return False, f"TMDb original language {lang or 'unknown'}"
 

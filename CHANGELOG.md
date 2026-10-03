@@ -5,6 +5,15 @@ All notable changes to **Emby Curator** are documented here.
 This project is a maintained fork of [emby-dedupe](https://github.com/troykelly/emby-dedupe)
 by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.0.
 
+## [Unreleased]
+
+### Fixed
+
+- **`genres origin` tagged a Polish series as Czech.** TMDb lists *The Thaw* (*Odwilż*) as a
+  Polish–Czech production only because HBO Europe, which made it, is registered in Prague. A
+  co-production whose only Czech/Slovak company is HBO Europe no longer counts. TMDb answers cached
+  without the production companies are fetched again once.
+
 ## [3.3.0] — 2026-10-02
 
 ### Added
