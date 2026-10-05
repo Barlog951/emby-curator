@@ -13,6 +13,13 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
   Polish–Czech production only because HBO Europe, which made it, is registered in Prague. A
   co-production whose only Czech/Slovak company is HBO Europe no longer counts. TMDb answers cached
   without the production companies are fetched again once.
+- **The pre-download check (`check`, used by the torrents scraper) let a worse 4K copy
+  through.** A proposed copy only states its resolution class, so "2160p" was scored as a full
+  16:9 frame (3840×2160). A scope film is 3840×1600 in every release, and the copy already in the
+  library was scored at that real size. That handed the torrent about 21 points of resolution it
+  doesn't have: a 4.8 GB / 5.9 Mbps *The Voyeurs* beat the 13.9 GB / 15.9 Mbps copy already owned,
+  was downloaded, and dedupe then deleted it. When an existing copy is in the same width class
+  (within 2%), the proposed copy now takes its frame size before scoring.
 
 ## [3.3.0] — 2026-10-02
 

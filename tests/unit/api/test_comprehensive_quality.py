@@ -336,7 +336,9 @@ class TestRemuxVsWebDLWithLanguagePriority:
         # Single-tier source jump (~2-3x) does NOT clear the 4x both-priority-language bar →
         # keep the Slovak WEB-DL even though the REMUX scores higher.
         assert result.recommendation == "skip"
-        assert result.proposed_score > result.existing_score * 2  # REMUX is genuinely higher quality
+        # REMUX is genuinely higher quality (~1.9x). Both copies are 3840x1608 scope: the old ">2x"
+        # came from scoring the proposed REMUX as a 16:9 frame (fixed 2026-10-05, The Voyeurs).
+        assert result.proposed_score > result.existing_score * 1.5
 
     def test_webdl_keeps_when_quality_gap_small(self):
         """WEB-DL with Slovak should be kept when proposed quality is only marginally better."""

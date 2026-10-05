@@ -12,6 +12,7 @@ ordering of the same pair of files.
 
 from __future__ import annotations
 
+import copy
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
@@ -1165,6 +1166,40 @@ def _create_proposed_as_existing(proposed: ProposedQuality) -> ExistingQuality:
     )
 
 
+# Widths this close are the same resolution class (3840 vs 3840, 1920 vs 1916).
+_SAME_WIDTH_TOLERANCE = 0.02
+
+
+def _adopt_existing_frame(proposed_item: ExistingQuality, existing: list[ExistingQuality]) -> ExistingQuality:
+    """Give the proposed item the real frame size of a same-width existing copy.
+
+    A proposed (torrent) item only knows its resolution class, so "2160p" becomes 3840x2160
+    (16:9). A film keeps its aspect ratio in every release, though: a scope film is 3840x1600
+    in the library AND in the torrent. Scoring the torrent as 16:9 handed it ~21 points of
+    resolution it doesn't have, enough to beat a copy with three times its bitrate (The
+    Voyeurs, 2026-10-05). Only the same width class is matched: an existing copy of another
+    resolution may be anamorphic (a 720x576 DVD holds a 16:9 picture), so its stored shape
+    says nothing reliable about the proposed one.
+
+    Args:
+        proposed_item: The proposed item, scored as an ExistingQuality.
+        existing: Existing library copies of the same title.
+
+    Returns:
+        The proposed item with the existing copy's width/height, or unchanged when no
+        existing copy shares its width class.
+    """
+    if not proposed_item.width:
+        return proposed_item
+    for item in existing:
+        same_class = abs(item.width - proposed_item.width) <= proposed_item.width * _SAME_WIDTH_TOLERANCE
+        if item.width and item.height and same_class:
+            adopted = copy.copy(proposed_item)
+            adopted.width, adopted.height = item.width, item.height
+            return adopted
+    return proposed_item
+
+
 def _apply_smart_override_if_needed(
     all_items: list[ExistingQuality],
     sorted_items: list[ExistingQuality],
@@ -1320,8 +1355,8 @@ def compare_quality(
     # Convert existing items to ExistingQuality objects
     existing = [ExistingQuality.from_emby_item(item) for item in existing_items]
 
-    # Create a pseudo-ExistingQuality for the proposed item using helper
-    proposed_as_existing = _create_proposed_as_existing(proposed)
+    # Create a pseudo-ExistingQuality for the proposed item, framed like the existing copy
+    proposed_as_existing = _adopt_existing_frame(_create_proposed_as_existing(proposed), existing)
 
     # Add proposed to the list for comparison
     all_items = existing + [proposed_as_existing]

@@ -1089,3 +1089,57 @@ class TestCompareQualityHelpers:
 
         # No override needed - same item is best
         assert result == sorted_items
+
+
+# --- a proposed copy is framed like the existing copy of the same width class ----------------
+
+VOYEURS_EXISTING = {  # the real Emby item (tt11235772), 2026-10-05
+    "Id": "voyeurs",
+    "Name": "The Voyeurs",
+    "Path": "/Movies/4K/The Voyeurs (2021) - 2160p WEB-DL HDR CZ/The Voyeurs (2021) - 2160p WEB-DL HDR CZ.mkv",
+    "Size": 13_906_690_340,
+    "Bitrate": 15_939_777,
+    "RunTimeTicks": 69_796_160_000,
+    "MediaStreams": [
+        {"Type": "Video", "Width": 3840, "Height": 1600, "Codec": "hevc", "VideoRange": "HDR 10"},
+        {"Type": "Audio", "Codec": "eac3", "Channels": 6, "Language": "eng"},
+        {"Type": "Audio", "Codec": "eac3", "Channels": 2, "Language": "cze"},
+    ],
+}
+
+
+def _voyeurs_torrent(**overrides):
+    fields = dict(resolution="2160p", codec="x265", size_mb=4915, audio_languages=["cze", "eng"],
+                  hdr="HDR10", audio="DDP", bitrate_kbps=5897)
+    return ProposedQuality(**{**fields, **overrides})
+
+
+def test_lower_bitrate_4k_does_not_beat_the_scope_4k_already_owned():
+    """Regression (torrents gate, 2026-10-05): a 4.8 GB / 5.9 Mbps 2160p torrent was scored as a
+    16:9 frame (8.3 MP) against the library's 3840x1600 scope copy (6.1 MP) and won on resolution
+    alone, so it was downloaded and then deleted by dedupe as the worse copy."""
+    result = compare_quality(_voyeurs_torrent(), [VOYEURS_EXISTING])
+    assert (result.recommendation, result.reason) == ("skip", "same_or_worse")
+    assert result.proposed_score < result.existing_score
+
+
+def test_a_genuinely_better_scope_4k_is_still_downloaded():
+    better = _voyeurs_torrent(size_mb=40_000, bitrate_kbps=45_000, hdr="DV", path="The.Voyeurs.2021.2160p.UHD.BluRay.REMUX.DV")
+    assert compare_quality(better, [VOYEURS_EXISTING]).recommendation == "download"
+
+
+def test_only_the_same_width_class_lends_its_frame():
+    from emby_dedupe.api.quality_compare import (
+        ExistingQuality,
+        _adopt_existing_frame,
+        _create_proposed_as_existing,
+    )
+
+    proposed = _create_proposed_as_existing(_voyeurs_torrent())
+    scope_4k = ExistingQuality.from_emby_item(VOYEURS_EXISTING)
+    near_1080 = ExistingQuality.from_emby_item({"Id": "a", "MediaStreams": [{"Type": "Video", "Width": 1916, "Height": 800}]})
+    dvd = ExistingQuality.from_emby_item({"Id": "d", "MediaStreams": [{"Type": "Video", "Width": 720, "Height": 576}]})
+    assert (_adopt_existing_frame(proposed, [dvd, scope_4k]).width, _adopt_existing_frame(proposed, [dvd, scope_4k]).height) == (3840, 1600)
+    assert (_adopt_existing_frame(proposed, [near_1080, dvd]).width, _adopt_existing_frame(proposed, [near_1080, dvd]).height) == (3840, 2160)
+    hd = _create_proposed_as_existing(_voyeurs_torrent(resolution="1080p"))
+    assert (_adopt_existing_frame(hd, [near_1080]).width, _adopt_existing_frame(hd, [near_1080]).height) == (1916, 800)
