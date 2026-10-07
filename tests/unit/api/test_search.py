@@ -414,3 +414,34 @@ class TestSearchMediaThreadsIdsIntoNameFallback:
             "tmdb": None,
             "tvdb": None,
         }
+
+
+class TestTitleBuriedInsideAnotherTitle:
+    """Regression (torrents gate, 2026-10-07): "Eden" matched "East of Eden" and "Welcome to Eden",
+    so missing Eden (2026) episodes would have been reported as already downloaded."""
+
+    LIBRARY = [  # what Emby's SearchTerm=Eden returns, in Emby's order
+        {"Name": "Welcome to Eden", "Id": "w", "ProductionYear": 2022},
+        {"Name": "East of Eden (2026)", "Id": "e", "ProductionYear": 2026},
+        {"Name": "Eden - Du bezahlst für jede Lüge", "Id": "d", "ProductionYear": 2026},
+    ]
+
+    def test_short_name_resolves_to_its_subtitled_title_not_to_titles_ending_in_it(self):
+        from emby_dedupe.api.search import select_series_candidate
+
+        assert select_series_candidate("Eden", self.LIBRARY, year=2026)["Id"] == "d"
+        assert select_series_candidate("Eden - Du bezahlst für jede Lüge", self.LIBRARY, year=2026)["Id"] == "d"
+
+    def test_no_subtitle_variant_in_the_library_means_not_found(self):
+        from emby_dedupe.api.search import select_series_candidate
+
+        assert select_series_candidate("Eden", self.LIBRARY[:2], year=2026) is None
+        middle = {"Name": "The Middle", "Id": "m", "ProductionYear": 2000}
+        assert select_series_candidate("Malcolm in the Middle", [middle]) is None  # even with no ids or years
+
+    def test_brand_prefix_still_matches(self):
+        from emby_dedupe.api.search import _is_title_variant
+
+        assert _is_title_variant("Daredevil", "Marvel's Daredevil")
+        assert _is_title_variant("Jack Ryan", "Tom Clancy’s Jack Ryan")
+        assert not _is_title_variant("Eden", "East of Eden (2026)")

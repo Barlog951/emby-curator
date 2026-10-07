@@ -20,6 +20,12 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
   doesn't have: a 4.8 GB / 5.9 Mbps *The Voyeurs* beat the 13.9 GB / 15.9 Mbps copy already owned,
   was downloaded, and dedupe then deleted it. When an existing copy is in the same width class
   (within 2%), the proposed copy now takes its frame size before scoring.
+- **The pre-download check matched a show by a word inside another title.** The series name
+  fallback accepted any title that merely contained the requested one, so *Eden* resolved to
+  *Welcome to Eden* or *East of Eden* and missing episodes looked already downloaded. A partial
+  match now has to be a subtitle ("Eden" → "Eden - Du bezahlst für jede Lüge") or differ only by
+  a possessive brand ("Daredevil" → "Marvel's Daredevil"), unless the candidate carries the very
+  provider id the caller supplied.
 
 ## [3.3.0] — 2026-10-02
 

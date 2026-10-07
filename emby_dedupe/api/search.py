@@ -196,6 +196,14 @@ def search_by_provider_id(
 _FUZZY_YEAR_TOLERANCE = 1
 
 
+def _provider_id_agrees(
+    series: dict[str, Any], imdb: str | None, tmdb: str | None, tvdb: str | None
+) -> bool:
+    """True when the series carries the very id the caller supplied for some provider."""
+    pids = {str(k).lower(): str(v).lower() for k, v in (series.get("ProviderIds") or {}).items()}
+    return any(pids.get(provider) == str(wanted).lower() for provider, wanted in iter_provider_ids(imdb, tmdb, tvdb))
+
+
 def _provider_id_conflicts(
     series: dict[str, Any], imdb: str | None, tmdb: str | None, tvdb: str | None
 ) -> bool:
@@ -210,6 +218,30 @@ def _provider_id_conflicts(
         if have and str(have).lower() != str(wanted).lower():
             return True
     return False
+
+
+# "Marvel's Daredevil", "Tom Clancy's Jack Ryan": a possessive brand in front of the real title.
+_POSSESSIVE_BRAND = re.compile(r"^[^'’]{1,40}['’]s\s+")
+
+
+def _brandless(title: str) -> str:
+    return normalize_title(_POSSESSIVE_BRAND.sub("", title, count=1))
+
+
+def _is_title_variant(requested: str, candidate: str) -> bool:
+    """A containment match that really names the same show.
+
+    Only two shapes qualify: the shorter title is the START of the longer one (a subtitle:
+    "Eden" → "Eden - Du bezahlst für jede Lüge"), or the titles differ only by a possessive
+    brand ("Daredevil" → "Marvel's Daredevil"). A title buried inside another one is a
+    different show: "Eden" ⊂ "East of Eden" / "Welcome to Eden" (torrents gate, 2026-10-07),
+    "The Middle" ⊂ "Malcolm in the Middle".
+    """
+    a, b = _brandless(requested), _brandless(candidate)
+    if a == b:
+        return True
+    short, long_ = sorted((a, b), key=len)
+    return bool(short) and long_.startswith(short + " ")
 
 
 def select_series_candidate(
@@ -230,7 +262,10 @@ def select_series_candidate(
     Rules (deterministic, cheapest first):
       1. A candidate whose provider id CONFLICTS with a supplied id is never a match.
       2. An exact normalized title match wins over a containment match.
-      3. A containment-only match is rejected when the candidate premiered more than
+      3. A containment-only match must be a subtitle or brand variant (``_is_title_variant``),
+         unless the candidate carries the very id the caller supplied: "Eden" never resolves
+         to "East of Eden" on its title alone.
+      4. A containment-only match is rejected when the candidate premiered more than
          ``_FUZZY_YEAR_TOLERANCE`` years AFTER the caller's year (a series cannot start
          after one of its own episodes aired; the caller's year may legitimately be later).
     """
@@ -250,15 +285,27 @@ def select_series_candidate(
             if exact is None:
                 exact = series
             continue
-        if _premiered_too_late(series.get("ProductionYear"), year):
-            logger.debug(
-                f"Rejecting fuzzy series match '{candidate_name}' ({series.get('ProductionYear')}) for "
-                f"'{series_name}' ({year}): year conflict"
-            )
-            continue
-        if fuzzy is None:
+        if fuzzy is None and _fuzzy_match_holds(series_name, series, year, imdb, tmdb, tvdb):
             fuzzy = series
     return exact or fuzzy
+
+
+def _fuzzy_match_holds(
+    series_name: str, series: dict[str, Any], year: int | None,
+    imdb: str | None, tmdb: str | None, tvdb: str | None,
+) -> bool:
+    """Rules 3 and 4 of ``select_series_candidate`` for a containment-only match."""
+    candidate_name = series.get("Name", "")
+    if not _is_title_variant(series_name, candidate_name) and not _provider_id_agrees(series, imdb, tmdb, tvdb):
+        logger.debug(f"Rejecting fuzzy series match '{candidate_name}' for '{series_name}': title buried inside")
+        return False
+    if _premiered_too_late(series.get("ProductionYear"), year):
+        logger.debug(
+            f"Rejecting fuzzy series match '{candidate_name}' ({series.get('ProductionYear')}) for "
+            f"'{series_name}' ({year}): year conflict"
+        )
+        return False
+    return True
 
 
 def _premiered_too_late(candidate_year: Any, year: int | None) -> bool:
