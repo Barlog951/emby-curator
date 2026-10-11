@@ -322,7 +322,7 @@ def fetch_items_details(client: httpx.Client, base_url: str, item_ids: list) -> 
     # Add TV series specific fields (SeriesName, SeasonNumber, IndexNumber)
     url = f"{base_url}/Items"
     params = {
-        "Fields": "MediaStreams,Path,ProviderIds,DateCreated,DateModified,PremiereDate,ProductionYear,Tags,Overview,ParentId,SeriesName,SeasonNumber,IndexNumber,RunTimeTicks",
+        "Fields": "MediaStreams,Path,ProviderIds,DateCreated,DateModified,PremiereDate,ProductionYear,Tags,Overview,ParentId,SeriesName,SeasonNumber,IndexNumber,RunTimeTicks,SeriesId,SeriesPrimaryImageTag",
         "Ids": ids_param,
     }
 
@@ -623,9 +623,14 @@ def _process_provider_id(provider, table_name, id_value, provider_tables, item, 
 
 
 def _index_by_series_episode(item: dict, library_name: str, provider_tables: dict) -> None:
-    """Index episodes by SeriesName + Season + Episode for fallback grouping.
+    """Index episodes by series + Season + Episode for fallback grouping.
 
-    This catches duplicates where one copy has no provider IDs at all.
+    This catches duplicates where one copy has no provider IDs at all. The series is
+    identified by Emby's SeriesId, not just its name: two different shows can share a
+    name (the 2005 cartoon and the 2024 live-action *Avatar: The Last Airbender*), and
+    keying on the name alone paired their episodes (refused by the runtime guard every
+    run, 2026-10-11). A show split across two folders is two Emby series; its copies
+    still pair through their episode provider ids.
     """
     series_name = item.get("SeriesName")
     season = item.get("ParentIndexNumber")
@@ -634,7 +639,9 @@ def _index_by_series_episode(item: dict, library_name: str, provider_tables: dic
     if not (series_name and season is not None and episode_num is not None):
         return
 
-    se_key = f"{series_name}|S{season}E{episode_num}"
+    series_id = item.get("SeriesId")
+    series_key = f"{series_name}#{series_id}" if series_id else series_name
+    se_key = f"{series_key}|S{season}E{episode_num}"
     if se_key not in provider_tables["series_episode"]:
         provider_tables["series_episode"][se_key] = []
 

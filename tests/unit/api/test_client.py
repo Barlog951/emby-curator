@@ -742,3 +742,29 @@ class TestClient:
             mock_client.post.assert_called_once()
             url = mock_client.post.call_args[0][0]
             assert "http://example.com/Sessions/Logout" in url
+
+
+class TestSeriesEpisodeKeyUsesSeriesId:
+    """Regression (2026-10-11): the 2005 cartoon and the 2024 live-action Avatar: The Last
+    Airbender share a name; keyed on the name alone their S01E06 episodes were paired."""
+
+    def _tables(self, items):
+        tables = {"imdb": {}, "tvdb": {}, "tmdb": {}, "series_episode": {}, "library_name": "SERIALS"}
+        build_provider_id_tables(items, tables)
+        return tables["series_episode"]
+
+    def _ep(self, item_id, series_id, imdb):
+        return {"Id": item_id, "IsFolder": False, "SeriesName": "Avatar: The Last Airbender",
+                "SeriesId": series_id, "ParentIndexNumber": 1, "IndexNumber": 6,
+                "ProviderIds": {"Imdb": imdb}}
+
+    def test_same_name_different_series_are_not_grouped(self):
+        buckets = self._tables([self._ep("cartoon", "21432996", "tt0516774"),
+                                self._ep("live", "21535162", "tt16359896")])
+        assert all(len(items) == 1 for items in buckets.values())
+
+    def test_same_series_still_groups_an_id_less_copy(self):
+        twin = self._ep("twin", "21432996", "tt0516774")
+        bare = {**self._ep("bare", "21432996", ""), "ProviderIds": {}}
+        buckets = self._tables([twin, bare])
+        assert {i["id"] for i in buckets["Avatar: The Last Airbender#21432996|S1E6"]} == {"twin", "bare"}
