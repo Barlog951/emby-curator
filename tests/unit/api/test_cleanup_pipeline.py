@@ -21,6 +21,7 @@ import httpx
 import pytest
 
 from emby_dedupe.api.cleanup_pipeline import (
+    _apply_collection_rule,
     _build_favorite_actors_set,
     _build_last_episode_added_map,
     _build_top_actors_from_watch_history,
@@ -35,10 +36,12 @@ from emby_dedupe.api.cleanup_pipeline import (
     _fetch_all_library_movies,
     _fetch_all_library_series,
     _fetch_all_users,
+    _fetch_tmdb_collections,
     _get_movie_actor_names,
+    _group_collections,
     _is_excluded_by_provider_id,
-    _is_franchise_protected,
     _is_path_protected,
+    _movie_collection_id,
     _paginated_fetch,
     _paginated_fetch_library,
     _probe_library_content,
@@ -252,32 +255,23 @@ class TestComputeEffectiveRating:
 
 
 # ---------------------------------------------------------------------------
-# TestIsFranchiseProtected
+# TestMovieCollectionId
 # ---------------------------------------------------------------------------
 
 
-class TestIsFranchiseProtected:
-    """Tests for _is_franchise_protected."""
+class TestMovieCollectionId:
+    """Tests for _movie_collection_id (the collection id a movie carries itself)."""
 
     def test_tmdbcollection_present(self):
-        """Exact key 'TmdbCollection' triggers protection."""
-        assert _is_franchise_protected({"TmdbCollection": "123"}) is True
+        assert _movie_collection_id({"TmdbCollection": "123"}) == "123"
 
-    def test_tmdbcollection_case_insensitive_upper(self):
-        """All-upper key is also detected."""
-        assert _is_franchise_protected({"TMDBCOLLECTION": "123"}) is True
-
-    def test_tmdbcollection_case_insensitive_lower(self):
-        """All-lower key is detected."""
-        assert _is_franchise_protected({"tmdbcollection": "456"}) is True
+    def test_key_is_case_insensitive(self):
+        assert _movie_collection_id({"TMDBCOLLECTION": "123"}) == "123"
+        assert _movie_collection_id({"tmdbcollection": "456"}) == "456"
 
     def test_no_collection(self):
-        """Regular ProviderIds without collection key is not protected."""
-        assert _is_franchise_protected({"Imdb": "tt1234567", "Tmdb": "999"}) is False
-
-    def test_empty_provider_ids(self):
-        """Empty dict is not protected."""
-        assert _is_franchise_protected({}) is False
+        assert _movie_collection_id({"Imdb": "tt1234567", "Tmdb": "999"}) is None
+        assert _movie_collection_id({}) is None
 
 
 # ---------------------------------------------------------------------------
@@ -544,7 +538,7 @@ class TestRunCleanupPipeline:
     def _make_client(self):
         return MagicMock()
 
-    def _pipeline(self, movies, config=None, played_ids=None, interested_ids=None, actors=None):
+    def _pipeline(self, movies, config=None, played_ids=None, interested_ids=None, actors=None, collections=None):
         """
         Helper: run pipeline with mocked API calls returning the given movies list.
         Returns (candidates, stats).
@@ -558,7 +552,8 @@ class TestRunCleanupPipeline:
         with patch("emby_dedupe.api.cleanup_pipeline._fetch_all_library_movies", return_value=movies), \
              patch("emby_dedupe.api.cleanup_pipeline._build_favorite_actors_set", return_value=actors), \
              patch("emby_dedupe.api.cleanup_pipeline._fetch_all_users", return_value=[]), \
-             patch("emby_dedupe.api.cleanup_pipeline._check_play_and_interest_batch", return_value=(played_ids, interested_ids)):
+             patch("emby_dedupe.api.cleanup_pipeline._check_play_and_interest_batch", return_value=(played_ids, interested_ids)), \
+             patch("emby_dedupe.api.cleanup_pipeline._fetch_tmdb_collections", return_value=collections or {}):
             return _run_cleanup_pipeline(client, self.BASE_URL, config, ["lib1"], "uid1")
 
     def test_age_filter_removes_too_young(self):
@@ -642,33 +637,64 @@ class TestRunCleanupPipeline:
             path="/Movies/HD/Old.mkv",
         )
         candidates, stats, *_ = self._pipeline([movie], actors={"Tom Hanks"})
-        # actor + franchise bypassed at 12+ years
+        # actor bypassed at 12+ years; a lone collection part is judged like any film
         assert stats["actor_protected"] == 0
-        assert stats["franchise_protected"] == 0
         assert stats["path_protected"] == 0
         assert stats["final_candidates"] == 1
         assert candidates[0].threshold == 9.0
+        assert candidates[0].collection_size == 1
 
-    def test_11yr_still_has_normal_protections(self):
-        """11-year-old movie still uses normal protection layers."""
+    def test_lone_collection_part_is_judged_like_any_film(self):
+        """Fuki 2026-10-11: owning one part of a collection no longer protects it."""
         movie = _make_movie(
-            item_id="11yr_franchise", date_created=_date_years_ago(11),
+            item_id="lone", date_created=_date_years_ago(11),
             rating=1.0, provider_ids={"TmdbCollection": "10"},
         )
         candidates, stats, *_ = self._pipeline([movie])
-        assert stats["franchise_protected"] == 1
-        assert stats["final_candidates"] == 0
+        assert stats["final_candidates"] == 1
+        assert stats["collections_removed"] == 1
 
-    def test_franchise_protected(self):
-        """Movie with TmdbCollection in ProviderIds is not a candidate."""
-        movie = _make_movie(
-            item_id="franchise_m",
-            provider_ids={"TmdbCollection": "10"},
-            rating=1.0,
+    def test_collection_goes_whole_when_every_part_fails(self):
+        a = _make_movie(item_id="a", name="Part 1", rating=1.0)
+        b = _make_movie(item_id="b", name="Part 2", rating=1.0)
+        candidates, stats, *_ = self._pipeline([a, b], collections={"10": ("Saga Collection", ["a", "b"])})
+        assert {c.item_id for c in candidates} == {"a", "b"}
+        assert {c.collection for c in candidates} == {"Saga Collection"}
+        assert all(c.collection_size == 2 for c in candidates)
+        assert stats["collections_removed"] == 1
+
+    def test_one_played_part_keeps_the_whole_collection(self):
+        """The bug: a 12+ year old part was deleted while a newer, watched part stayed."""
+        old = _make_movie(item_id="old", date_created=_date_years_ago(13), rating=5.0)
+        watched = _make_movie(item_id="watched", rating=1.0)
+        candidates, stats, *_ = self._pipeline(
+            [old, watched], played_ids={"watched"},
+            collections={"10": ("Saga Collection", ["old", "watched"])},
         )
-        candidates, stats, *_ = self._pipeline([movie])
-        assert stats["franchise_protected"] == 1
-        assert stats["final_candidates"] == 0
+        assert candidates == []
+        assert stats["collection_protected"] == 1
+        assert stats["collections_removed"] == 0
+
+    def test_too_new_part_keeps_the_whole_collection(self):
+        old = _make_movie(item_id="old", rating=1.0)
+        new = _make_movie(item_id="new", date_created=_date_years_ago(1), rating=1.0)
+        candidates, stats, *_ = self._pipeline([old, new], collections={"10": ("Saga", ["old", "new"])})
+        assert candidates == []
+        assert stats["collection_protected"] == 1
+
+    def test_part_outside_the_scanned_libraries_keeps_the_collection(self):
+        """A part the run cannot judge (another library) is treated as staying."""
+        here = _make_movie(item_id="here", rating=1.0)
+        candidates, stats, *_ = self._pipeline([here], collections={"10": ("Saga", ["here", "elsewhere"])})
+        assert candidates == []
+        assert stats["collection_protected"] == 1
+
+    def test_collection_parts_are_listed_together(self):
+        lone = _make_movie(item_id="z", name="Standalone", date_created=_date_years_ago(9), rating=1.0)
+        a = _make_movie(item_id="a", rating=1.0)
+        b = _make_movie(item_id="b", rating=1.0)
+        candidates, *_ = self._pipeline([lone, a, b], collections={"10": ("Saga", ["a", "b"])})
+        assert [c.item_id for c in candidates][-1] == "z"
 
     def test_path_protected(self):
         """Movie in a protected path directory is not a candidate."""
@@ -2056,3 +2082,42 @@ class TestPathProtectionIsAbsolute:
         # The masterpiece policy itself is unchanged: 12yr+ needs 9.0.
         assert self._classify("/Movies/HD/a.mkv", 13.0, 7.7) is None
         assert self._classify("/Movies/HD/a.mkv", 13.0, 9.1) == "rating_protected"
+
+
+
+class TestCollectionGrouping:
+    """_group_collections / _apply_collection_rule / _fetch_tmdb_collections."""
+
+    def test_a_movie_in_two_collections_links_them(self):
+        groups = _group_collections([], {"1": ("A", ["x", "y"]), "2": ("B", ["y", "z"])})
+        assert len(groups) == 1
+        assert groups[0][1] == {"x", "y", "z"}
+
+    def test_movie_own_collection_id_joins_the_boxset(self):
+        movie = {"Id": "w", "ProviderIds": {"TmdbCollection": "1"}}
+        groups = _group_collections([movie], {"1": ("A", ["x"])})
+        assert groups == [("A", {"x", "w"})]
+
+    def test_rule_counts_kept_parts(self):
+        from emby_dedupe.models.cleanup import CleanupCandidate
+        cand = CleanupCandidate("x", "X", 2000, 1.0, None, 6.0, 5.0, "HD", 1, "/m/x.mkv")
+        stats = {"collection_protected": 0, "collections_removed": 0}
+        assert _apply_collection_rule([cand], [("A", {"x", "y"})], stats) == []
+        assert stats == {"collection_protected": 1, "collections_removed": 0}
+
+    def test_fetch_ignores_hand_made_boxsets_without_a_tmdb_id(self):
+        boxsets = {"Items": [
+            {"Id": "b1", "Name": "Saga Collection", "ProviderIds": {"Tmdb": "10"}},
+            {"Id": "b2", "Name": "Vianocne Filmy", "ProviderIds": {}},
+        ]}
+        children = {"b1": {"Items": [{"Id": "m1"}, {"Id": "m2"}]}}
+
+        def fake_request(client, method, url, params=None, **kw):
+            resp = MagicMock()
+            resp.json.return_value = children.get(params.get("ParentId"), boxsets) if "ParentId" in params else boxsets
+            return resp
+
+        with patch("emby_dedupe.api.cleanup_pipeline.make_http_request", side_effect=fake_request) as req:
+            result = _fetch_tmdb_collections(MagicMock(), "http://emby")
+        assert result == {"10": ("Saga Collection", ["m1", "m2"])}
+        assert all(call.kwargs["params"].get("ParentId") != "b2" for call in req.call_args_list)

@@ -64,6 +64,9 @@ class CleanupCandidate:
         size_bytes: File size in bytes (0 if Size is None/missing).
         path: File system path on the Emby server.
         deletion_result: Result dict from delete_item() if --doit was used.
+        collection: Name of the TMDb collection (franchise) this movie belongs to, if any.
+            A collection is only ever removed whole, so every owned part is a candidate.
+        collection_size: Number of owned parts of that collection (0 when not in one).
     """
 
     item_id: str
@@ -78,6 +81,8 @@ class CleanupCandidate:
     path: str
     deletion_result: dict | None = None
     days_left: int | None = None
+    collection: str | None = None
+    collection_size: int = 0
 
 
 @dataclass

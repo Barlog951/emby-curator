@@ -5,7 +5,7 @@ Handles both movies and TV series. Libraries are auto-probed for content type
 and the appropriate pipeline is run for each.
 
 Movies pass through a 7-layer filter pipeline (age, exclusion, play/interest,
-actors, franchise, path, rating decay).
+actors, path, rating decay, whole collections).
 
 Series pass through a 5-layer filter pipeline (staleness, exclusion,
 play/favorites, path, rating decay). Staleness is measured as years since
@@ -209,19 +209,19 @@ def _perform_deletions(
     # media the run is KEEPING can take that media with it. Fetch every library path once
     # and gate each delete on the same guard the dedup path uses.
     known_paths = fetch_all_media_paths(client, base_url)
-    delete_paths = [c.path for c in candidates if getattr(c, "path", None)]
     # A series candidate's path is a FOLDER Emby owns as one item, not a media file, so it
     # needs the container rule rather than the file one (which refused 100% of series).
     is_series = label == "series"
+    verdicts, held = _guard_verdicts(candidates, known_paths, delete_is_container=is_series)
 
     logger.info(f"Deleting {len(candidates)} {label} candidates...")
     with tqdm(candidates, desc=f"Deleting {label}", unit=label.rstrip("s")) as progress:
         for candidate in progress:
             progress.set_postfix_str(candidate.name[:40])
-            safe, reason = is_cleanup_delete_safe(
-                getattr(candidate, "path", None), known_paths, delete_paths,
-                delete_is_container=is_series,
-            )
+            safe, reason = verdicts[candidate.item_id]
+            collection = getattr(candidate, "collection", None)
+            if safe and collection in held:
+                safe, reason = False, held[collection]
             if not safe:
                 candidate.deletion_result = {"status": "skipped_unsafe", "error": reason}
                 logger.error(
@@ -236,6 +236,42 @@ def _perform_deletions(
             )
             candidate.deletion_result = result
             logger.info(f"Deleted {candidate.name}: {result.get('status', 'unknown')}")
+            if collection and result.get("status") != "success":
+                held[collection] = f"collection kept: deleting {candidate.name!r} failed, the other parts stay"
+
+
+def _guard_verdicts(
+    candidates: list, known_paths, delete_is_container: bool,
+) -> tuple[dict[str, tuple[bool, str]], dict[str, str]]:
+    """Run the fold-delete guard over every candidate, keeping collections whole.
+
+    A collection goes whole or not at all, so one part the guard refuses holds every
+    part. Held parts then SURVIVE the run, which can make a neighbour's delete unsafe
+    (it would fold their shared folder), so the guard is re-run without them until
+    nothing new is held.
+
+    Returns:
+        ``({item_id: (safe, reason)}, {collection name: reason it is held})``.
+    """
+    held: dict[str, str] = {}
+    while True:
+        going = [c for c in candidates if getattr(c, "collection", None) not in held]
+        delete_paths = [c.path for c in going if getattr(c, "path", None)]
+        verdicts = {
+            c.item_id: is_cleanup_delete_safe(
+                getattr(c, "path", None), known_paths, delete_paths,
+                delete_is_container=delete_is_container,
+            )
+            for c in candidates
+        }
+        newly = {
+            c.collection: f"collection kept whole: the safety guard holds {c.name!r}"
+            for c in going
+            if getattr(c, "collection", None) and not verdicts[c.item_id][0]
+        }
+        if not newly:
+            return verdicts, held
+        held |= {name: reason for name, reason in newly.items() if name not in held}
 
 
 def _resolve_library_ids(
@@ -273,8 +309,8 @@ def _resolve_library_ids(
 _EMPTY_MOVIE_STATS: dict = {
     "total_analyzed": 0, "age_filtered": 0, "excluded_filtered": 0,
     "play_protected": 0, "interest_protected": 0, "actor_protected": 0,
-    "franchise_protected": 0, "path_protected": 0, "rating_protected": 0,
-    "final_candidates": 0,
+    "path_protected": 0, "rating_protected": 0,
+    "collection_protected": 0, "collections_removed": 0, "final_candidates": 0,
 }
 
 

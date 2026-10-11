@@ -2,7 +2,7 @@
 Cleanup pipeline — domain logic and Emby data fetching for library cleanup.
 
 Implements the movie and series filter pipelines (age/staleness, exclusion,
-play/interest, actors, franchise, path, rating decay) plus all the Emby API
+play/interest, actors, path, rating decay, whole collections) plus all the Emby API
 helpers they need (paginated fetching, user resolution, play-status batch
 checks, episode staleness maps, size calculation and library probing).
 
@@ -23,6 +23,7 @@ from emby_dedupe.models.cleanup import (
     CleanupConfig,
     SeriesCleanupCandidate,
 )
+from emby_dedupe.models.disjoint_set import DisjointSet
 from emby_dedupe.utils.constants import PAGE_SIZE
 from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.logging import logger
@@ -166,16 +167,125 @@ def _finalize_near_miss(near_miss: list, config: CleanupConfig, age_of) -> list:
     return near_miss
 
 
-def _is_franchise_protected(provider_ids: dict) -> bool:
-    """Check if a movie belongs to a TMDB collection (franchise).
+def _movie_collection_id(provider_ids: dict) -> str | None:
+    """Return the TMDb collection id a movie carries in its ProviderIds, if any.
 
     Args:
         provider_ids: ProviderIds dict from Emby item.
 
     Returns:
-        True if TmdbCollection key is present (case-insensitive).
+        The ``TmdbCollection`` value (key matched case-insensitively), or None.
     """
-    return "tmdbcollection" in {k.lower() for k in provider_ids}
+    for key, value in provider_ids.items():
+        if key.lower() == "tmdbcollection" and value:
+            return str(value)
+    return None
+
+
+def _fetch_tmdb_collections(client: httpx.Client, base_url: str) -> dict[str, tuple[str, list[str]]]:
+    """Fetch every TMDb collection Emby knows, with the ids of the movies it owns.
+
+    Emby keeps collections as BoxSets; only ~15% of movies also carry the collection
+    id in their own ProviderIds, so the BoxSets are the real membership list. BoxSets
+    without a TMDb id are hand-made lists (a 224-film Christmas list), not franchises,
+    and are ignored. Members in libraries the run does not scan are included on purpose:
+    they cannot be judged, so they keep their collection.
+
+    Returns:
+        ``{"<tmdb collection id>": (collection name, [movie ids])}``.
+    """
+    boxsets = make_http_request(
+        client, "GET", f"{base_url}/Items",
+        params={"Recursive": "true", "IncludeItemTypes": "BoxSet", "Fields": "ProviderIds"},
+    ).json().get("Items", [])
+    collections: dict[str, tuple[str, list[str]]] = {}
+    for boxset in tqdm(boxsets, desc="Reading collections", unit="collection", leave=False):
+        tmdb = {k.lower(): v for k, v in (boxset.get("ProviderIds") or {}).items()}.get("tmdb")
+        if not tmdb:
+            continue
+        members = make_http_request(
+            client, "GET", f"{base_url}/Items",
+            params={"ParentId": boxset["Id"], "IncludeItemTypes": "Movie", "Recursive": "true"},
+        ).json().get("Items", [])
+        name, ids = collections.get(str(tmdb), (boxset.get("Name", ""), []))
+        collections[str(tmdb)] = (name, ids + [m["Id"] for m in members if m.get("Id")])
+    return collections
+
+
+def _group_collections(
+    movies: list[dict], tmdb_collections: dict[str, tuple[str, list[str]]],
+) -> list[tuple[str, set[str]]]:
+    """Merge collection memberships into groups of movies that stand or fall together.
+
+    A movie in two collections links them, so the groups are the connected components.
+
+    Args:
+        movies: Scanned movie dicts (their own TmdbCollection id is folded in too).
+        tmdb_collections: Output of :func:`_fetch_tmdb_collections`.
+
+    Returns:
+        ``[(display name, {movie ids})]`` for every group with at least one movie.
+    """
+    members: dict[str, set[str]] = {cid: set(ids) for cid, (_, ids) in tmdb_collections.items()}
+    names = {cid: name for cid, (name, _) in tmdb_collections.items()}
+    for movie in movies:
+        cid = _movie_collection_id(movie.get("ProviderIds", {}))
+        if cid and movie.get("Id"):
+            members.setdefault(cid, set()).add(movie["Id"])
+    sets = DisjointSet()
+    for ids in members.values():
+        for movie_id in ids:
+            sets.parent.setdefault(movie_id, movie_id)
+        ordered = sorted(ids)
+        for movie_id in ordered[1:]:
+            sets.union(ordered[0], movie_id)
+    groups: dict[str, tuple[str, set[str]]] = {}
+    for cid, ids in members.items():
+        if not ids:
+            continue
+        root = sets.find(next(iter(ids)))
+        name, grouped = groups.get(root, (names.get(cid) or f"TMDb collection {cid}", set()))
+        groups[root] = (name, grouped | ids)
+    return list(groups.values())
+
+
+def _apply_collection_rule(
+    candidates: list[CleanupCandidate],
+    groups: list[tuple[str, set[str]]],
+    stats: dict,
+) -> list[CleanupCandidate]:
+    """Remove a collection (franchise) only as a whole: every owned part must be a candidate.
+
+    One part that is protected for any reason (played, favourite, actor, path, rating,
+    too new, excluded, or in a library this run does not scan) keeps every part, so a
+    franchise is never left half-deleted. Collection candidates are tagged with the
+    collection name and listed together.
+
+    Args:
+        candidates: Movie candidates after the per-movie filters.
+        groups: Output of :func:`_group_collections`.
+        stats: Movie stats (``collection_protected`` and ``collections_removed`` updated).
+
+    Returns:
+        The surviving candidates, collection parts grouped together.
+    """
+    by_id = {c.item_id: c for c in candidates}
+    kept: set[str] = set()
+    for name, ids in groups:
+        doomed = [by_id[i] for i in ids if i in by_id]
+        if not doomed:
+            continue
+        if len(doomed) < len(ids):
+            kept.update(c.item_id for c in doomed)
+            stats["collection_protected"] += len(doomed)
+            continue
+        stats["collections_removed"] += 1
+        for candidate in doomed:
+            candidate.collection = name
+            candidate.collection_size = len(ids)
+    survivors = [c for c in candidates if c.item_id not in kept]
+    survivors.sort(key=lambda c: (c.collection is None, c.collection or "", -c.age_years))
+    return survivors
 
 
 def _is_path_protected(path: str, protect_paths: list[str]) -> bool:
@@ -1011,7 +1121,7 @@ def _classify_movie_protection(
         return "interest_protected"
     # Path protection is ABSOLUTE and must be tested before the masterpiece gate below.
     # It is an explicit "never touch this folder" instruction (--protect-path, default
-    # "/Dokumenty/"), not a heuristic like actor/franchise — and age is precisely why a
+    # "/Dokumenty/"), not a heuristic like actor/collection — and age is precisely why a
     # folder gets protected, so letting an age rule void it is backwards. Previously the
     # masterpiece gate returned first, silently making protect-path a no-op for anything
     # 12+ years old.
@@ -1021,8 +1131,6 @@ def _classify_movie_protection(
         return "rating_protected" if effective_rating >= config.masterpiece_rating else None
     if age < config.no_actor_protection_after_years and _get_movie_actor_names(movie.get("People", [])) & favorite_actors:
         return "actor_protected"
-    if _is_franchise_protected(movie.get("ProviderIds", {})):
-        return "franchise_protected"
     if effective_rating >= threshold:
         return "rating_protected"
     return None
@@ -1038,8 +1146,9 @@ def _apply_movie_filters(
 ) -> tuple[list[CleanupCandidate], list[CleanupCandidate]]:
     """Apply per-movie protection filters and build CleanupCandidate objects.
 
-    Filter layers applied: play, interest, masterpiece, actor, franchise, path,
-    rating decay.  Updates stats counters in place.
+    Filter layers applied: play, interest, path, masterpiece, actor, rating decay.
+    Collections are judged afterwards, as a whole (:func:`_apply_collection_rule`).
+    Updates stats counters in place.
 
     Also collects "near miss" movies — those protected only by rating (the last
     filter layer). These are the closest to becoming cleanup candidates.
@@ -1128,9 +1237,9 @@ def _run_cleanup_pipeline(
         2. Exclusion filter — skip movies with excluded provider IDs
         3. Play + interest filter (batch across all users)
         4. Favorite-actor filter (primary user only)
-        5. Franchise filter (TmdbCollection in ProviderIds)
-        6. Path filter (protect_paths)
-        7. Rating decay filter (CommunityRating vs age-adjusted threshold)
+        5. Path filter (protect_paths)
+        6. Rating decay filter (CommunityRating vs age-adjusted threshold)
+        7. Collections: a TMDb collection goes only when EVERY owned part is a candidate
 
     Args:
         client: Configured httpx client with auth headers.
@@ -1151,9 +1260,10 @@ def _run_cleanup_pipeline(
         "play_protected": 0,
         "interest_protected": 0,
         "actor_protected": 0,
-        "franchise_protected": 0,
         "path_protected": 0,
         "rating_protected": 0,
+        "collection_protected": 0,
+        "collections_removed": 0,
         "final_candidates": 0,
     }
 
@@ -1201,10 +1311,15 @@ def _run_cleanup_pipeline(
         client, base_url, all_users, candidate_ids
     )
 
-    # 6. Apply per-movie filters (play, interest, actor, franchise, path, rating)
+    # 6. Apply per-movie filters (play, interest, path, actor, rating)
     candidates, near_miss = _apply_movie_filters(
         not_excluded, played_ids, interested_ids, favorite_actors, config, stats
     )
+
+    # 7. Collections go whole or not at all; parts outside this run's scan protect them
+    print("Reading collections...")
+    groups = _group_collections(all_movies, _fetch_tmdb_collections(client, base_url))
+    candidates = _apply_collection_rule(candidates, groups, stats)
     stats["final_candidates"] = len(candidates)
 
     logger.info(f"Cleanup candidates: {len(candidates)}, near-miss: {len(near_miss)}")

@@ -47,9 +47,11 @@ def _print_movie_stats(protection_stats: dict, config: CleanupConfig) -> None:
     print(f"Play protected:      {protection_stats.get('play_protected', 0)}")
     print(f"Interest protected:  {protection_stats.get('interest_protected', 0)}")
     print(f"Actor protected:     {protection_stats.get('actor_protected', 0)}")
-    print(f"Franchise protected: {protection_stats.get('franchise_protected', 0)}")
     print(f"Path protected:      {protection_stats.get('path_protected', 0)}")
     print(f"Rating protected:    {protection_stats.get('rating_protected', 0)}")
+    print(f"Collection kept:     {protection_stats.get('collection_protected', 0)}"
+          " (a collection goes whole or not at all; another part stays)")
+    print(f"Collections removed: {protection_stats.get('collections_removed', 0)} (every owned part goes)")
     print(f"Final candidates:    {protection_stats.get('final_candidates', 0)}")
 
 
@@ -110,7 +112,15 @@ def _print_movie_table(candidates: list[CleanupCandidate]) -> None:
         ("Age", 6, lambda c, i: f"{c.age_years:.1f}"),
         ("Library", 20, lambda c, i: c.library[:20]),
         ("Size", 10, lambda c, i: format_size(c.size_bytes)),
+        ("Collection (whole)", 32, lambda c, i: _collection_label(c)[:32]),
     ])
+
+
+def _collection_label(candidate: CleanupCandidate) -> str:
+    """``"Name (n parts)"`` for a collection candidate, empty otherwise."""
+    if not candidate.collection:
+        return ""
+    return f"{candidate.collection} ({candidate.collection_size} parts)"
 
 
 def _print_series_table(series_candidates: list[SeriesCleanupCandidate]) -> None:
@@ -294,6 +304,8 @@ def _format_cleanup_report_json(
                 "size_bytes": c.size_bytes,
                 "size_human": format_size(c.size_bytes),
                 "path": c.path,
+                "collection": c.collection,
+                "collection_size": c.collection_size,
                 "deletion_result": c.deletion_result,
             }
             for c in candidates
@@ -350,6 +362,8 @@ def _movie_candidate_to_dict(c: CleanupCandidate, base_url: str, api_key: str) -
         "size_bytes": c.size_bytes,
         "size_human": format_size(c.size_bytes),
         "path": c.path,
+        "collection": c.collection,
+        "collection_size": c.collection_size,
         "deletion_result": c.deletion_result,
         "image_url": poster_url(base_url, c.item_id, api_key),
     }

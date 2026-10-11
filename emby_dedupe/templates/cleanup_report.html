@@ -59,6 +59,10 @@
         .badge-age         { background: rgba(180,180,180,0.12); color: #ccc;    border: 1px solid #555; }
         .badge-size        { background: rgba(80,250,123,0.12);  color: #50fa7b; border: 1px solid #50fa7b; }
         .badge-lib         { background: rgba(189,147,249,0.15); color: #bd93f9; border: 1px solid #bd93f9; }
+        .badge-collection  { background: rgba(255,184,108,0.15); color: #ffb86c; border: 1px solid #ffb86c; }
+        .collection-head   { margin: 18px 0 6px; padding: 6px 12px; border-left: 3px solid #ffb86c; color: #ffb86c; }
+        .cleanup-card.in-collection { border-left: 3px solid #ffb86c; }
+        .collection-note   { margin-top: 10px; color: #ffb86c; }
         .badge-deleted     { background: rgba(80,250,123,0.2);   color: #50fa7b; border: 1px solid #50fa7b; }
         .badge-failed      { background: rgba(255,85,85,0.2);    color: #ff5555; border: 1px solid #ff5555; }
         .badge-dryrun      { background: rgba(180,180,180,0.12); color: #aaa;    border: 1px solid #555; }
@@ -207,10 +211,6 @@
                 <div class="filter-label">Favorite actor</div>
             </div>
             <div class="filter-step">
-                <div class="filter-count">{{ protection_stats.franchise_protected }}</div>
-                <div class="filter-label">Franchise</div>
-            </div>
-            <div class="filter-step">
                 <div class="filter-count">{{ protection_stats.path_protected }}</div>
                 <div class="filter-label">Protected path</div>
             </div>
@@ -218,7 +218,14 @@
                 <div class="filter-count">{{ protection_stats.rating_protected }}</div>
                 <div class="filter-label">Rating high enough</div>
             </div>
+            <div class="filter-step" title="A collection goes whole or not at all: these films failed the rules, but another part of their collection stays, so they stay too.">
+                <div class="filter-count">{{ protection_stats.collection_protected | default(0) }}</div>
+                <div class="filter-label">Collection: another part stays</div>
+            </div>
         </div>
+        {% if protection_stats.collections_removed | default(0) %}
+        <p class="collection-note">{{ protection_stats.collections_removed }} collection{{ "s" if protection_stats.collections_removed != 1 }} removed as a whole: every part you own failed the rules.</p>
+        {% endif %}
     </div>
 
     {% if series_stats is defined and series_stats %}
@@ -276,7 +283,10 @@
     </div>
 
     {% for c in candidates %}
-    <div class="cleanup-card">
+    {% if c.collection and (loop.first or loop.previtem.collection != c.collection) %}
+    <div class="collection-head">Collection: <b>{{ c.collection }}</b> · all {{ c.collection_size }} parts you own go together</div>
+    {% endif %}
+    <div class="cleanup-card{% if c.collection %} in-collection{% endif %}">
         <div class="cleanup-number">{{ loop.index }}</div>
 
         {% if c.image_url %}
@@ -307,6 +317,9 @@
                 <span class="badge badge-age">{{ c.age_years }} yr on server</span>
                 <span class="badge badge-size">{{ c.size_human }}</span>
                 <span class="badge badge-lib">{{ c.library }}</span>
+                {% if c.collection is defined and c.collection %}
+                <span class="badge badge-collection" title="A collection is removed whole or not at all">Collection · {{ c.collection_size }} parts</span>
+                {% endif %}
 
                 {% if doit and c.deletion_result %}
                     {% if c.deletion_result.status == "success" %}
