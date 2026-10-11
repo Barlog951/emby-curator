@@ -195,6 +195,21 @@ def test_collect_known_paths_gathers_keep_and_delete():
     assert set(paths) == {"/a/keep1.mkv", "/a/del1.mkv", "/a/del2.mkv", "/b/keep2.mkv"}
 
 
+_HOUR_TICKS = 3600 * 10_000_000
+
+
+def _probed(decisions):
+    """Give every copy a running time, as Emby does once it has probed a file.
+
+    Unprobed copies (no runtime) are refused by the content guard since 2026-10-12, which
+    is not what these tests are about.
+    """
+    for decision in decisions:
+        for item in [decision["keep"], *decision["delete"]]:
+            item.setdefault("runtime_ticks", _HOUR_TICKS)
+    return decisions
+
+
 # --- integration: the guard must stop the actual Emby delete call (the incident) -----
 def test_process_deletion_skips_colocated_delete_but_runs_safe_one():
     """Regression for the DV-P5 data loss: a co-located keeper must NOT be deleted,
@@ -209,6 +224,7 @@ def test_process_deletion_skips_colocated_delete_but_runs_safe_one():
             "delete": [{"id": "dB", "name": "B p5", "path": "/Movies/4K/Film/Film.mkv"}],
         },
     ]
+    _probed(decisions)
     with patch("emby_dedupe.api.deduplication.delete_item") as mock_del, \
          patch("emby_dedupe.reports.markdown.format_markdown_table", return_value="RPT"), \
          patch("emby_dedupe.api.deduplication.tqdm"):
@@ -229,12 +245,12 @@ def test_process_deletion_skips_colocated_delete_but_runs_safe_one():
 def _single_duplicate_season_decisions():
     """A loose duplicate pair that is the ONLY duplicated item in its season folder —
     the Dutton/Proud shape that the decision paths alone make look 'dedicated'."""
-    return [
+    return _probed([
         {
             "keep": {"id": "k", "name": "ep", "path": EP_LOOSE_KEEP},
             "delete": [{"id": "d", "name": "ep dup", "path": EP_LOOSE_P5}],
         },
-    ]
+    ])
 
 
 def test_process_deletion_over_refuses_single_duplicate_folder_without_library_paths():
@@ -286,6 +302,7 @@ def test_process_deletion_backstop_protects_multi_version_movie_folder():
             {"id": "hd", "name": "1080p", "path": hd1080},
         ],
     }]
+    _probed(decisions)
     with patch("emby_dedupe.api.deduplication.delete_item") as mock_del, \
          patch("emby_dedupe.reports.markdown.format_markdown_table", return_value="RPT"), \
          patch("emby_dedupe.api.deduplication.tqdm"):
@@ -404,3 +421,25 @@ class TestCleanupDeleteGuard:
         assert is_cleanup_delete_safe(None, [], [])[0] is False
         assert is_cleanup_delete_safe("", ["/x/y.mkv"], [])[0] is False
         assert is_cleanup_delete_safe("unknown", ["/x/y.mkv"], [])[0] is False
+
+
+
+def test_unprobed_copy_is_never_deleted():
+    """Regression 2026-10-12: a download still landing has no runtime in Emby, scored as
+    "unknown quality" and was picked for deletion against an old SD copy (NCIS S03).
+    Only the folder rule stopped it; the content guard now refuses it on its own."""
+    decisions = [{
+        "keep": {"id": "k", "name": "old SD", "path": "/S/NCIS/S03/NCIS.s03e01.SK.avi", "runtime_ticks": _HOUR_TICKS},
+        "delete": [{"id": "d", "name": "new 1080p", "path": "/S/NCIS/S03-new/NCIS S03E01 - 1080p SK.mkv"}],
+    }]
+    with patch("emby_dedupe.api.deduplication.delete_item") as mock_del, \
+         patch("emby_dedupe.reports.markdown.format_markdown_table", return_value="RPT"), \
+         patch("emby_dedupe.api.deduplication.tqdm"):
+        process_deletion_and_generate_report(
+            MagicMock(), "http://emby", decisions, True, "u", "p", "k",
+            None, ["/S/NCIS/S03/NCIS.s03e01.SK.avi", "/S/NCIS/S03-new/NCIS S03E01 - 1080p SK.mkv", "/S/NCIS/S03-new/x.mkv"],
+        )
+    mock_del.assert_not_called()
+    result = decisions[0]["delete"][0]["deletion_result"]
+    assert result["status"] == "skipped_unsafe"
+    assert "runtime-unknown" in result["error"] and "delete" in result["error"]

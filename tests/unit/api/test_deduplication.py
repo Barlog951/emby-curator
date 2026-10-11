@@ -268,6 +268,10 @@ class TestDeduplication:
         # Mock the markdown table format function
         mock_format_markdown.return_value = "# Formatted Markdown Report"
 
+        for decision in decisions:  # probed copies carry a runtime (unprobed ones are refused)
+            for item in [decision["keep"], *decision["delete"]]:
+                item.setdefault("runtime_ticks", 3600 * 10_000_000)
+
         # Call the function
         result = process_deletion_and_generate_report(
             client, base_url, decisions, doit, username, password, api_key

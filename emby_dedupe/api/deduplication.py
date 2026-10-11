@@ -1269,12 +1269,24 @@ def process_duplicate_groups(
 def _different_content_reason(item: dict, keeper: dict) -> str | None:
     """Why ``item`` may not be a copy of ``keeper`` at all, or None.
 
-    Two independent tells: the episode sits in a different season folder (Initial D,
-    2026-09-27), or the running time differs well beyond tolerance (Rust filed as Runt,
-    a "(2)" copy that is another episode).
+    Three independent tells: the episode sits in a different season folder (Initial D,
+    2026-09-27), the running time differs well beyond tolerance (Rust filed as Runt,
+    a "(2)" copy that is another episode), or either running time is unknown. Emby has
+    no runtime for a file it has not probed yet: a download still landing scored as
+    "unknown quality" and was picked for deletion against an old SD copy (NCIS S03,
+    2026-10-12; only the folder rule stopped it), so an unverifiable pair is not deleted.
     """
     return (episode_identity_conflict(keeper.get("path"), item.get("path"))
+            or _unknown_runtime(item, keeper)
             or duration_mismatch(keeper.get("runtime_ticks"), item.get("runtime_ticks")))
+
+
+def _unknown_runtime(item: dict, keeper: dict) -> str | None:
+    """Reason when either copy has no running time yet (not probed by Emby), else None."""
+    missing = [label for label, side in (("keeper", keeper), ("delete", item)) if not side.get("runtime_ticks")]
+    if not missing:
+        return None
+    return f"runtime-unknown ({' and '.join(missing)} not probed by Emby yet; cannot verify same content)"
 
 
 def _refuse_different_content(item: dict, keeper: dict) -> str | None:
