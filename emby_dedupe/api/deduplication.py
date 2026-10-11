@@ -272,6 +272,9 @@ def _enrich_keep_item(keep_item, items_details, base_url, api_key) -> None:
         keep_item["image_url"] = image_url
         keep_item["name"] = keep_details.get("Name", "Unknown Group")
 
+        # The report's --exclude-ids hint for a blocked pair needs the ids both copies share.
+        keep_item["provider_ids"] = keep_details.get("ProviderIds", {}) or {}
+
         # Add episode metadata if TV episode
         keep_item["is_episode"] = "SeriesName" in keep_details
         if keep_item["is_episode"]:

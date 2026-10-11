@@ -9,6 +9,18 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ### Added
 
+- **The dedupe report opens with a verdict and one row per title and outcome.** A sentence
+  says what happened ("5 files removed, 12.8 GB freed. 24 more were kept by the safety check,
+  and nothing failed."), with an outcome bar. Below it, sections (Failed, Removed, Kept by the
+  safety check, and the dry-run equivalents) list one row per series season or film, e.g.
+  "Call the Midwife · S12 · 8 files · Runtime differs · 52 vs 58 min". Opening a row shows every
+  file: both paths, quality, audio, runtime, score and Emby links. Outcomes are per file, rows
+  never merge across season folders, guard reasons or risk flags, and a risky deletion (kept
+  copy scores lower, deleted copy has a language the kept one lacks, a `(n)` file name,
+  episodes in different folders) gets its own row marked "Check", first. A blocked row offers
+  the `--exclude-ids` value that silences it. The previous per-group cards stay available,
+  folded. The stylesheet is now embedded, so a report is one self-contained file.
+
 - **`csfd fill --ai-match` can ask Claude, with Jev as a cross-check.** The new `--ai-provider auto|jev|claude|both`
   chooses the backend; `auto` (the default) uses every backend that has a key, so existing setups are unchanged.
   Claude Haiku 5.5 is asked 5 times, and the share of votes is its confidence. On 43 hand-checked titles it

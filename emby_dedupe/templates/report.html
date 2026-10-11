@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Emby Deduplication Report</title>
-    <link rel="stylesheet" href="report.css">
+    {# The stylesheet is embedded (reports/html._read_report_css): the report is one file. #}
+    <style>{{ report_css|safe }}</style>
     {% if poster_css %}<style>{{ poster_css|safe }}</style>{% endif %}
 </head>
 <body>
@@ -17,6 +18,31 @@
         <h1>Emby Deduplication Report</h1>
         <p>Identifying and managing duplicate media in your Emby libraries</p>
     </header>
+
+    <!-- Run verdict: what happened, in one sentence, before any detail -->
+    {% if run_summary %}
+    <section class="run-summary" aria-label="Run summary">
+        <span class="run-mode">{% if run_summary.dry %}Dry run · nothing deleted{% else %}Real run (--doit){% endif %}</span>
+        <p class="run-headline">{{ run_summary.headline }}</p>
+        <p class="run-subline">{{ run_summary.subline }}</p>
+        {% if run_summary.risky %}
+        <p class="run-risk">{{ run_summary.risky }} row{{ "" if run_summary.risky == 1 else "s" }} below need{{ "s" if run_summary.risky == 1 else "" }} a look before you trust {{ "it" if run_summary.risky == 1 else "them" }}: marked "Check".</p>
+        {% endif %}
+        {% if run_summary.has_files %}
+        <div class="run-bar" role="img" aria-label="{{ run_summary.aria }}">
+            {% for s in run_summary.segments if s.count %}<span class="run-seg {{ s.css }}" style="flex-grow: {{ s.count }}"></span>{% endfor %}
+        </div>
+        <ul class="run-legend">
+            {% for s in run_summary.segments %}<li><span class="run-swatch {{ s.css }}{% if not s.count %} zero{% endif %}"></span>{{ s.label }} <strong>{{ s.count }}</strong></li>{% endfor %}
+        </ul>
+        {% endif %}
+        <dl class="run-tiles">
+            <div><dt>{{ run_summary.space_label }}</dt><dd>{{ run_summary.space_value }}</dd></div>
+            <div><dt>Kept copies</dt><dd>{{ run_summary.kept_value }}</dd></div>
+            <div><dt>Skipped by --exclude-ids</dt><dd>{{ run_summary.excluded_groups }} group{{ "" if run_summary.excluded_groups == 1 else "s" }}</dd></div>
+        </dl>
+    </section>
+    {% endif %}
 
     <!-- Stats Section -->
     <div class="summary">
@@ -121,6 +147,65 @@
         </div>
     </div>
 
+    {# ---- Outcomes: one row per title and outcome (reports/clusters.build_clusters) ----
+       Rows never merge across season folders, guard reasons or risk flags; a risky deletion
+       gets its own row, first in its section. Opening a row shows every file's evidence. #}
+    {% if clusters and clusters.total_files %}
+    {% set out_titles = {"failed": "Failed", "removed": "Removed", "would_remove": "Would be removed",
+                         "blocked": "Kept by the safety check · both copies stay",
+                         "would_block": "Would be kept by the safety check", "other": "Other status"} %}
+    {% set out_css = {"failed": "seg-failed", "removed": "seg-removed", "would_remove": "seg-would",
+                      "blocked": "seg-blocked", "would_block": "seg-blocked", "other": "seg-other"} %}
+    <section class="outcomes" aria-label="Outcomes">
+    {% for name in ["failed", "removed", "would_remove", "blocked", "would_block", "other"] %}
+    {% set rows = clusters.sections[name] %}
+    {% if rows or (name == "failed" and not run_summary.dry) %}
+    <div class="out-section" data-outcome="{{ name }}">
+        <h2 class="out-title"><span class="run-swatch {{ out_css[name] }}{% if not rows %} zero{% endif %}"></span>{{ out_titles[name] }} · {{ clusters.totals[name] }} file{{ "" if clusters.totals[name] == 1 else "s" }}</h2>
+        {% if not rows %}<p class="out-empty">Nothing failed.</p>{% endif %}
+        {% for r in rows %}
+        <details class="crow{% if r.risk %} risky{% endif %}" data-outcome="{{ name }}" data-reason="{{ r.reason_code }}">
+            <summary>
+                <span class="crow-main">
+                    {% if r.image_class %}<span class="thumb poster {{ r.image_class }}" aria-hidden="true"></span>{% else %}<span class="thumb" aria-hidden="true"></span>{% endif %}
+                    <span class="crow-title"><strong>{{ r.name }}</strong><span class="crow-sub">{{ r.sub }}</span></span>
+                </span>
+                <span class="crow-q">Kept {{ r.keep_quality }}<br>{{ "Removed" if name in ["removed", "would_remove", "failed"] else "Other copy" }} {{ r.delete_quality }}</span>
+                <span class="crow-langs">Audio {% if r.keep_langs == r.delete_langs %}{{ r.keep_langs }} (same){% else %}{{ r.keep_langs }} / {{ r.delete_langs }}{% endif %}</span>
+                <span class="crow-chips">
+                    {% if r.risk %}{% for txt in r.risk_text %}<span class="chip chip-check">Check: {{ txt }}</span>{% endfor %}{% endif %}
+                    {% if r.reason_text %}<span class="chip chip-reason">{{ r.reason_text }}</span>{% endif %}
+                    {% if r.file_only %}<span class="chip">{{ r.file_only }} file only (SSH)</span>{% endif %}
+                    {% if name in ["removed", "would_remove"] %}<span class="chip chip-size">{{ r.size_gb }}</span>{% endif %}
+                </span>
+            </summary>
+            <div class="crow-body">
+                {% if name in ["blocked", "would_block"] and r.exclude_ids %}
+                <p class="exclude-hint">Reviewed, and want to keep both copies for good? Add to <code>--exclude-ids</code>: <code class="ids">{{ r.exclude_ids }}</code></p>
+                {% endif %}
+                {% for f in r.files %}
+                <div class="cfile">
+                    <div class="cfile-head"><strong>{{ f.episode or f.title }}</strong> <span class="cfile-status">{{ f.status_text }}</span>{% if f.reason %} <span class="cfile-reason">{{ f.reason }}</span>{% endif %}</div>
+                    <dl class="cfile-grid">
+                        <div><dt>Kept</dt><dd>{{ f.keep_quality }} · {{ f.keep_langs }}{% if f.keep_runtime %} · {{ f.keep_runtime }}{% endif %}{% if f.keep_score is not none %} · score {{ "%.1f"|format(f.keep_score) }}{% endif %}<code class="cpath">{{ f.keep_path }}</code><a class="url-link" href="{{ f.keep_url }}" target="_blank">Open in Emby</a></dd></div>
+                        <div><dt>{{ "Removed" if f.outcome in ["removed", "would_remove", "failed"] else "Other copy" }}</dt><dd>{{ f.delete_quality }} · {{ f.delete_langs }}{% if f.delete_runtime %} · {{ f.delete_runtime }}{% endif %}{% if f.delete_score is not none %} · score {{ "%.1f"|format(f.delete_score) }}{% endif %}<code class="cpath">{{ f.delete_path }}</code>{% if f.outcome != "removed" %}<a class="url-link" href="{{ f.delete_url }}" target="_blank">Open in Emby</a>{% endif %}</dd></div>
+                    </dl>
+                    {% if f.keep_note %}<p class="cfile-note">{{ f.keep_note }}</p>{% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </details>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endfor %}
+    </section>
+    {% endif %}
+
+    {# The previous per-group cards, folded: same facts, one card per group. #}
+    {% if duplicate_groups %}
+    <details class="legacy-groups">
+    <summary>Full detail, one card per group ({{ duplicate_groups|length }} group{{ "" if duplicate_groups|length == 1 else "s" }})</summary>
     <div class="summary">
         <h2>Duplicate Details</h2>
         <p><strong>Note:</strong> Files with identical paths are automatically filtered out as they are likely false positives from Emby's API.</p>
@@ -302,6 +387,8 @@
         </div>
     </div>
     {% endfor %}
+    </details>
+    {% endif %}
 
 
     {# One card per duplicate group an excluded ID actually skipped this run. IDs that

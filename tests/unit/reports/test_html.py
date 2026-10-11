@@ -270,18 +270,21 @@ class TestHtmlReports:
 
     @patch('emby_dedupe.reports.html.format_html_report')
     def test_generate_html_report_with_css_error(self, mock_format_html, tmp_path):
-        """A failed CSS copy is logged and the report is still written."""
-        base_url = "http://emby.server"
-        decisions = [{"keep": {"id": "123"}, "delete": [{"id": "456"}]}]
+        """The stylesheet is embedded now: nothing is copied beside the report, and an
+        unreadable stylesheet is logged while the report is still produced."""
+        from emby_dedupe.reports.html import _read_report_css
+
         mock_format_html.return_value = "<html>Test content</html>"
-
-        with patch('shutil.copy2', side_effect=OSError("Test error")), \
-             patch('tempfile.gettempdir', return_value=str(tmp_path)), \
-             patch('emby_dedupe.reports.html.logger') as mock_logger:
-            result = generate_html_report(base_url, decisions)
-
-        mock_logger.error.assert_called_once()
+        with patch('shutil.copy2') as mock_copy, \
+             patch('tempfile.gettempdir', return_value=str(tmp_path)):
+            result = generate_html_report("http://emby.server", [{"keep": {"id": "1"}, "delete": []}])
+        mock_copy.assert_not_called()
         assert os.path.isfile(result)
+
+        with patch('emby_dedupe.reports.html._CSS_PATH', str(tmp_path / "missing.css")), \
+             patch('emby_dedupe.reports.html.logger') as mock_logger:
+            assert _read_report_css() == ""
+        mock_logger.error.assert_called_once()
 
     @patch('emby_dedupe.reports.html.format_html_report')
     def test_reports_in_same_second_do_not_overwrite(self, mock_format_html, tmp_path):

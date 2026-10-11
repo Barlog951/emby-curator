@@ -640,3 +640,354 @@ footer {
     background-color: rgba(255, 184, 108, 0.25);
     color: var(--warning);
 }
+/* ---- Run verdict (top of the dedupe report) ---------------------------------------
+   Colours: removed = blue, would remove = darker blue (dry runs only), kept by the
+   safety check = neutral grey (protective: both copies stay), failed = striped red, so
+   no two states differ by hue alone (deuteranopia). Every segment also has a text label. */
+.run-summary {
+    background-color: var(--card-bg);
+    border-radius: 10px;
+    padding: 20px 22px;
+    margin-bottom: 30px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.2);
+}
+
+.run-mode {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 999px;
+    background-color: #3a3c4a;
+    color: var(--text-color);
+    font-weight: 600;
+    font-size: 0.85rem;
+}
+
+.run-headline {
+    font-size: 1.9rem;
+    line-height: 1.25;
+    font-weight: 600;
+    margin: 12px 0 4px 0;
+}
+
+.run-subline {
+    font-size: 1.1rem;
+    color: #d2d0c8;
+    margin: 0 0 14px 0;
+}
+
+.run-risk {
+    color: #ffc27a;
+    font-weight: 600;
+    margin: 0 0 14px 0;
+}
+
+.run-bar {
+    display: flex;
+    gap: 2px;
+    height: 14px;
+    border-radius: 7px;
+    overflow: hidden;
+    background-color: #1e2029;
+}
+
+.run-seg {
+    min-width: 6px;
+}
+
+.seg-removed { background-color: #6fb3ff; }
+.seg-would { background-color: #5288c4; }
+.seg-blocked { background-color: #9a978f; }
+.seg-failed { background: repeating-linear-gradient(45deg, #ff6b6b 0 4px, #7a2626 4px 8px); }
+.seg-other { background-color: #c792ea; }
+
+.run-legend {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+    padding: 0;
+    margin: 10px 0 0 0;
+}
+
+.run-swatch {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+
+.run-swatch.zero {
+    background: none;
+    border: 1px solid #8a877f;
+}
+
+.run-tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 1px;
+    background-color: #3a3c4a;
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 18px 0 0 0;
+}
+
+.run-tiles div {
+    background-color: #2f3241;
+    padding: 12px 16px;
+}
+
+.run-tiles dt {
+    font-size: 0.85rem;
+    color: #c9c5bd;
+}
+
+.run-tiles dd {
+    margin: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 1.25rem;
+}
+
+/* ---- Outcome rows (one per title and outcome) ------------------------------------- */
+.outcomes {
+    margin-bottom: 30px;
+}
+
+.out-section {
+    margin-bottom: 26px;
+}
+
+.out-title {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 1.3rem;
+    color: var(--text-color);
+    border-bottom: 1px solid #44475a;
+}
+
+.out-empty {
+    color: #c9c5bd;
+    margin: 6px 0 0 0;
+}
+
+.crow {
+    background-color: var(--card-bg);
+    border: 1px solid #3a3c4a;
+    border-radius: 8px;
+    margin-bottom: 8px;
+}
+
+.crow.risky {
+    border-color: #ffc27a;
+    border-width: 2px;
+}
+
+.crow > summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 16px;
+    padding: 10px 40px 10px 12px;
+    cursor: pointer;
+    list-style: none;
+    position: relative;
+}
+
+.crow > summary::-webkit-details-marker {
+    display: none;
+}
+
+/* Disclosure affordance: a chevron that turns when the row is open. */
+.crow > summary::after {
+    content: "";
+    position: absolute;
+    right: 16px;
+    top: 50%;
+    width: 8px;
+    height: 8px;
+    border-right: 2px solid #c9c5bd;
+    border-bottom: 2px solid #c9c5bd;
+    transform: translateY(-70%) rotate(45deg);
+}
+
+.crow[open] > summary::after {
+    transform: translateY(-30%) rotate(-135deg);
+}
+
+.crow > summary:hover {
+    background-color: #2f3241;
+}
+
+.crow > summary:focus-visible,
+.legacy-groups > summary:focus-visible {
+    outline: 2px solid var(--info);
+    outline-offset: -2px;
+}
+
+.crow-main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: 2 1 260px;
+    min-width: 0;
+}
+
+.thumb {
+    width: 40px;
+    min-width: 40px;
+    height: 60px;
+    border-radius: 3px;
+    background-color: #44475a;
+    background-size: cover;
+    background-position: center;
+}
+
+.crow-title {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.crow-sub {
+    font-size: 0.9rem;
+    color: #c9c5bd;
+}
+
+.crow-q {
+    flex: 2 1 220px;
+    font-size: 0.92rem;
+}
+
+.crow-langs {
+    flex: 1 1 140px;
+    font-size: 0.92rem;
+    color: #d2d0c8;
+}
+
+.crow-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    flex: 1 1 100%;
+}
+
+.chip {
+    padding: 2px 10px;
+    border-radius: 999px;
+    background-color: #3a3c4a;
+    font-size: 0.85rem;
+}
+
+.chip-check {
+    background-color: #4a3416;
+    color: #ffc27a;
+    font-weight: 600;
+}
+
+.chip-reason {
+    background-color: #3a3c4a;
+    color: #e6e3db;
+}
+
+.chip-size {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.crow-body {
+    padding: 4px 12px 12px 12px;
+    border-top: 1px solid #3a3c4a;
+}
+
+.exclude-hint {
+    font-size: 0.9rem;
+    color: #d2d0c8;
+}
+
+.exclude-hint .ids {
+    display: block;
+    margin-top: 4px;
+    word-break: break-all;
+    user-select: all;
+}
+
+.cfile {
+    padding: 10px 0;
+    border-bottom: 1px dashed #44475a;
+}
+
+.cfile:last-child {
+    border-bottom: none;
+}
+
+.cfile-status {
+    color: #c9c5bd;
+    margin-left: 6px;
+}
+
+.cfile-reason {
+    color: #ffc27a;
+    margin-left: 6px;
+}
+
+.cfile-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 8px 20px;
+    margin: 8px 0 0 0;
+}
+
+.cfile-grid dt {
+    font-size: 0.8rem;
+    color: #c9c5bd;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.cfile-grid dd {
+    margin: 0;
+    font-size: 0.92rem;
+}
+
+.cpath {
+    display: block;
+    font-size: 0.8rem;
+    word-break: break-all;
+    background-color: rgba(0,0,0,0.25);
+    padding: 3px 6px;
+    border-radius: 3px;
+    margin: 4px 0;
+}
+
+.cfile-note {
+    font-size: 0.85rem;
+    color: #c9c5bd;
+    margin: 6px 0 0 0;
+}
+
+.legacy-groups {
+    margin-bottom: 30px;
+}
+
+.legacy-groups > summary {
+    cursor: pointer;
+    padding: 12px 15px;
+    background-color: var(--card-bg);
+    border-radius: 8px;
+    font-weight: 600;
+    margin-bottom: 20px;
+}
+
+@media (max-width: 600px) {
+    body { padding: 12px 16px; }
+    .run-headline { font-size: 1.5rem; }
+    .item-image { width: 90px; min-width: 90px; height: 135px; }
+    .keep-item, .delete-item { flex-direction: column; }
+}
+
+@media print {
+    body { background: #fff; color: #000; }
+    .run-summary, .crow, .summary, .group, .stats-card { background: #fff; box-shadow: none; }
+    .crow, .legacy-groups { break-inside: avoid; }
+}

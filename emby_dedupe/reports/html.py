@@ -245,6 +245,8 @@ def _process_decision_group(decision: dict[str, Any], base_url: str) -> dict[str
 
     # Create language priority message
     language_priority_message = _create_language_priority_message(keep_item)
+    # The grouped rows (reports/clusters) show it per file: "kept because it has cs audio".
+    keep_item["language_priority_message"] = language_priority_message
 
     # Ensure keep_item's quality_description has proper audio and video fields
     keep_quality_desc = keep_item.get("quality_description", {})
@@ -371,6 +373,106 @@ def _log_rendering_error_details(template_data: dict[str, Any]) -> None:
         logger.error(f"Video section content: {quality_desc['video']}")
 
 
+_CSS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static", "css", "report.css")
+
+
+def _read_report_css() -> str:
+    """The stylesheet, embedded in the report so the file stands alone.
+
+    It used to be linked as ``report.css`` beside the report in the temp dir, a file every
+    run (dedupe and cleanup) overwrote: an old report silently took the newest styles, and
+    a moved or attached report lost its styling.
+    """
+    try:
+        with open(_CSS_PATH, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError as e:
+        logger.error(f"Could not read report stylesheet {_CSS_PATH}: {e}")
+        return ""
+
+
+def _fmt_size(size_bytes: int) -> str:
+    from emby_dedupe.reports.common import format_size
+    return format_size(size_bytes)
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count} {word}" if count == 1 else f"{count} {word}s"
+
+
+def _empty_verdict(excluded_groups: int) -> tuple[str, str]:
+    if not excluded_groups:
+        return "No duplicates found.", "Nothing to do."
+    return "No duplicates found.", f"{_plural(excluded_groups, 'duplicate group')} skipped by your --exclude-ids."
+
+
+def _dry_verdict(totals: dict[str, int], space: str) -> tuple[str, str]:
+    would, blocked = totals["would_remove"], totals["would_block"]
+    headline = f"Dry run: {_plural(would, 'file')} would be removed, {space} would be freed."
+    if not blocked:
+        return headline, "Nothing was deleted."
+    more = " more" if would else ""
+    return headline, f"{blocked}{more} would be kept by the safety check. Nothing was deleted."
+
+
+def _real_verdict(totals: dict[str, int], space: str) -> tuple[str, str]:
+    removed, blocked, failed = totals["removed"], totals["blocked"], totals["failed"]
+    headline = f"{_plural(removed, 'file')} removed, {space} freed."
+    if blocked:
+        more = " more" if removed else ""
+        verb = "was" if blocked == 1 else "were"
+        kept = f"{blocked}{more} {verb} kept by the safety check"
+    else:
+        kept = "The safety check refused nothing"
+    ending = f", and {failed} failed." if failed else ", and nothing failed."
+    return headline, kept + ending
+
+
+def _bar_segments(totals: dict[str, int], dry: bool) -> list[dict[str, Any]]:
+    """Outcome bar segments; widths come from the counts (``flex-grow``), no script needed."""
+    if dry:
+        spec = [("would_remove", "Would remove", "seg-would"), ("would_block", "Kept by safety check", "seg-blocked")]
+    else:
+        spec = [("removed", "Removed", "seg-removed"), ("blocked", "Kept by safety check", "seg-blocked"),
+                ("failed", "Failed", "seg-failed")]
+    if totals["other"]:
+        spec.append(("other", "Other status", "seg-other"))
+    return [{"key": key, "label": label, "css": css, "count": totals[key]} for key, label, css in spec]
+
+
+def _build_run_summary(stats: dict[str, Any], clusters: dict[str, Any], template_data: dict[str, Any]) -> dict[str, Any]:
+    """The one-sentence verdict and the outcome bar at the top of the report.
+
+    Counts are files (delete items), the same unit the sections use. A dry run is described
+    as what --doit would do, including the deletes the safety guard will refuse.
+    """
+    totals = clusters["totals"]
+    dry = not stats["deletion_attempted"]
+    space = _fmt_size(stats["space_saved"])
+    excluded_groups = template_data.get("excluded_groups_count", 0)
+
+    if clusters["total_files"] == 0:
+        headline, subline = _empty_verdict(excluded_groups)
+    elif dry:
+        headline, subline = _dry_verdict(totals, space)
+    else:
+        headline, subline = _real_verdict(totals, space)
+
+    segments = _bar_segments(totals, dry)
+    risky = sum(1 for name in ("removed", "would_remove", "failed")
+                for row in clusters["sections"][name] if row["risk"])
+    return {
+        "dry": dry, "headline": headline, "subline": subline, "risky": risky,
+        "segments": segments,
+        "aria": ", ".join(f"{s['count']} {s['label'].lower()}" for s in segments),
+        "has_files": clusters["total_files"] > 0,
+        "space_label": "Would be freed" if dry else "Freed",
+        "space_value": space,
+        "kept_value": stats["formatted_size_to_keep"],
+        "excluded_groups": excluded_groups,
+    }
+
+
 def format_html_report(base_url: str, decisions: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> str:
     """
     Formats decisions into a beautiful HTML report using Jinja2 templates.
@@ -412,6 +514,12 @@ def format_html_report(base_url: str, decisions: list[dict[str, Any]], metadata:
     # ?api_key=..., which would write a live credential into this file.
     _inline_group_posters(template_data)
 
+    # Rows per title and outcome, after the posters: a row shows its keeper's poster class.
+    from emby_dedupe.reports.clusters import build_clusters
+    template_data["clusters"] = build_clusters(valid_decisions, base_url)
+    template_data["run_summary"] = _build_run_summary(stats, template_data["clusters"], template_data)
+    template_data["report_css"] = _read_report_css()
+
     # Set up Jinja2 environment
     import os
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -444,9 +552,6 @@ def generate_html_report(base_url: str, decisions: list[dict[str, Any]], metadat
     Returns:
         str: Path to the generated HTML file.
     """
-    # Get package directory to locate static files
-    import shutil
-
     # Generate the HTML report content
     html_content = format_html_report(base_url, decisions, metadata)
 
@@ -454,19 +559,7 @@ def generate_html_report(base_url: str, decisions: list[dict[str, Any]], metadat
     # In a directory that will be accessible from a web browser
     temp_dir = tempfile.gettempdir()
 
-    # Copy the CSS file to the same directory
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    pkg_dir = os.path.dirname(script_dir)
-    css_src_path = os.path.join(pkg_dir, "static", "css", "report.css")
-    css_dest_path = os.path.join(temp_dir, "report.css")
-
-    try:
-        # Copy the CSS file
-        shutil.copy2(css_src_path, css_dest_path)
-        logger.debug(f"CSS file copied to: {css_dest_path}")
-    except OSError as e:
-        # If copying fails, log the error but continue without the CSS
-        logger.error(f"Failed to copy CSS file: {e}")
+    # The stylesheet is embedded in the report (_read_report_css); nothing to copy.
 
     # Write the HTML file (unique name: see write_temp_report)
     temp_path = write_temp_report(html_content, "emby_dedupe_report_", temp_dir)
