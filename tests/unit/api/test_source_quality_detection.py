@@ -223,3 +223,21 @@ class TestAIUpscaleDetection:
         # Empty strings
         result = detect_ai_upscale("", "")
         assert result is False
+
+
+class TestAIUpscaleSpaceForm:
+    """Regression (2026-10-11): the torrent "Avatar ... - Kniha 1, 2 3 4K AI Upscale [CZ]" was
+    not detected (only . - _ separators were listed), so check() allowed it as a 1080p -> 2160p
+    upgrade over real WEB-DL episodes."""
+
+    def test_space_separated_ai_upscale_is_detected(self):
+        name = "Avatar: Legenda o Aangovi / Avatar: The Last Airbender - Kniha 1, 2 3 4K AI Upscale [CZ]"
+        assert detect_ai_upscale(name, None) is True
+
+    def test_other_separators_and_no_separator(self):
+        for text in ("Movie 4K AI Enhanced", "Movie.AIUpscale.2160p", "Movie [AI-upscaled]", "Movie_AI_Upscale"):
+            assert detect_ai_upscale(text, None) is True, text
+
+    def test_ai_inside_a_word_is_not_an_upscale(self):
+        for text in ("Thai Upscale Market (2020).mkv", "Kai Enhanced Cut.mkv", "Movie.With.AI.In.Title.mkv"):
+            assert detect_ai_upscale(text, None) is False, text

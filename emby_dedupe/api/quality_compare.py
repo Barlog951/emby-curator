@@ -13,6 +13,7 @@ ordering of the same pair of files.
 from __future__ import annotations
 
 import copy
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict
@@ -151,20 +152,10 @@ CODEC_EFFICIENCY = {
     "h264": 1.0,    # H.264 variant
 }
 
-# AI upscale detection patterns
-AI_UPSCALE_PATTERNS = [
-    "AI.UPSCALE",
-    "AI-UPSCALE",
-    "AI_UPSCALE",
-    "Ai.Upscale",
-    "Ai-Upscale",
-    "Ai_Upscale",
-    "UPSCALED",
-    "Upscaled",
-    "AI.Enhanced",
-    "AI-Enhanced",
-    "AI_Enhanced",
-]
+# AI upscale detection: "AI" + optional separator + UPSCALE/ENHANCED, any case, or plain "UPSCALED".
+# A separator list missed the space form ("4K AI Upscale [CZ]", 2026-10-11), which let an AI
+# upscale pass the gate as a real 1080p -> 2160p upgrade. "AI" must not follow a letter or digit.
+AI_UPSCALE_RE = re.compile(r"(?<![a-z0-9])AI[ ._-]?(?:UPSCAL|ENHANCED)|UPSCALED", re.IGNORECASE)
 
 
 def detect_source_quality(path: str | None, name: str | None) -> float:
@@ -225,14 +216,10 @@ def detect_ai_upscale(path: str | None, name: str | None) -> bool:
     else:
         return False
 
-    search_text_upper = search_text.upper()
-
-    for pattern in AI_UPSCALE_PATTERNS:
-        if pattern.upper() in search_text_upper:
-            logger.debug(
-                f"Detected AI upscale from pattern '{pattern}' in: {search_text[:100]}"
-            )
-            return True
+    match = AI_UPSCALE_RE.search(search_text)
+    if match:
+        logger.debug(f"Detected AI upscale from '{match.group(0)}' in: {search_text[:100]}")
+        return True
 
     return False
 
