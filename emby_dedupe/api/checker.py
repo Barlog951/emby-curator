@@ -466,6 +466,24 @@ class EmbyChecker:
 
         return None
 
+    def _lookup_items_of_kind(self, config: CheckConfig, is_episode: bool) -> list | None:
+        """Provider-table lookup that only returns items of the kind being checked.
+
+        TMDb and TVDB number movies, series and episodes in separate namespaces, so an
+        episode check's series-level ``tmdb=4614`` (NCIS) matched the MOVIE *The Sum of
+        All Fears* (TMDb movie 4614) and blocked NCIS S20 as "same or worse"
+        (2026-10-11). For an episode the series-level TMDb/TVDB ids are left to the
+        series fallback; IMDb ids are unique across kinds and are still looked up.
+        Items of the other kind are dropped either way.
+
+        Returns:
+            Matching items, or None when nothing of the right kind was found.
+        """
+        tmdb, tvdb = (None, None) if is_episode else (config.tmdb, config.tvdb)
+        items = self._lookup_by_any_provider_id(config.imdb, tmdb, tvdb)
+        kept = [item for item in items or [] if (item.get("Type") == "Episode") == is_episode]
+        return kept or None
+
     def _find_validated_series(
         self, client: httpx.Client, host: str, pid: str, ptype: str,
     ) -> dict | None:
@@ -696,9 +714,8 @@ class EmbyChecker:
         )
 
         # Try provider ID lookup first (instant with cached tables)
-        existing_items = self._lookup_by_any_provider_id(
-            config.imdb, config.tmdb, config.tvdb
-        )
+        is_episode = config.season is not None and config.episode is not None
+        existing_items = self._lookup_items_of_kind(config, is_episode)
 
         # Fallback for TV episodes: cached tables only index episodes (IsFolder=False),
         # so series-level provider IDs (e.g., IMDB on the Series item) won't be found.

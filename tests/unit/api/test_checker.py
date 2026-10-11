@@ -1202,3 +1202,47 @@ class TestCheckEpisodes:
         res = checker.check_episodes({}, resolution="1080p")
         assert res.episodes_checked == 0
         assert res.should_download is False
+
+
+class TestProviderIdKindCollision:
+    """Regression (2026-10-11): TMDb movie and TV ids are separate namespaces. An episode
+    check with the NCIS series id tmdb=4614 matched the movie The Sum of All Fears
+    (TMDb movie 4614) and was blocked as same_or_worse."""
+
+    MOVIE = {"Id": "m1", "Type": "Movie", "Name": "The Sum of All Fears", "ProviderIds": {"Tmdb": "4614"}}
+    EPISODE = {"Id": "e1", "Type": "Episode", "Name": "Ep", "ParentIndexNumber": 20, "IndexNumber": 5}
+
+    def _checker(self):
+        return EmbyChecker(host="http://emby", api_key="key")
+
+    def test_episode_check_never_looks_up_series_tmdb_or_tvdb_in_item_tables(self):
+        checker = self._checker()
+        with patch.object(checker, "_lookup_by_any_provider_id", return_value=None) as lookup, \
+             patch.object(checker, "_lookup_episode_via_series", return_value=[]) as series:
+            result = checker.check(name="NCIS", tmdb="4614", tvdb="72108", season=20, episode=5)
+        lookup.assert_called_once_with(None, None, None)
+        series.assert_called_once_with(None, "4614", "72108", 20, 5)
+        assert result.status == "not_found"
+
+    def test_episode_check_ignores_a_movie_with_the_same_id(self):
+        checker = self._checker()
+        with patch.object(checker, "_lookup_by_any_provider_id", return_value=[self.MOVIE]), \
+             patch.object(checker, "_lookup_episode_via_series", return_value=[]):
+            result = checker.check(name="NCIS", imdb="tt0364845", season=20, episode=5)
+        assert result.status == "not_found"
+
+    def test_movie_check_still_uses_tmdb_and_ignores_episodes(self):
+        checker = self._checker()
+        with patch.object(checker, "_lookup_by_any_provider_id", return_value=[self.EPISODE]) as lookup, \
+             patch.object(checker, "_search_by_name", return_value=[]):
+            result = checker.check(name="The Sum of All Fears", tmdb="4614")
+        lookup.assert_called_once_with(None, "4614", None)
+        assert result.status == "not_found"
+
+    def test_movie_check_finds_the_movie(self):
+        checker = self._checker()
+        with patch.object(checker, "_lookup_by_any_provider_id", return_value=[self.MOVIE]), \
+             patch.object(checker, "_search_by_name", return_value=[]) as by_name:
+            result = checker.check(name="The Sum of All Fears", tmdb="4614")
+        by_name.assert_not_called()
+        assert result.status != "not_found"
