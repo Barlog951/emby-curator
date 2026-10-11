@@ -15,6 +15,8 @@ acceptable outcome, leaking the key is not.
 from __future__ import annotations
 
 import base64
+import hashlib
+import re
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -34,6 +36,10 @@ MAX_INLINE_BYTES = 2_000_000
 _MAX_WORKERS = 8
 
 _DEFAULT_TIMEOUT = 10.0
+
+# What share_inlined_images() accepts into a <style> block: base64 only, so a value can
+# never close the url("…") or the rule it sits in.
+_SAFE_DATA_URI = re.compile(r"data:image/[a-z0-9.+-]+;base64,[A-Za-z0-9+/]+={0,2}")
 
 
 def strip_credentials(url: str) -> str:
@@ -168,3 +174,26 @@ def inline_images_in_place(
     for holder in holders:
         url = holder["image_url"]
         holder["image_url"] = replacements.get(url) or strip_credentials(url)
+
+
+def share_inlined_images(context: object) -> str:
+    """Embed each distinct poster once: give it a CSS class and return the stylesheet.
+
+    A report repeats the same poster many times — the kept and the deleted copy of a
+    title usually carry the same image, and every episode of a season can too. Inlined
+    per ``<img>``, a 333-group report reached 29.6 MB with 670 posters of which only 336
+    were distinct. Each holder whose ``image_url`` is a ``data:`` URI gets an
+    ``image_class``; the returned CSS defines every class once as a background image.
+
+    Holders left with a plain (failed, credential-free) URL get no class, so the
+    template keeps an ``<img src>`` for them.
+    """
+    rules: dict[str, str] = {}
+    for holder in _iter_image_holders(context):
+        uri = holder["image_url"]
+        if not _SAFE_DATA_URI.fullmatch(uri):
+            continue
+        css_class = "img-" + hashlib.sha1(uri.encode("ascii"), usedforsecurity=False).hexdigest()[:12]
+        rules.setdefault(css_class, uri)
+        holder["image_class"] = css_class
+    return "\n".join(f'.{name}{{background-image:url("{uri}")}}' for name, uri in rules.items())

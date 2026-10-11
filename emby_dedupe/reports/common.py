@@ -34,6 +34,10 @@ def _safe_int_conversion(value: Any) -> int:
 # reported real fold-safe deletions as "skipped" and their space as unreclaimed.
 DELETED_STATUSES = frozenset({"success", "fold_safe_removed"})
 
+# Statuses only a dry run produces: nothing was attempted. ``would_block`` is a delete
+# the safety guard will refuse under --doit; it is not counted as space to free.
+DRY_RUN_STATUSES = frozenset({"not_attempted", "would_block"})
+
 
 def _process_deletion_status(item: dict[str, Any], stats: dict[str, Any]) -> bool:
     """Update stats based on deletion status (in-place). True when the file is really gone."""
@@ -43,6 +47,9 @@ def _process_deletion_status(item: dict[str, Any], stats: dict[str, Any]) -> boo
         return True
     if deletion_status == "failed":
         stats["failed_deletions"] += 1
+    elif deletion_status == "would_block":
+        stats["would_block"] += 1
+        stats["skipped_deletions"] += 1
     else:
         stats["skipped_deletions"] += 1
     return False
@@ -68,6 +75,8 @@ def calculate_report_statistics(decisions: list[dict[str, Any]]) -> dict[str, An
         "total_size_to_delete": 0,
         "total_size_to_keep": 0,
         "total_size_removed": 0,
+        "total_size_would_block": 0,
+        "would_block": 0,
         "deletion_attempted": False,
     }
 
@@ -87,18 +96,25 @@ def calculate_report_statistics(decisions: list[dict[str, Any]]) -> dict[str, An
         for item in delete_items:
             stats["total_items_to_delete"] += 1
             removed = _process_deletion_status(item, stats)
-            stats["deletion_attempted"] |= "deletion_result" in item
+            status = (item.get("deletion_result") or {}).get("status")
+            # A dry run marks every item not_attempted/would_block: that is not an attempt.
+            # Counting it as one made dry runs report "Size Removed 0 B".
+            stats["deletion_attempted"] |= status is not None and status not in DRY_RUN_STATUSES
 
             delete_size = _safe_int_conversion(item.get("quality_description", {}).get("size", 0))
             stats["total_size_to_delete"] += delete_size
             if removed:
                 stats["total_size_removed"] += delete_size
+            if status == "would_block":
+                stats["total_size_would_block"] += delete_size
 
     # Space savings: after a real (--doit) run, only what was actually removed; a dry run
-    # shows the planned total. Duplicates the guard kept are still on disk.
+    # shows what --doit would free, i.e. without the deletes the guard will refuse.
     stats["space_saved"] = (
-        stats["total_size_removed"] if stats["deletion_attempted"] else stats["total_size_to_delete"]
+        stats["total_size_removed"] if stats["deletion_attempted"]
+        else stats["total_size_to_delete"] - stats["total_size_would_block"]
     )
+    stats["would_delete"] = stats["total_items_to_delete"] - stats["would_block"]
     stats["percentage_saved"] = 0.0
     total_size = stats["total_size_to_keep"] + stats["total_size_to_delete"]
     if total_size > 0:

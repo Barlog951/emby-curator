@@ -196,7 +196,9 @@ def _build_image_url(item_id: str, image_tags: dict, base_url: str, api_key: str
         return ""
 
     primary_tag = image_tags["Primary"]
-    image_url = f"{base_url}/Items/{item_id}/Images/Primary?tag={primary_tag}&quality=90&maxHeight=300"
+    # quality=80: measured 30-55% smaller than 90 at the same 300 px height, no visible loss
+    # on a 150 px-wide report card. Every poster is embedded in the report file.
+    image_url = f"{base_url}/Items/{item_id}/Images/Primary?tag={primary_tag}&quality=80&maxHeight=300"
     if api_key:
         image_url += f"&api_key={api_key}"
 
@@ -1305,6 +1307,7 @@ def _warn_unsafe_deletions(
             conflict = _different_content_reason(item, decision.get("keep") or {})
             if conflict:
                 unsafe += 1
+                item["dry_run_refusal"] = conflict
                 logger.warning(
                     "SAFETY GUARD would REFUSE deletion of id=%s under --doit — %s (delete=%r keeper=%r).",
                     item["id"], conflict, item.get("path"), keeper_path,
@@ -1316,6 +1319,7 @@ def _warn_unsafe_deletions(
             if not safe:
                 unsafe += 1
                 _mark_guard_refused(item, keeper_path, reason)
+                item["dry_run_refusal"] = reason
                 logger.warning(
                     "SAFETY GUARD would SKIP deletion of id=%s under --doit — %s "
                     "(delete=%r keeper=%r).",
@@ -1333,16 +1337,22 @@ def _mark_items_as_not_attempted(decisions: list, progress_bar) -> None:
     """
     Mark all items in decisions as not attempted (for dry-run mode).
 
+    An item the guard would refuse under --doit (``dry_run_refusal``, set by
+    _warn_unsafe_deletions) is marked ``would_block`` with the reason, so the dry-run
+    report shows it instead of promising a deletion the real run will not make
+    (2026-10-11: a dry run promised 30 deletions / 42 GB; the real run blocked 24).
+
     Args:
         decisions: List of decision groups
         progress_bar: tqdm progress bar to update
     """
     for decision in decisions:
         for item in decision.get("delete", []):
+            refusal = item.get("dry_run_refusal")
             deletion_status = {
                 "id": item["id"],
-                "status": "not_attempted",
-                "error": None,
+                "status": "would_block" if refusal else "not_attempted",
+                "error": refusal,
             }
             item["deletion_result"] = deletion_status
             progress_bar.update(1)

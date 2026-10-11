@@ -154,6 +154,9 @@ def _process_delete_item(item: dict[str, Any], base_url: str, keep_serverid: str
     elif status == "fold_safe_removed":
         status_class = "status-success"
         status_text = "Deleted (file-only, fold-safe)"
+    elif status == "would_block":
+        status_class = "status-blocked"
+        status_text = "Would be blocked by safety guard (both files kept)"
 
     # Create URL for this item
     item_url = f"{base_url}/web/index.html#!/item?id={item['id']}&serverId={keep_serverid}"
@@ -287,6 +290,8 @@ def _prepare_template_data(base_url: str, stats: dict[str, Any], language_priori
         "deleted_items": stats["deleted_items"],
         "failed_deletions": stats["failed_deletions"],
         "skipped_deletions": stats["skipped_deletions"],
+        "would_block": stats.get("would_block", 0),
+        "would_delete": stats.get("would_delete", 0),
         "formatted_size_to_keep": stats["formatted_size_to_keep"],
         "formatted_size_to_delete": stats["formatted_size_to_delete"],
         "formatted_space_saved": stats["formatted_space_saved"],
@@ -332,11 +337,13 @@ def _inline_group_posters(template_data: dict[str, Any]) -> None:
     gets opened and shared, so the posters are fetched here (key sent as a header) and
     embedded instead. On failure the URL is kept but stripped of the key.
     """
-    from emby_dedupe.reports.images import inline_images_in_place
+    from emby_dedupe.reports.images import inline_images_in_place, share_inlined_images
 
     # Walks the entire context, not just duplicate_groups: the excluded-media section
     # renders posters too, and enumerating sections by hand let it leak the live key.
     inline_images_in_place(template_data)
+    # Each distinct poster is then written once, as a CSS class, instead of once per card.
+    template_data["poster_css"] = share_inlined_images(template_data)
 
 
 def _log_rendering_error_details(template_data: dict[str, Any]) -> None:

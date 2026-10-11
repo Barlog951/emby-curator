@@ -135,6 +135,12 @@ h3 {
     box-shadow: 0 4px 8px rgba(0,0,0,0.3);
 }
 
+.poster {
+    background-color: #44475a;
+    background-size: cover;
+    background-position: center;
+}
+
 .item-details {
     flex: 1;
 }

@@ -241,18 +241,20 @@ class TestDeduplication:
         # Set up test data
         client = MagicMock()
         base_url = "http://emby.server"
+        # Real paths, each in its own folder: a pathless item is one the guard refuses,
+        # and since 2026-10-11 a dry run records that as ``would_block``.
         decisions = [
             {
-                "keep": {"id": "keep1", "name": "Item to Keep 1"},
+                "keep": {"id": "keep1", "name": "Item to Keep 1", "path": "/m/Keep1/keep1.mkv"},
                 "delete": [
-                    {"id": "delete1", "name": "Item to Delete 1"},
-                    {"id": "delete2", "name": "Item to Delete 2"}
+                    {"id": "delete1", "name": "Item to Delete 1", "path": "/m/Del1/del1.mkv"},
+                    {"id": "delete2", "name": "Item to Delete 2", "path": "/m/Del2/del2.mkv"}
                 ]
             },
             {
-                "keep": {"id": "keep2", "name": "Item to Keep 2"},
+                "keep": {"id": "keep2", "name": "Item to Keep 2", "path": "/m/Keep2/keep2.mkv"},
                 "delete": [
-                    {"id": "delete3", "name": "Item to Delete 3"}
+                    {"id": "delete3", "name": "Item to Delete 3", "path": "/m/Del3/del3.mkv"}
                 ]
             }
         ]
@@ -1396,7 +1398,7 @@ class TestExtractedHelperFunctions:
 
         assert "http://emby/Items/item123/Images/Primary" in url
         assert "tag=tag456" in url
-        assert "quality=90" in url
+        assert "quality=80" in url
         assert "maxHeight=300" in url
         assert "api_key=apikey789" in url
 

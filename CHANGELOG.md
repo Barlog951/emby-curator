@@ -19,6 +19,15 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ### Fixed
 
+- **A dry run now shows what `--doit` would really do.** The safety guard already ran in a dry
+  run, but its verdict only reached the log, so a dry run promised every deletion (one promised
+  30 deletions and 42 GB; the real run blocked 24). Each delete the guard would refuse is now
+  marked "Would be blocked by safety guard" with its reason, the summary shows "Would Delete" /
+  "Would Be Blocked", and the space to free leaves the blocked ones out. Dry runs also stopped
+  reporting "Size Removed 0 B" (every dry-run item was counted as an attempted deletion).
+- **Dedupe reports are about 60% smaller.** Each distinct poster is embedded once (as a CSS
+  class) instead of once per card, and posters are fetched at JPEG quality 80 instead of 90. A
+  333-group report was 29.6 MB, 27.5 MB of it 670 posters of which 336 were distinct.
 - **A long `--exclude-ids` list no longer buries the dedupe report.** The summary now shows the count
   ("52 provider IDs excluded … 27 duplicate groups skipped this run") with the IDs folded underneath.
   The "Excluded Media" section shows only the groups an excluded ID actually skipped, folded too,

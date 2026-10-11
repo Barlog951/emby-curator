@@ -372,7 +372,8 @@ def get_image_url(base_url: str, item_id: str, item_image_tags: dict, server_id:
 
     # Construct the image URL - using the Emby Images API to get the primary image
     # Add timestamp to prevent caching issues and ensure the latest image
-    image_url = f"{base_url}/Items/{item_id}/Images/Primary?tag={primary_tag}&quality=90&maxHeight=300&ts={int(time.time())}"
+    # quality=80, like the dedupe report: posters are embedded, and 90 was 30-55% bigger
+    image_url = f"{base_url}/Items/{item_id}/Images/Primary?tag={primary_tag}&quality=80&maxHeight=300&ts={int(time.time())}"
 
     # Add API key if provided - this is needed for direct image access
     if api_key:

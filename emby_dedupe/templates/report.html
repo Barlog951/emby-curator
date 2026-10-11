@@ -5,8 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Emby Deduplication Report</title>
     <link rel="stylesheet" href="report.css">
+    {% if poster_css %}<style>{{ poster_css|safe }}</style>{% endif %}
 </head>
 <body>
+    {# A poster embedded once as a CSS class (reports/images.share_inlined_images); a URL that
+       could not be inlined keeps a plain, credential-free <img src>. #}
+    {% macro poster(image_url, image_class, label) -%}
+    {% if image_class %}<div class="item-image poster {{ image_class }}" role="img" aria-label="{{ label }}"></div>{% else %}<img class="item-image" src="{{ image_url }}" alt="{{ label }}">{% endif %}
+    {%- endmacro %}
     <header>
         <h1>Emby Deduplication Report</h1>
         <p>Identifying and managing duplicate media in your Emby libraries</p>
@@ -61,6 +67,7 @@
             
             <!-- Deletion stats -->
             <div class="stats-card">
+                {% if deletion_attempted %}
                 <h3>Deletion Status</h3>
                 <div class="stats-grid">
                     <div class="stat-item">
@@ -76,6 +83,21 @@
                         <div class="stat-label">Skipped</div>
                     </div>
                 </div>
+                {% else %}
+                {# Dry run: nothing was attempted. Show what --doit would do, including the
+                   deletes the safety guard will refuse (reports/common.DRY_RUN_STATUSES). #}
+                <h3>Dry Run: What --doit Would Do</h3>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-value">{{ would_delete }}</div>
+                        <div class="stat-label">Would Delete</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-value">{{ would_block }}</div>
+                        <div class="stat-label">Would Be Blocked by Safety Guard</div>
+                    </div>
+                </div>
+                {% endif %}
             </div>
             
             <!-- Space stats -->
@@ -132,7 +154,7 @@
         </div>
         
         <div class="keep-item">
-            <img class="item-image" src="{{ group.keep.image_url }}" alt="{{ group.keep.name }}">
+            {{ poster(group.keep.image_url, group.keep.image_class, group.keep.name) }}
             <div class="item-details">
                 <h3>Keeping this file</h3>
                 
@@ -201,7 +223,7 @@
             
             {% for item in group.delete %}
             <div class="delete-item">
-                <img class="item-image" src="{{ item.image_url }}" alt="{{ item.name }}">
+                {{ poster(item.image_url, item.image_class, item.name) }}
                 <div class="item-details">
                     <div><strong>Status:</strong> <span class="{{ item.status_class }}">{{ item.status_text }}</span></div>
                     
@@ -299,7 +321,7 @@
         
         <div class="keep-item">
             {% if excluded_item_data.image_url %}
-            <img class="item-image" src="{{ excluded_item_data.image_url }}" alt="{{ excluded_item_data.title }}">
+            {{ poster(excluded_item_data.image_url, excluded_item_data.image_class, excluded_item_data.title) }}
             {% else %}
             <div class="item-image" style="background-color: #444; display: flex; align-items: center; justify-content: center;">
                 <span style="color: #aaa; font-size: 14px; text-align: center;">No image<br>available</span>
