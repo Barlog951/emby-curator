@@ -119,6 +119,9 @@ ENV_DEDUPE_OMDB_API_KEY = "DEDUPE_OMDB_API_KEY"
 ENV_DEDUPE_OMDB_API_KEYS = "DEDUPE_OMDB_API_KEYS"  # comma-separated for rotation
 ENV_DEDUPE_TYPESAFE_API_KEY = "DEDUPE_TYPESAFE_API_KEY"  # `csfd fill --ai-match`
 ENV_TYPESAFE_API_KEY = "TYPESAFE_API_KEY"  # the vendor SDK's name, accepted as a fallback
+# `csfd fill --ai-match` Claude backend. Deliberately NOT the SDK's generic ANTHROPIC_API_KEY:
+# a key exported for another tool must not switch the AI fallback on by itself.
+ENV_DEDUPE_ANTHROPIC_API_KEY = "DEDUPE_ANTHROPIC_API_KEY"
 
 # Default port values
 DEFAULT_PORT_HTTP = 80

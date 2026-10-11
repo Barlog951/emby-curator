@@ -132,7 +132,7 @@ def test_pick_returns_film_and_confidence_and_asks_with_none_option():
     film = _film()
     jev = _Jev(ChoiceAnswer("c1", 0.97))
     got = ai_pick(_Csfd([_hit()], {URL_A: film}), jev, _item())
-    assert got == (film, 0.97)
+    assert got == (film, ChoiceAnswer("c1", 0.97))
     _, _, criteria = jev.calls[0]
     assert set(criteria) == {"c1", AI_NONE}
 
@@ -147,7 +147,7 @@ def test_candidate_page_failure_skips_only_that_candidate():
     good = _film(URL_B, "200", "B")
     csfd = _Csfd([_hit(URL_A), _hit(URL_B)], {URL_A: CsfdError("blocked"), URL_B: good})
     jev = _Jev(ChoiceAnswer("c1", 0.95))
-    assert ai_pick(csfd, jev, _item()) == (good, 0.95)
+    assert ai_pick(csfd, jev, _item()) == (good, ChoiceAnswer("c1", 0.95))
     assert set(jev.calls[0][2]) == {"c1", AI_NONE}  # the failed page got no option
 
 
@@ -241,6 +241,7 @@ def test_make_ai_matcher(monkeypatch):
     assert cli._make_ai_matcher(Namespace(ai_match=False)) is None
     monkeypatch.delenv("DEDUPE_TYPESAFE_API_KEY", raising=False)
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    monkeypatch.delenv("DEDUPE_ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(SystemExit):
         cli._make_ai_matcher(Namespace(ai_match=True))
     monkeypatch.setenv("TYPESAFE_API_KEY", "your-api-key")  # vendor-name fallback
@@ -364,3 +365,119 @@ def test_write_payload_keeps_its_proven_shape():
     assert "Path" not in payload and "OriginalTitle" not in payload
     assert payload["Name"] == "The Count" and payload["ProviderIds"]["Csfd"] == "100"
     assert item["Path"] and item["OriginalTitle"] == "El Conde"  # the fetched item is untouched
+
+
+# --- Claude + Jev cross-check (2026-10-08, logs/haiku-poc/EVALUATION.md) ---------
+
+def test_auto_applies_a_cross_checked_pick_only_when_both_agree():
+    csfd = _Csfd([_hit()], {URL_A: _film()})
+    agreed = _matcher(ChoiceAnswer("c1", 1.0, note="both-agree, jev 0.92"), auto=True).resolve(csfd, _item())
+    assert agreed is not None and agreed.applied and agreed.note.startswith("both-agree")
+    for note in ("claude-only, jev 0.36 for none", "conflict, jev picked c2 (0.90)", "jev-only",
+                 "claude-only (other backend failed)"):
+        s = _matcher(ChoiceAnswer("c1", 1.0, note=note), auto=True).resolve(csfd, _item())
+        assert s is not None and not s.applied, note
+
+
+def test_auto_allowed_rules():
+    assert cli.auto_allowed("")  # a lone Jev answer: the pre-Claude behaviour is unchanged
+    assert cli.auto_allowed("both-agree, jev 0.50")
+    assert not cli.auto_allowed("claude-only, jev 0.14 for none")
+    assert not cli.auto_allowed("jev-only")
+
+
+def test_review_file_shows_the_cross_check_note(tmp_path):
+    s = AiSuggestion("1", "Israel and Palestine", 2024, _film(URL_A, "100", "L'impossible coexistence"), 1.0,
+                     note="claude-only, jev 0.36 for none")
+    path = tmp_path / "review.tsv"
+    write_ai_review(str(path), [s], "claude-haiku-5-5 x5 checked by jev-1.13.0")
+    text = path.read_text(encoding="utf-8")
+    assert "(claude-haiku-5-5 x5 checked by jev-1.13.0)" in text
+    assert "# 1.00 REVIEW [claude-only, jev 0.36 for none] | Israel and Palestine (2024)" in text
+    assert load_manual_map(str(path)) == {"1": URL_A}  # still a valid map file
+
+
+def _keys(monkeypatch, jev: bool, claude: bool) -> None:
+    for env in ("DEDUPE_TYPESAFE_API_KEY", "TYPESAFE_API_KEY", "DEDUPE_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(env, raising=False)
+    if jev:
+        monkeypatch.setenv("DEDUPE_TYPESAFE_API_KEY", "your-api-key")
+    if claude:
+        monkeypatch.setenv("DEDUPE_ANTHROPIC_API_KEY", "your-api-key")
+
+
+def _make(**over):
+    return cli._make_ai_matcher(Namespace(**({"ai_match": True, "ai_model": None} | over)))
+
+
+def test_auto_provider_uses_every_backend_that_has_a_key(monkeypatch):
+    from emby_dedupe.api.ai_choice import CrossCheckClient
+    from emby_dedupe.api.claude_choice import ClaudeChoiceClient
+    from emby_dedupe.api.typesafe import TypesafeClient
+
+    _keys(monkeypatch, jev=True, claude=False)  # today's prod box: unchanged behaviour
+    m = _make()
+    assert isinstance(m.client, TypesafeClient) and m.label == DEFAULT_MODEL
+    m.client.close()
+    _keys(monkeypatch, jev=False, claude=True)
+    m = _make()
+    assert isinstance(m.client, ClaudeChoiceClient)
+    m.client.close()
+    _keys(monkeypatch, jev=True, claude=True)
+    m = _make(ai_provider="auto")
+    assert isinstance(m.client, CrossCheckClient) and m.label == f"claude-haiku-5-5 x5 checked by {DEFAULT_MODEL}"
+    m.client.close()
+
+
+def test_generic_anthropic_key_does_not_switch_claude_on(monkeypatch):
+    """A key exported for another tool (ANTHROPIC_API_KEY) must not enable the Claude backend."""
+    _keys(monkeypatch, jev=False, claude=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "your-api-key")
+    with pytest.raises(SystemExit):
+        _make()
+
+
+def test_provider_errors_exit(monkeypatch):
+    _keys(monkeypatch, jev=True, claude=False)
+    with pytest.raises(SystemExit):
+        _make(ai_provider="both")  # Claude key missing
+    with pytest.raises(SystemExit):
+        _make(ai_provider="gpt")  # unknown provider
+    _keys(monkeypatch, jev=False, claude=True)
+    with pytest.raises(SystemExit):
+        _make(ai_provider="jev")
+
+
+def test_claude_alone_refuses_auto(monkeypatch):
+    """Both wrong Claude picks in the 2026-10-08 test were unanimous: its vote share must
+    never apply a match by itself."""
+    _keys(monkeypatch, jev=False, claude=True)
+    with pytest.raises(SystemExit):
+        _make(ai_auto=True)
+    _keys(monkeypatch, jev=True, claude=True)
+    m = _make(ai_auto=True)  # with Jev's cross-check: allowed (agreed picks only)
+    assert m.auto
+    m.client.close()
+
+
+def test_missing_claude_sdk_exits_with_the_install_hint(monkeypatch):
+    from emby_dedupe.api import claude_choice
+
+    def no_sdk(api_key):
+        raise claude_choice.ClaudeChoiceError("pip install 'emby-curator[claude]'", fatal=True)
+
+    monkeypatch.setattr(claude_choice, "_new_sdk_client", no_sdk)
+    _keys(monkeypatch, jev=False, claude=True)
+    with pytest.raises(SystemExit):
+        _make()
+
+
+def test_summary_names_the_failing_backend(monkeypatch, tmp_path):
+    from collections import Counter
+
+    lines: list[str] = []
+    monkeypatch.setattr(cli.logger, "info", lines.append)
+    m = _matcher()
+    m.client.failures = Counter({"Claude": 4})
+    cli._finish_ai(m, Namespace(ai_review_file=str(tmp_path / "r.tsv")))
+    assert any("[Claude 4 failed]" in line for line in lines)

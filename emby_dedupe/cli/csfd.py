@@ -21,6 +21,14 @@ from pathlib import Path
 import httpx
 from tqdm import tqdm
 
+from emby_dedupe.api.ai_choice import (
+    AGREE,
+    AiChoiceError,
+    ChoiceAnswer,
+    ChoiceClient,
+    CrossCheckClient,
+)
+from emby_dedupe.api.claude_choice import ClaudeChoiceClient
 from emby_dedupe.api.client import check_emby_connection, handle_host_and_port
 from emby_dedupe.api.csfd import (
     KIND_FILM,
@@ -47,10 +55,14 @@ from emby_dedupe.api.genres import (
     get_user_id,
 )
 from emby_dedupe.api.item_images import upload_primary_image
-from emby_dedupe.api.typesafe import DEFAULT_MODEL, TypesafeClient, TypesafeError
+from emby_dedupe.api.typesafe import DEFAULT_MODEL, TypesafeClient
 from emby_dedupe.cli.arguments import get_env_variable
 from emby_dedupe.cli.genres import _resolve_library_ids
-from emby_dedupe.utils.constants import ENV_DEDUPE_TYPESAFE_API_KEY, ENV_TYPESAFE_API_KEY
+from emby_dedupe.utils.constants import (
+    ENV_DEDUPE_ANTHROPIC_API_KEY,
+    ENV_DEDUPE_TYPESAFE_API_KEY,
+    ENV_TYPESAFE_API_KEY,
+)
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.logging import logger, set_logging_level
 
@@ -209,7 +221,7 @@ def people_entries(film: CsfdFilm) -> list[dict[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# AI fallback (--ai-match): TypeSafe Jev picks among the plausible candidates
+# AI fallback (--ai-match): Claude and/or TypeSafe Jev pick among the plausible candidates
 # ---------------------------------------------------------------------------
 
 AI_MAX_CANDIDATES = 8  # each candidate costs one film-page fetch through FlareSolverr
@@ -229,9 +241,15 @@ AI_INSTRUCTIONS = (
 )
 
 
+AI_PROVIDERS = ("auto", "jev", "claude", "both")
+
+
 @dataclass
 class AiSuggestion:
-    """One Jev pick: applied (``--ai-auto`` above threshold) or left for review."""
+    """One AI pick: applied (``--ai-auto`` above threshold) or left for review.
+
+    ``note`` says how Claude and Jev compared when both were asked (``api/ai_choice.py``).
+    """
 
     item_id: str
     name: str
@@ -239,12 +257,13 @@ class AiSuggestion:
     film: CsfdFilm
     confidence: float
     applied: bool = False
+    note: str = ""
 
 
 def ai_candidates(csfd: CsfdClient, item: dict) -> list[CsfdHit]:
     """Year- and kind-plausible hits across all of the item's title queries, deduplicated.
 
-    ``candidate_hits`` is the deterministic guard: Jev never sees a candidate the
+    ``candidate_hits`` is the deterministic guard: the AI never sees a candidate the
     year rules already exclude, so it cannot pick one either.
     """
     kind = KIND_SERIES if item.get("Type") == "Series" else KIND_FILM
@@ -259,7 +278,7 @@ def ai_candidates(csfd: CsfdClient, item: dict) -> list[CsfdHit]:
 
 
 def ai_state(item: dict) -> dict[str, object]:
-    """What Jev sees about the library item: titles, year, type and folder, never the full path."""
+    """What the AI sees about the library item: titles, year, type and folder, never the full path."""
     state: dict[str, object] = {
         "title": item.get("Name") or "",
         "year": item.get("ProductionYear"),
@@ -282,8 +301,8 @@ def describe_candidate(hit: CsfdHit, film: CsfdFilm) -> str:
     return text
 
 
-def ai_pick(csfd: CsfdClient, ai: TypesafeClient, item: dict) -> tuple[CsfdFilm, float] | None:
-    """Ask Jev which candidate is this item. None when there is nothing to ask or it says none."""
+def ai_pick(csfd: CsfdClient, ai: ChoiceClient, item: dict) -> tuple[CsfdFilm, ChoiceAnswer] | None:
+    """Ask the AI which candidate is this item. None when there is nothing to ask or it says none."""
     options: dict[str, tuple[CsfdHit, CsfdFilm]] = {}
     for hit in ai_candidates(csfd, item):
         try:
@@ -300,15 +319,16 @@ def ai_pick(csfd: CsfdClient, ai: TypesafeClient, item: dict) -> tuple[CsfdFilm,
     answer = ai.choose(ai_state(item), AI_INSTRUCTIONS, criteria)
     if answer.choice not in options:
         return None
-    return options[answer.choice][1], answer.confidence
+    return options[answer.choice][1], answer
 
 
 class AiMatcher:
     """Runs the AI fallback for one ``csfd fill`` run and keeps what it suggested."""
 
-    def __init__(self, client: TypesafeClient, auto: bool = False,
+    def __init__(self, client: ChoiceClient, auto: bool = False,
                  threshold: float = AI_DEFAULT_THRESHOLD) -> None:
         self.client = client
+        self.label: str = getattr(client, "label", DEFAULT_MODEL)
         self.auto = auto
         self.threshold = threshold
         self.suggestions: list[AiSuggestion] = []
@@ -316,32 +336,43 @@ class AiMatcher:
         self.disabled = False
 
     def resolve(self, csfd: CsfdClient, item: dict) -> AiSuggestion | None:
-        """Ask Jev about an item the strict matcher left unmatched.
+        """Ask the AI about an item the strict matcher left unmatched.
 
         Returns the suggestion (``applied`` says whether to use it now), or None.
-        A TypeSafe failure never fails the run: the item just stays unmatched, and
-        a rejected key switches the fallback off for the rest of the run.
+        An AI failure never fails the run: the item just stays unmatched, and a
+        rejected key switches the fallback off for the rest of the run.
         """
         if self.disabled:
             return None
         try:
             picked = ai_pick(csfd, self.client, item)
-        except TypesafeError as exc:
+        except AiChoiceError as exc:
             self.errors += 1
             logger.warning(f"{item.get('Name')}: AI match failed: {exc}")
             if exc.fatal:
                 self.disabled = True
                 logger.error("AI matching disabled for the rest of this run")
             return None
-        if picked is None or picked[1] < AI_REVIEW_MIN:
+        if picked is None or picked[1].confidence < AI_REVIEW_MIN:
             return None
-        film, confidence = picked
+        film, answer = picked
         suggestion = AiSuggestion(
             item_id=item["Id"], name=item.get("Name", ""), year=item.get("ProductionYear"),
-            film=film, confidence=confidence, applied=self.auto and confidence >= self.threshold,
+            film=film, confidence=answer.confidence, note=answer.note,
+            applied=self.auto and answer.confidence >= self.threshold and auto_allowed(answer.note),
         )
         self.suggestions.append(suggestion)
         return suggestion
+
+
+def auto_allowed(note: str) -> bool:
+    """Whether ``--ai-auto`` may apply a pick with this cross-check ``note``.
+
+    A lone Jev answer has no note (the pre-Claude behaviour). With both backends asked,
+    only an agreed pick qualifies: every Claude mistake measured on 2026-10-08 was a pick
+    Jev did not back. Claude alone never reaches here (``_make_ai_matcher`` refuses it).
+    """
+    return note == "" or note.startswith(AGREE)
 
 
 def write_ai_review(path: str, suggestions: list[AiSuggestion], model: str) -> None:
@@ -357,7 +388,8 @@ def write_ai_review(path: str, suggestions: list[AiSuggestion], model: str) -> N
     ]
     for s in sorted(suggestions, key=lambda s: -s.confidence):
         status = "AUTO-APPLIED" if s.applied else "REVIEW"
-        lines.append(f"# {s.confidence:.2f} {status} | {s.name} ({s.year or '?'}) -> "
+        note = f" [{s.note}]" if s.note else ""
+        lines.append(f"# {s.confidence:.2f} {status}{note} | {s.name} ({s.year or '?'}) -> "
                      f"{s.film.title} ({s.film.year or '?'})")
         lines.append(f"{'# ' if s.applied else ''}{s.item_id}\t{s.film.url}")
     Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -475,7 +507,7 @@ def _fetch_candidates(client: httpx.Client, base_url: str, user_id: str,
 
 def _ai_fallback(csfd: CsfdClient, ai: AiMatcher, item: dict,
                  reason: str) -> tuple[CsfdFilm | None, str]:
-    """Ask Jev about a strict-match miss; return the film only when it is auto-applied."""
+    """Ask the AI about a strict-match miss; return the film only when it is auto-applied."""
     suggestion = ai.resolve(csfd, item)
     if suggestion is None:
         return None, reason
@@ -484,16 +516,57 @@ def _ai_fallback(csfd: CsfdClient, ai: AiMatcher, item: dict,
     return None, f"ai suggestion ({suggestion.confidence:.2f}): review {suggestion.film.url}"
 
 
+def _ai_provider(args: argparse.Namespace, jev_key: str | None, claude_key: str | None) -> str:
+    """Resolve ``--ai-provider``: ``auto`` uses every backend that has a key. Exits on a missing key."""
+    provider = getattr(args, "ai_provider", None) or "auto"
+    if provider not in AI_PROVIDERS:
+        logger.error(f"--ai-provider must be one of {', '.join(AI_PROVIDERS)} (got {provider!r})")
+        sys.exit(1)
+    if provider == "auto":
+        if jev_key and claude_key:
+            provider = "both"
+        else:
+            provider = "claude" if claude_key else "jev"
+    missing = [env for need, key, env in (
+        (provider in ("jev", "both"), jev_key, ENV_DEDUPE_TYPESAFE_API_KEY),
+        (provider in ("claude", "both"), claude_key, ENV_DEDUPE_ANTHROPIC_API_KEY),
+    ) if need and not key]
+    if missing:
+        logger.error(f"--ai-match (provider {provider}) needs an API key in {' and '.join(missing)}")
+        sys.exit(1)
+    return provider
+
+
 def _make_ai_matcher(args: argparse.Namespace) -> AiMatcher | None:
-    """The AI fallback for this run, or None when --ai-match is off. Exits if the key is missing."""
+    """The AI fallback for this run, or None when --ai-match is off. Exits if a key is missing.
+
+    Claude proposes and Jev checks when both keys are there (measured 2026-10-08:
+    logs/haiku-poc/EVALUATION.md). Claude alone may only suggest: its confidence is a
+    vote share, and both of its wrong picks in that test were unanimous.
+    """
     if not getattr(args, "ai_match", False):
         return None
-    key = get_env_variable(ENV_DEDUPE_TYPESAFE_API_KEY) or get_env_variable(ENV_TYPESAFE_API_KEY)
-    if not key:
-        logger.error(f"--ai-match needs a TypeSafe API key in {ENV_DEDUPE_TYPESAFE_API_KEY}")
+    jev_key = get_env_variable(ENV_DEDUPE_TYPESAFE_API_KEY) or get_env_variable(ENV_TYPESAFE_API_KEY)
+    claude_key = get_env_variable(ENV_DEDUPE_ANTHROPIC_API_KEY)
+    provider = _ai_provider(args, jev_key, claude_key)
+    auto = getattr(args, "ai_auto", False)
+    if auto and provider == "claude":
+        logger.error("--ai-auto needs Jev's cross-check: use --ai-provider both (Claude alone only suggests)")
         sys.exit(1)
-    model = getattr(args, "ai_model", None) or DEFAULT_MODEL
-    return AiMatcher(TypesafeClient(key, model=model), auto=getattr(args, "ai_auto", False),
+    jev_model = getattr(args, "ai_model", None) or DEFAULT_MODEL
+    client: ChoiceClient
+    try:
+        if provider == "jev":
+            client = TypesafeClient(jev_key or "", model=jev_model)
+        elif provider == "claude":
+            client = ClaudeChoiceClient(claude_key or "")
+        else:
+            client = CrossCheckClient(ClaudeChoiceClient(claude_key or ""),
+                                      TypesafeClient(jev_key or "", model=jev_model), review_min=AI_REVIEW_MIN)
+    except AiChoiceError as exc:  # the optional anthropic SDK is not installed
+        logger.error(str(exc))
+        sys.exit(1)
+    return AiMatcher(client, auto=auto,
                      threshold=getattr(args, "ai_threshold", None) or AI_DEFAULT_THRESHOLD)
 
 
@@ -558,7 +631,7 @@ def _run_fill(client: httpx.Client, base_url: str, user_id: str,
 
 
 def _end_run(cache: dict | None, ai: AiMatcher | None) -> None:
-    """Persist the page cache and close the TypeSafe connection, even after an error."""
+    """Persist the page cache and close the AI connection, even after an error."""
     if cache is not None:
         save_csfd_cache(cache)
     if ai is not None:
@@ -567,11 +640,12 @@ def _end_run(cache: dict | None, ai: AiMatcher | None) -> None:
 
 def _finish_ai(ai: AiMatcher, args: argparse.Namespace) -> None:
     """Write the review file and log what the AI fallback did."""
-    write_ai_review(getattr(args, "ai_review_file", None) or "csfd-ai-review.tsv", ai.suggestions,
-                    getattr(args, "ai_model", None) or DEFAULT_MODEL)
+    write_ai_review(getattr(args, "ai_review_file", None) or "csfd-ai-review.tsv", ai.suggestions, ai.label)
     applied = sum(1 for s in ai.suggestions if s.applied)
+    failures = getattr(ai.client, "failures", None)  # CrossCheckClient: per-backend failures
+    per_backend = f" [{', '.join(f'{k} {v}' for k, v in sorted(failures.items()))} failed]" if failures else ""
     logger.info(f"AI fallback: {len(ai.suggestions)} suggestion(s), {applied} auto-applied, "
-                f"{ai.errors} error(s){' (disabled: key rejected)' if ai.disabled else ''}")
+                f"{ai.errors} error(s){per_backend}{' (disabled: key rejected)' if ai.disabled else ''}")
 
 
 # ---------------------------------------------------------------------------

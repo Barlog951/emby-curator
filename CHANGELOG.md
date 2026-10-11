@@ -7,8 +7,22 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+### Added
+
+- **`csfd fill --ai-match` can ask Claude, with Jev as a cross-check.** The new `--ai-provider auto|jev|claude|both`
+  chooses the backend; `auto` (the default) uses every backend that has a key, so existing setups are unchanged.
+  Claude Haiku 5.5 is asked 5 times, and the share of votes is its confidence. On 43 hand-checked titles it
+  found 30 of 31 matches, against Jev's 19, but 2 of its picks were wrong, both unanimous. Every pick both models
+  agreed on was right (19 of 19). With `both`, each review line is tagged `both-agree`, `claude-only`, `jev-only`
+  or `conflict`, and `--ai-auto` applies agreed picks only. With Claude alone, `--ai-auto` is refused. Install
+  with `pip install 'emby-curator[claude]'` and set `DEDUPE_ANTHROPIC_API_KEY`.
+
 ### Fixed
 
+- **A long `--exclude-ids` list no longer buries the dedupe report.** The summary now shows the count
+  ("52 provider IDs excluded … 27 duplicate groups skipped this run") with the IDs folded underneath.
+  The "Excluded Media" section shows only the groups an excluded ID actually skipped, folded too,
+  instead of one card per configured ID.
 - **`genres origin` tagged a Polish series as Czech.** TMDb lists *The Thaw* (*Odwilż*) as a
   Polish–Czech production only because HBO Europe, which made it, is registered in Prague. A
   co-production whose only Czech/Slovak company is HBO Europe no longer counts. TMDb answers cached

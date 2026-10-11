@@ -846,14 +846,21 @@ def csfd_fill(
     item_ids: str | None = typer.Option(None, "--item-ids", help=_ITEM_IDS_HELP),
     ai_match: bool = typer.Option(
         False, "--ai-match",
-        help="For items the strict matcher leaves unmatched, ask TypeSafe Jev to pick among the "
-             "plausible ČSFD candidates. Review-only unless --ai-auto. Key: DEDUPE_TYPESAFE_API_KEY.",
+        help="For items the strict matcher leaves unmatched, ask an AI to pick among the plausible "
+             "ČSFD candidates. Review-only unless --ai-auto. Keys: DEDUPE_ANTHROPIC_API_KEY (Claude) "
+             "and/or DEDUPE_TYPESAFE_API_KEY (Jev).",
+    ),
+    ai_provider: str = typer.Option(
+        "auto", "--ai-provider",
+        help="Which AI answers: claude (proposes), jev, or both (Claude proposes, Jev cross-checks; "
+             "--ai-auto then applies agreed picks only). auto = every backend that has a key.",
     ),
     ai_auto: bool = typer.Option(
-        False, "--ai-auto", help="Apply AI picks at or above --ai-threshold (default: suggest only).",
+        False, "--ai-auto", help="Apply AI picks at or above --ai-threshold (default: suggest only). "
+                                 "Not with Claude alone.",
     ),
     ai_threshold: float = typer.Option(
-        0.9, "--ai-threshold", min=0.5, max=1.0, help="Confidence an AI pick needs to be auto-applied.",
+        0.9, "--ai-threshold", min=0.5, max=1.0, help="Confidence an AI pick needs to be auto-applied (with Claude: its vote share, 0.9 = 5 of 5).",
     ),
     ai_review_file: str = typer.Option(
         "csfd-ai-review.tsv", "--ai-review-file",
@@ -895,6 +902,7 @@ def csfd_fill(
         ai_threshold=ai_threshold,
         ai_review_file=ai_review_file,
         ai_model=ai_model,
+        ai_provider=ai_provider,
     )
     run_csfd_command(args)
 

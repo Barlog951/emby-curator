@@ -57,8 +57,9 @@ The following architectures are supported in the latest Docker version:
 - **ČSFD metadata** (`csfd fill`): for titles TMDb/TVDb/IMDb can't identify, fills only *empty*
   fields (Slovak overview, genres, year, rating, directors and cast, 1080px poster) from
   [csfd.sk](https://www.csfd.sk), accepting only unambiguous title + year matches. Optional
-  `--ai-match` asks [TypeSafe](https://typesafe.ai)'s Jev model to pick among the plausible
-  candidates when the rules can't decide. It is review-only by default.
+  `--ai-match` asks an AI to pick among the plausible candidates when the rules can't decide:
+  Claude Haiku proposes and [TypeSafe](https://typesafe.ai)'s Jev cross-checks, or either one alone.
+  It is review-only by default.
 - Multi-platform support (Docker and Python)
 
 ## Installation
@@ -157,6 +158,7 @@ The following environment variables can be used to configure the tool:
 - `DEDUPE_EXCLUDE`: Comma-separated list of terms to exclude from deduplication. If a movie title contains any of these terms, it will be skipped.
 - `DEDUPE_FLARESOLVERR_URL`: FlareSolverr endpoint used by the `csfd` commands to get past ČSFD's bot check (default `http://localhost:8191/v1`).
 - `DEDUPE_TYPESAFE_API_KEY`: TypeSafe API key for `csfd fill --ai-match` (`TYPESAFE_API_KEY` is accepted too). Never pass it on the command line.
+- `DEDUPE_ANTHROPIC_API_KEY`: Anthropic API key for the Claude backend of `csfd fill --ai-match` (needs `pip install 'emby-curator[claude]'`). The generic `ANTHROPIC_API_KEY` is deliberately ignored, so a key set for another tool doesn't switch it on.
 
 ## Command-line Arguments
 
@@ -404,14 +406,26 @@ emby-curator --host "http://your-emby-server" --api-key "your_api_key" csfd peop
 The map file (`--map`) has one `<emby_id><TAB><csfd_url>` per line, and `#` starts a comment.
 A line `<emby_id><TAB>-` records that a title has no ČSFD entry, so it is never searched or suggested again.
 
-**AI match fallback (`--ai-match`).** When the strict rules find no unambiguous match, TypeSafe's Jev
-model chooses among the year-plausible candidates, or answers "none". Each candidate is described with its
-country and original titles. Only the item's title, year, type and folder name are sent. By default the
-picks are **suggestions only**: they are written to `--ai-review-file` (default `csfd-ai-review.tsv`) in
-map format. Delete the lines you reject and append the rest to your map. `--ai-auto` applies picks at or
-above `--ai-threshold` (default 0.9). Run review-only for a while before enabling it.
+**AI match fallback (`--ai-match`).** When the strict rules find no unambiguous match, an AI chooses
+among the year-plausible candidates, or answers "none". Each candidate is described with its country and
+original titles. Only the item's title, year, type and folder name are sent. By default the picks are
+**suggestions only**: they are written to `--ai-review-file` (default `csfd-ai-review.tsv`) in map format.
+Delete the lines you reject and append the rest to your map.
+
+`--ai-provider` picks the backend. `auto` (the default) uses every backend that has a key:
+- `claude`: Claude Haiku 5.5, asked 5 times. The confidence is the share of votes. It finds the most
+  matches, but a unanimous vote can still be wrong, so on its own it **only suggests** (`--ai-auto` is refused).
+- `jev`: TypeSafe's Jev, with its own confidence score. It is more conservative and finds fewer matches.
+- `both`: Claude proposes and Jev checks. Each review line is tagged `both-agree`, `claude-only`,
+  `jev-only` or `conflict`. In a test on 43 hand-checked titles, every agreed pick was right.
+
+`--ai-auto` applies picks at or above `--ai-threshold` (default 0.9): with `jev` alone, or with `both` when
+the two agree. With `both`, the threshold applies to Claude's vote share, so 0.9 means all 5 votes.
+Run review-only for a while before enabling it.
 
 ```shell
+pip install 'emby-curator[claude]'
+export DEDUPE_ANTHROPIC_API_KEY=...  # from https://console.anthropic.com
 export DEDUPE_TYPESAFE_API_KEY=...   # from https://console.typesafe.ai
 emby-curator --host "http://your-emby-server" --api-key "your_api_key" csfd fill --all-libraries --map csfd-map.tsv --ai-match --doit
 ```

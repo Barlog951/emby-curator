@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
 
 import httpx
 
+from emby_dedupe.api.ai_choice import AiChoiceError, ChoiceAnswer
 from emby_dedupe.utils.logging import logger
+
+__all__ = ["DEFAULT_MODEL", "ChoiceAnswer", "TypesafeClient", "TypesafeError"]
 
 TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone"
 # Pinned: the ČSFD thresholds were measured on this version; ``jev-latest`` can move.
@@ -29,21 +31,8 @@ MAX_ATTEMPTS = 4
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504, 529})
 
 
-class TypesafeError(RuntimeError):
+class TypesafeError(AiChoiceError):
     """A TypeSafe call failed. ``fatal`` means no later call can succeed either (bad key)."""
-
-    def __init__(self, message: str, fatal: bool = False) -> None:
-        super().__init__(message)
-        self.fatal = fatal
-
-
-@dataclass
-class ChoiceAnswer:
-    """Jev's answer to one ``choice`` question."""
-
-    choice: str
-    confidence: float
-    probabilities: dict[str, float] = field(default_factory=dict)
 
 
 class TypesafeClient:
@@ -62,6 +51,11 @@ class TypesafeClient:
             timeout=httpx.Timeout(READ_TIMEOUT, connect=CONNECT_TIMEOUT)
         )
         self._headers = {"Authorization": f"Bearer {api_key}"}
+
+    @property
+    def label(self) -> str:
+        """What the review file says produced the suggestions."""
+        return self._model
 
     def choose(self, state: object, instructions: str, criteria: dict[str, str | None]) -> ChoiceAnswer:
         """Ask one ``choice`` question and return Jev's pick.

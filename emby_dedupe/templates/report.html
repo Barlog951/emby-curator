@@ -30,7 +30,11 @@
         
         {% if has_excluded_ids %}
         <div class="exclusion-banner">
-            <span class="exclusion-icon">🚫</span> The following provider IDs were excluded from deduplication: <strong>{{ excluded_ids|join(", ") }}</strong>
+            <span class="exclusion-icon">🚫</span> <strong>{{ excluded_ids|length }}</strong> provider ID{{ "" if excluded_ids|length == 1 else "s" }} excluded from deduplication{% if excluded_groups_count %} ({{ excluded_groups_count }} duplicate group{{ "" if excluded_groups_count == 1 else "s" }} skipped this run){% endif %}
+            <details class="exclusion-ids">
+                <summary>Show IDs</summary>
+                <code>{{ excluded_ids|join(", ") }}</code>
+            </details>
         </div>
         {% endif %}
         
@@ -278,18 +282,18 @@
     {% endfor %}
 
 
-    {% if has_excluded_ids %}
+    {# One card per duplicate group an excluded ID actually skipped this run. IDs that
+       matched nothing are listed only in the collapsed banner above: rendering a card for
+       every configured ID buried the report under dozens of "Excluded Media ID: <n>" cards. #}
+    {% if excluded_titles %}
     <div class="summary">
         <h2>Excluded Media (Not Deduplicated)</h2>
-        <p>The following provider IDs were excluded from the deduplication process: <strong>{{ excluded_ids|length }} excluded IDs ({{ excluded_groups_count }} duplicate groups)</strong></p>
+        <p><strong>{{ excluded_titles|length }}</strong> duplicate group{{ "" if excluded_titles|length == 1 else "s" }} skipped because of an excluded provider ID.</p>
     </div>
-    
-    {% for id in excluded_ids %}
-    {% set excluded_item_data = {"title": "Excluded Media ID: " ~ id, "image_url": "", "year": "" } %}
-    
-    {% if excluded_titles and id in excluded_titles %}
-        {% set excluded_item_data = excluded_titles[id] %}
-    {% endif %}
+
+    <details class="excluded-groups">
+    <summary>Show the {{ excluded_titles|length }} skipped group{{ "" if excluded_titles|length == 1 else "s" }}</summary>
+    {% for id, excluded_item_data in excluded_titles.items() %}
     <div class="group">
         <h2>Excluded Media: {{ excluded_item_data.title }}</h2>
         
@@ -327,6 +331,7 @@
         </div>
     </div>
     {% endfor %}
+    </details>
     {% endif %}
 
     <footer>
