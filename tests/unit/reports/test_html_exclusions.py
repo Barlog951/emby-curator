@@ -65,34 +65,37 @@ def _no_network():
         yield
 
 
-def _banner(html: str) -> str:
-    start = html.index('<div class="exclusion-banner">')
-    return html[start:html.index("</div>", start)]
+def _section(html: str) -> str:
+    start = html.index('id="excluded"')
+    return html[start:html.index("</section>", start)]
 
 
-def test_banner_shows_a_count_and_folds_the_ids_away():
+def test_excluded_section_shows_a_count_and_folds_the_ids_away():
     html = format_html_report(BASE, _decision(), _metadata(MANY_IDS))
-    banner = _banner(html)
+    section = _section(html)
 
-    assert "<strong>52</strong> provider IDs excluded from deduplication" in banner
-    assert '<details class="exclusion-ids">' in banner
+    assert "Skipped by --exclude-ids · 0 groups" in section
+    assert "all 52 configured ids" in section
+    assert '<details class="exclusion-ids">' in section
     # Every ID is still in the report, but inside the collapsed <details>, not the headline.
-    details = banner[banner.index("<details"):]
+    details = section[section.index('<details class="exclusion-ids">'):]
     assert all(pid in details for pid in MANY_IDS)
     assert "The following provider IDs were excluded" not in html
+    assert 'class="exclusion-banner"' not in html
 
 
-def test_banner_mentions_groups_skipped_this_run():
+def test_excluded_section_counts_groups_skipped_this_run():
     titles = {"tt00000001": {"title": "Call the Midwife", "year": 2012, "image_url": ""}}
     html = format_html_report(BASE, _decision(), _metadata(MANY_IDS, titles))
 
-    assert "(1 duplicate group skipped this run)" in _banner(html)
+    assert "Skipped by --exclude-ids · 1 group" in _section(html)
+    assert 'Excluded <strong>1</strong></a>' in html
 
 
-def test_banner_singular_wording_for_one_id():
+def test_excluded_section_singular_wording_for_one_id():
     html = format_html_report(BASE, _decision(), _metadata(["tt0120737"]))
 
-    assert "<strong>1</strong> provider ID excluded from deduplication" in _banner(html)
+    assert "all 1 configured id<" in _section(html)
 
 
 def test_excluded_section_renders_only_groups_that_were_skipped():
@@ -102,25 +105,27 @@ def test_excluded_section_renders_only_groups_that_were_skipped():
     }
     html = format_html_report(BASE, _decision(), _metadata(MANY_IDS, titles))
 
-    assert html.count("<h2>Excluded Media: ") == 2
-    assert "Excluded Media: Call the Midwife" in html
-    assert "Excluded Media: Imma Tataranni" in html
+    section = _section(html)
+    assert section.count('<li><span class="thumb"') == 2
+    assert "<strong>Call the Midwife</strong> (2012) · <code>tt00000001</code>" in section
+    assert "<strong>Imma Tataranni</strong> (2019) · <code>9500003</code>" in section
     assert "Excluded Media ID:" not in html
-    assert "<strong>2</strong> duplicate groups skipped because of an excluded provider ID." in html
-    # The cards are folded away: they repeat every run, so they must not fill the report.
-    section = html[html.index('<details class="excluded-groups">'):]
-    assert "<summary>Show the 2 skipped groups</summary>" in section
-    assert section.index("Excluded Media: Call the Midwife") < section.index("</details>")
+    # The list is folded away: it repeats every run, so it must not fill the report.
+    folded = section[section.index('<details class="excluded-groups">'):]
+    assert "the 2 skipped groups</summary>" in folded
+    assert folded.index("Call the Midwife") < folded.index("</details>")
 
 
 def test_no_excluded_section_when_no_group_was_skipped():
     html = format_html_report(BASE, _decision(), _metadata(MANY_IDS))
 
-    assert "Excluded Media (Not Deduplicated)" not in html
-    assert "<h2>Excluded Media: " not in html
+    assert '<details class="excluded-groups">' not in html
+    assert "Skipped by --exclude-ids · 0 groups" in html
 
 
 def test_no_banner_without_exclusions():
     html = format_html_report(BASE, _decision(), _metadata([]))
 
     assert 'class="exclusion-banner"' not in html
+    assert "No ids excluded." in html
+    assert "No ids excluded." in html

@@ -3,448 +3,176 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Emby Deduplication Report</title>
+    <meta name="color-scheme" content="dark">
+    <meta name="generator" content="emby-curator {{ run.version }}">
+    <title>{{ run.mode_short }}: {{ run_summary.headline }}</title>
     {# The stylesheet is embedded (reports/html._read_report_css): the report is one file. #}
     <style>{{ report_css|safe }}</style>
     {% if poster_css %}<style>{{ poster_css|safe }}</style>{% endif %}
 </head>
 <body>
-    {# A poster embedded once as a CSS class (reports/images.share_inlined_images); a URL that
-       could not be inlined keeps a plain, credential-free <img src>. #}
-    {% macro poster(image_url, image_class, label) -%}
-    {% if image_class %}<div class="item-image poster {{ image_class }}" role="img" aria-label="{{ label }}"></div>{% else %}<img class="item-image" src="{{ image_url }}" alt="{{ label }}">{% endif %}
-    {%- endmacro %}
-    <header>
-        <h1>Emby Deduplication Report</h1>
-        <p>Identifying and managing duplicate media in your Emby libraries</p>
-    </header>
+{#- Every row and file carries data-outcome / data-reason / data-flags / data-item-id, and the
+    same facts sit in the #report-data JSON island, for scripted reviews. -#}
+{% set deleting = ["removed", "would_remove", "failed"] %}
+{% set pill_text = {"removed": "Removed", "would_remove": "Would remove", "failed": "Failed",
+                    "blocked": "Blocked", "would_block": "Would block", "other": "Unknown"} %}
+{% set out_titles = {"other": "Unknown status", "failed": "Failed", "removed": "Removed",
+                     "would_remove": "Would be removed", "blocked": "Blocked by the safety guard",
+                     "would_block": "Would be blocked by the safety guard"} %}
+{% set out_css = {"other": "seg-other", "failed": "seg-failed", "removed": "seg-removed",
+                  "would_remove": "seg-would", "blocked": "seg-blocked", "would_block": "seg-blocked"} %}
 
-    <!-- Run verdict: what happened, in one sentence, before any detail -->
-    {% if run_summary %}
-    <section class="run-summary" aria-label="Run summary">
-        <span class="run-mode">{% if run_summary.dry %}Dry run · nothing deleted{% else %}Real run (--doit){% endif %}</span>
-        <p class="run-headline">{{ run_summary.headline }}</p>
-        <p class="run-subline">{{ run_summary.subline }}</p>
-        {% if run_summary.risky %}
-        <p class="run-risk">{{ run_summary.risky }} row{{ "" if run_summary.risky == 1 else "s" }} below need{{ "s" if run_summary.risky == 1 else "" }} a look before you trust {{ "it" if run_summary.risky == 1 else "them" }}: marked "Check".</p>
+{% macro ids(list) -%}
+<code class="ids">{% for pid in list %}<span>{{ pid }}</span>{% if not loop.last %},{% endif %}{% endfor %}</code>
+{%- endmacro %}
+
+{% macro path(side) -%}
+<code class="cpath">{% if side.dir %}<span class="dir">{{ side.dir }}/</span>{% endif %}<b>{{ side.base or side.path or "unknown" }}</b></code>
+{%- endmacro %}
+
+{% macro cell(f, side, role, name, r) -%}
+<td class="pf-file{% if role == 'other' %} pf-second{% endif %}" data-l="{{ 'Kept' if role == 'keep' else ('Removed' if name in deleting else 'Other') }}"><span class="pf-name" title="{{ side.path }}">{{ side.short }}</span>{% if role == "other" and not f.episode %}{% if f.status_text and r.per_file_status %}<span class="pf-reason">{{ f.status_text }}</span>{% endif %}{% if r.per_file_reason and f.reason %}<span class="pf-reason">{{ f.reason }}</span>{% endif %}{% endif %}{% for k, v in side.vary.items() %}<span class="pf-vary vary-{{ k }}" title="{{ k }} differs from the rest of the row">{{ v }}</span>{% endfor %}{% if role == "other" and side.image_class and side.image_class != f.keep.image_class %}<span class="thumb thumb-xs poster {{ side.image_class }}" role="img" aria-label="Poster of the other copy differs from the kept one"></span>{% endif %}</td>
+<td class="pf-num fact-runtime" data-l="Runtime">{{ side.runtime or "—" }}</td>
+<td class="pf-num fact-size" data-l="Size">{{ side.size_text }}</td>
+<td class="pf-num fact-score" data-l="Score"><span class="score"{% if side.score_summary %} title="{{ side.score_summary }}"{% endif %}>{{ side.score_text or "—" }}</span></td>
+{%- endmacro %}
+
+{% macro row(r, name) -%}
+<details class="crow{% if r.risk %} risky{% endif %}" id="{{ r.id }}" data-outcome="{{ name }}" data-reason="{{ r.reason_code }}" data-flags="{{ r.flags|join(' ') }}"{% if r.risk %} open{% endif %}>
+    <summary>
+        <span class="crow-line1">
+            {% if r.image_class %}<span class="thumb poster {{ r.image_class }}" aria-hidden="true"></span>{% else %}<span class="thumb" aria-hidden="true"></span>{% endif %}
+            <span class="crow-title"><strong>{{ r.name }}</strong><span class="crow-sub">{{ r.sub }} · {{ r.size_text }}{% if r.blocked_runs > 1 %} · blocked in {{ r.blocked_runs }} runs{% endif %}</span></span>
+            <span class="pill pill-{{ name }}">{{ pill_text[name] }}</span>
+        </span>
+        <span class="crow-line2">{% for p in r.diff_parts %}<span class="fact-{{ p.kind }}">{{ p.text }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</span>
+        {% if r.chips or r.file_only %}
+        <span class="crow-chips">
+            {% for c in r.chips %}<span class="chip {{ 'chip-check' if r.risk else 'chip-note' }}" title="{{ c.title }}">{{ c.text }}</span>{% endfor %}
+            {% if r.file_only %}<span class="chip">{{ r.file_only }} file only (SSH)</span>{% endif %}
+        </span>
         {% endif %}
-        {% if run_summary.has_files %}
-        <div class="run-bar" role="img" aria-label="{{ run_summary.aria }}">
-            {% for s in run_summary.segments if s.count %}<span class="run-seg {{ s.css }}" style="flex-grow: {{ s.count }}"></span>{% endfor %}
-        </div>
-        <ul class="run-legend">
-            {% for s in run_summary.segments %}<li><span class="run-swatch {{ s.css }}{% if not s.count %} zero{% endif %}"></span>{{ s.label }} <strong>{{ s.count }}</strong></li>{% endfor %}
-        </ul>
-        {% endif %}
-        <dl class="run-tiles">
-            <div><dt>{{ run_summary.space_label }}</dt><dd>{{ run_summary.space_value }}</dd></div>
-            <div><dt>Kept copies</dt><dd>{{ run_summary.kept_value }}</dd></div>
-            <div><dt>Skipped by --exclude-ids</dt><dd>{{ run_summary.excluded_groups }} group{{ "" if run_summary.excluded_groups == 1 else "s" }}</dd></div>
+    </summary>
+    <div class="crow-body">
+        {% if r.shared %}
+        <dl class="shared">
+            {% for line in r.shared %}<div><dt>{{ line.label }}</dt><dd>{% for p in line.parts %}<span class="fact-{{ p.kind }}">{{ p.text }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</dd></div>{% endfor %}
         </dl>
-    </section>
-    {% endif %}
-
-    <!-- Stats Section -->
-    <div class="summary">
-        <h2>Summary Statistics</h2>
-        
-        {% if language_priorities_list %}
-        <div class="language-priority-banner {{ 'priority-applied' if language_priorities_changed_selection else 'priority-considered' }}">
-            {% if language_priorities_changed_selection %}
-            <span class="priority-icon">🔤</span> Language prioritization changed selection decisions with the priority order: <strong>{{ language_priorities_list|join(", ") }}</strong>
-            {% elif language_priorities_used %}
-            <span class="priority-icon">📢</span> Language priorities ({{ language_priorities_list|join(", ") }}) were used but didn't change selection decisions
-            {% else %}
-            <span class="priority-icon">ℹ️</span> Language priorities ({{ language_priorities_list|join(", ") }}) were considered but didn't affect selection
-            {% endif %}
-        </div>
         {% endif %}
-        
-        {% if has_excluded_ids %}
-        <div class="exclusion-banner">
-            <span class="exclusion-icon">🚫</span> <strong>{{ excluded_ids|length }}</strong> provider ID{{ "" if excluded_ids|length == 1 else "s" }} excluded from deduplication{% if excluded_groups_count %} ({{ excluded_groups_count }} duplicate group{{ "" if excluded_groups_count == 1 else "s" }} skipped this run){% endif %}
-            <details class="exclusion-ids">
-                <summary>Show IDs</summary>
-                <code>{{ excluded_ids|join(", ") }}</code>
-            </details>
-        </div>
-        {% endif %}
-        
-        
-        <div class="stats-container">
-            <!-- Overview stats -->
-            <div class="stats-card">
-                <h3>Overview</h3>
-                <div class="stats-grid">
-                    <div class="stat-item">
-                        <div class="stat-value">{{ total_groups }}</div>
-                        <div class="stat-label">Duplicate Groups</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">{{ total_items_to_keep }}</div>
-                        <div class="stat-label">Items Kept</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">{{ total_items_to_delete }}</div>
-                        <div class="stat-label">Items to Remove</div>
-                    </div>
-                </div>
-            </div>
-            
-            <!-- Deletion stats -->
-            <div class="stats-card">
-                {% if deletion_attempted %}
-                <h3>Deletion Status</h3>
-                <div class="stats-grid">
-                    <div class="stat-item">
-                        <div class="stat-value">{{ deleted_items }}</div>
-                        <div class="stat-label">Deleted Successfully</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">{{ failed_deletions }}</div>
-                        <div class="stat-label">Failed Deletions</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">{{ skipped_deletions }}</div>
-                        <div class="stat-label">Skipped</div>
-                    </div>
-                </div>
-                {% else %}
-                {# Dry run: nothing was attempted. Show what --doit would do, including the
-                   deletes the safety guard will refuse (reports/common.DRY_RUN_STATUSES). #}
-                <h3>Dry Run: What --doit Would Do</h3>
-                <div class="stats-grid">
-                    <div class="stat-item">
-                        <div class="stat-value">{{ would_delete }}</div>
-                        <div class="stat-label">Would Delete</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">{{ would_block }}</div>
-                        <div class="stat-label">Would Be Blocked by Safety Guard</div>
-                    </div>
-                </div>
-                {% endif %}
-            </div>
-            
-            <!-- Space stats -->
-            <div class="stats-card">
-                <h3>Space Analysis</h3>
-                <div class="stats-grid">
-                    <div class="stat-item">
-                        <div class="stat-value">{{ formatted_size_to_keep }}</div>
-                        <div class="stat-label">Size Kept</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">{{ formatted_space_saved }}</div>
-                        <div class="stat-label">{% if deletion_attempted %}Size Removed{% else %}Size to Remove{% endif %}</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-value">{{ percentage_saved }}%</div>
-                        <div class="stat-label">Space Saved</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    {# ---- Outcomes: one row per title and outcome (reports/clusters.build_clusters) ----
-       Rows never merge across season folders, guard reasons or risk flags; a risky deletion
-       gets its own row, first in its section. Opening a row shows every file's evidence. #}
-    {% if clusters and clusters.total_files %}
-    {% set out_titles = {"failed": "Failed", "removed": "Removed", "would_remove": "Would be removed",
-                         "blocked": "Kept by the safety check · both copies stay",
-                         "would_block": "Would be kept by the safety check", "other": "Other status"} %}
-    {% set out_css = {"failed": "seg-failed", "removed": "seg-removed", "would_remove": "seg-would",
-                      "blocked": "seg-blocked", "would_block": "seg-blocked", "other": "seg-other"} %}
-    <section class="outcomes" aria-label="Outcomes">
-    {% for name in ["failed", "removed", "would_remove", "blocked", "would_block", "other"] %}
-    {% set rows = clusters.sections[name] %}
-    {% if rows or (name == "failed" and not run_summary.dry) %}
-    <div class="out-section" data-outcome="{{ name }}">
-        <h2 class="out-title"><span class="run-swatch {{ out_css[name] }}{% if not rows %} zero{% endif %}"></span>{{ out_titles[name] }} · {{ clusters.totals[name] }} file{{ "" if clusters.totals[name] == 1 else "s" }}</h2>
-        {% if not rows %}<p class="out-empty">Nothing failed.</p>{% endif %}
-        {% for r in rows %}
-        <details class="crow{% if r.risk %} risky{% endif %}" data-outcome="{{ name }}" data-reason="{{ r.reason_code }}">
-            <summary>
-                <span class="crow-main">
-                    {% if r.image_class %}<span class="thumb poster {{ r.image_class }}" aria-hidden="true"></span>{% else %}<span class="thumb" aria-hidden="true"></span>{% endif %}
-                    <span class="crow-title"><strong>{{ r.name }}</strong><span class="crow-sub">{{ r.sub }}</span></span>
-                </span>
-                <span class="crow-q">Kept {{ r.keep_quality }}<br>{{ "Removed" if name in ["removed", "would_remove", "failed"] else "Other copy" }} {{ r.delete_quality }}</span>
-                <span class="crow-langs">Audio {% if r.keep_langs == r.delete_langs %}{{ r.keep_langs }} (same){% else %}{{ r.keep_langs }} / {{ r.delete_langs }}{% endif %}</span>
-                <span class="crow-chips">
-                    {% if r.risk %}{% for txt in r.risk_text %}<span class="chip chip-check">Check: {{ txt }}</span>{% endfor %}{% endif %}
-                    {% if r.reason_text %}<span class="chip chip-reason">{{ r.reason_text }}</span>{% endif %}
-                    {% if r.file_only %}<span class="chip">{{ r.file_only }} file only (SSH)</span>{% endif %}
-                    {% if name in ["removed", "would_remove"] %}<span class="chip chip-size">{{ r.size_gb }}</span>{% endif %}
-                </span>
-            </summary>
-            <div class="crow-body">
-                {% if name in ["blocked", "would_block"] and r.exclude_ids %}
-                <p class="exclude-hint">Reviewed, and want to keep both copies for good? Add to <code>--exclude-ids</code>: <code class="ids">{{ r.exclude_ids }}</code></p>
-                {% endif %}
-                {% for f in r.files %}
-                <div class="cfile">
-                    <div class="cfile-head"><strong>{{ f.episode or f.title }}</strong> <span class="cfile-status">{{ f.status_text }}</span>{% if f.reason %} <span class="cfile-reason">{{ f.reason }}</span>{% endif %}</div>
-                    <dl class="cfile-grid">
-                        <div><dt>Kept</dt><dd>{{ f.keep_quality }} · {{ f.keep_langs }}{% if f.keep_runtime %} · {{ f.keep_runtime }}{% endif %}{% if f.keep_score is not none %} · score {{ "%.1f"|format(f.keep_score) }}{% endif %}<code class="cpath">{{ f.keep_path }}</code><a class="url-link" href="{{ f.keep_url }}" target="_blank">Open in Emby</a></dd></div>
-                        <div><dt>{{ "Removed" if f.outcome in ["removed", "would_remove", "failed"] else "Other copy" }}</dt><dd>{{ f.delete_quality }} · {{ f.delete_langs }}{% if f.delete_runtime %} · {{ f.delete_runtime }}{% endif %}{% if f.delete_score is not none %} · score {{ "%.1f"|format(f.delete_score) }}{% endif %}<code class="cpath">{{ f.delete_path }}</code>{% if f.outcome != "removed" %}<a class="url-link" href="{{ f.delete_url }}" target="_blank">Open in Emby</a>{% endif %}</dd></div>
-                    </dl>
-                    {% if f.keep_note %}<p class="cfile-note">{{ f.keep_note }}</p>{% endif %}
-                </div>
-                {% endfor %}
-            </div>
-        </details>
-        {% endfor %}
-    </div>
-    {% endif %}
-    {% endfor %}
-    </section>
-    {% endif %}
-
-    {# The previous per-group cards, folded: same facts, one card per group. #}
-    {% if duplicate_groups %}
-    <details class="legacy-groups">
-    <summary>Full detail, one card per group ({{ duplicate_groups|length }} group{{ "" if duplicate_groups|length == 1 else "s" }})</summary>
-    <div class="summary">
-        <h2>Duplicate Details</h2>
-        <p><strong>Note:</strong> Files with identical paths are automatically filtered out as they are likely false positives from Emby's API.</p>
-    </div>
-
-
-    <!-- Duplicate Groups Section -->
-    {% for group in duplicate_groups %}
-    <div class="group">
-        <h2>Group {{ loop.index }}: {{ group.keep.name }}</h2>
-        
-        <div class="date-comparison-info">
-            <div class="date-analysis">
-                <h3>Date Analysis</h3>
-                <div class="date-container">
-                    <div class="date-item newest">
-                        <span class="date-label">Newest File:</span>
-                        <span class="date-time">{{ group.newest_date_added }}</span>
-                        <div class="file-path"><strong>Path:</strong> {{ group.newest_path }}</div>
-                        <div class="status-note">{{ group.newest_status }}</div>
-                    </div>
-                    <div class="date-item oldest">
-                        <span class="date-label">Oldest File:</span>
-                        <span class="date-time">{{ group.oldest_date_added }}</span>
-                        <div class="file-path"><strong>Path:</strong> {{ group.oldest_path }}</div>
-                        <div class="status-note">{{ group.oldest_status }}</div>
-                    </div>
-                </div>
-                <div class="sort-info">Files are sorted by their "Added to Library" date. The one with the highest quality rating ({{ group.keep.name }}) is kept.</div>
-            </div>
-        </div>
-        
-        <div class="keep-item">
-            {{ poster(group.keep.image_url, group.keep.image_class, group.keep.name) }}
-            <div class="item-details">
-                <h3>Keeping this file</h3>
-                
-                {% if group.language_priority_message and (group.selected_by_language and group.changed_by_language_priority) %}
-                <div class="language-priority-info priority-applied">
-                    <div class="language-priority-message">{{ group.language_priority_message }}</div>
-                </div>
-                {% endif %}
-                
-                <div class="media-details">
-                    <h4>Media Info</h4>
-                    {% if group.keep.is_episode %}
-                    <div class="series-info">
-                        <span class="series-badge">TV Series: {{ group.keep.series_name }}</span>
-                        {% if group.keep.season_number != "" and group.keep.episode_number != "" %}
-                        <span class="series-badge">Season {{ group.keep.season_number }}, Episode {{ group.keep.episode_number }}</span>
-                        {% endif %}
-                    </div>
-                    {% endif %}
-                    <div class="quality-info">
-                        <span class="quality-badge">Codec: {{ group.keep.quality_description.get('video', {}).get('codec', 'unknown') }}</span>
-                        <span class="quality-badge">Resolution: {{ group.keep.quality_description.get('video', {}).get('resolution', 'unknown') }}</span>
-                        {% if group.keep.quality_description.get('video', {}).get('is_dovi_p5') %}
-                        <span class="quality-badge" style="background-color: rgba(255, 85, 85, 0.25); color: #ff5555;">⚠️ DV Profile 5 — green/pink</span>
-                        {% endif %}
-                        <span class="quality-badge">Size: {{ group.keep.quality_description.size_formatted }}</span>
-                        {% if group.keep.quality_description.get('is_ai_upscale') %}
-                        <span class="quality-badge" style="background-color: rgba(255, 152, 0, 0.25); color: #ffb86c;">⚠️ AI Upscaled</span>
-                        {% endif %}
-                        {% if group.keep.quality_description.get('source_quality_multiplier') %}
-                        {% set multiplier = group.keep.quality_description.get('source_quality_multiplier') %}
-                        {% if multiplier >= 1.3 %}
-                        <span class="quality-badge" style="background-color: rgba(80, 250, 123, 0.25); color: #50fa7b;">🎬 BluRay REMUX</span>
-                        {% elif multiplier >= 1.15 %}
-                        <span class="quality-badge" style="background-color: rgba(139, 195, 74, 0.25); color: #8bc34a;">💿 BluRay</span>
-                        {% elif multiplier >= 1.0 %}
-                        <span class="quality-badge" style="background-color: rgba(139, 233, 253, 0.25); color: #8be9fd;">🌐 WEB-DL</span>
-                        {% elif multiplier >= 0.9 %}
-                        <span class="quality-badge" style="background-color: rgba(255, 87, 34, 0.25); color: #ff5555;">📺 HDTV</span>
-                        {% endif %}
-                        {% endif %}
-                    </div>
-
-                    <div class="audio-info">
-                        <h4>Audio</h4>
-                        <div><strong>Codec:</strong> {{ group.keep.quality_description.get('audio', {}).get('codec', 'unknown') }}</div>
-                        <div><strong>Channels:</strong> {{ group.keep.quality_description.get('audio', {}).get('channels', 'unknown') }}</div>
-                        <div><strong>Languages:</strong> {{ group.keep.quality_description.get('audio', {}).get('languages', ['unknown'])|join(', ') }}</div>
-                    </div>
-
-                    <div class="file-info">
-                        <h4>File Info</h4>
-                        <div><strong>Added to Library:</strong> {{ group.keep.quality_description.date_added }}</div>
-                    </div>
-                    {% if group.keep.quality_description.get('score_summary') %}
-                    <div class="score-summary"><strong>Quality:</strong> {{ group.keep.quality_description.score_summary }}</div>
-                    {% endif %}
-                </div>
-
-                <a href="{{ group.keep_url }}" target="_blank" class="url-link">View in Emby</a>
-            </div>
-        </div>
-        
-        <div class="delete-items">
-            <h3>{% if group.has_deleted_items %}Deleted{% else %}Duplicate{% endif %} file{{ 's' if group.delete|length > 1 else '' }} ({{ group.delete|length }})</h3>
-            
-            {% for item in group.delete %}
-            <div class="delete-item">
-                {{ poster(item.image_url, item.image_class, item.name) }}
-                <div class="item-details">
-                    <div><strong>Status:</strong> <span class="{{ item.status_class }}">{{ item.status_text }}</span></div>
-                    
-                    <div class="media-details">
-                        <h4>Media Info</h4>
-                        {% if item.is_episode %}
-                        <div class="series-info">
-                            <span class="series-badge">TV Series: {{ item.series_name }}</span>
-                            {% if item.season_number != "" and item.episode_number != "" %}
-                            <span class="series-badge">Season {{ item.season_number }}, Episode {{ item.episode_number }}</span>
-                            {% endif %}
-                        </div>
-                        {% endif %}
-                        <div class="quality-info">
-                            <span class="quality-badge">Codec: {{ item.quality_description.get('video', {}).get('codec', 'unknown') }}</span>
-                            <span class="quality-badge">Resolution: {{ item.quality_description.get('video', {}).get('resolution', 'unknown') }}</span>
-                            {% if item.quality_description.get('video', {}).get('is_dovi_p5') %}
-                            <span class="quality-badge" style="background-color: rgba(255, 85, 85, 0.25); color: #ff5555;">⚠️ DV Profile 5 — green/pink</span>
-                            {% endif %}
-                            <span class="quality-badge">Size: {{ item.quality_description.size_formatted }}</span>
-                            {% if item.quality_description.get('is_ai_upscale') %}
-                            <span class="quality-badge" style="background-color: rgba(255, 152, 0, 0.25); color: #ffb86c;">⚠️ AI Upscaled</span>
-                            {% endif %}
-                            {% if item.quality_description.get('source_quality_multiplier') %}
-                            {% set multiplier = item.quality_description.get('source_quality_multiplier') %}
-                            {% if multiplier >= 1.3 %}
-                            <span class="quality-badge" style="background-color: rgba(80, 250, 123, 0.25); color: #50fa7b;">🎬 BluRay REMUX</span>
-                            {% elif multiplier >= 1.15 %}
-                            <span class="quality-badge" style="background-color: rgba(139, 195, 74, 0.25); color: #8bc34a;">💿 BluRay</span>
-                            {% elif multiplier >= 1.0 %}
-                            <span class="quality-badge" style="background-color: rgba(139, 233, 253, 0.25); color: #8be9fd;">🌐 WEB-DL</span>
-                            {% elif multiplier >= 0.9 %}
-                            <span class="quality-badge" style="background-color: rgba(255, 87, 34, 0.25); color: #ff5555;">📺 HDTV</span>
-                            {% endif %}
-                            {% endif %}
-                        </div>
-
-                        <div class="audio-info">
-                            <h4>Audio</h4>
-                            <div><strong>Codec:</strong> {{ item.quality_description.get('audio', {}).get('codec', 'unknown') }}</div>
-                            <div><strong>Channels:</strong> {{ item.quality_description.get('audio', {}).get('channels', 'unknown') }}</div>
-                            <div><strong>Languages:</strong> {{ item.quality_description.get('audio', {}).get('languages', ['unknown'])|join(', ') }}</div>
-                        </div>
-
-                        <div class="file-info">
-                            <h4>File Info</h4>
-                            <div><strong>Added to Library:</strong> {{ item.quality_description.date_added }}</div>
-                        </div>
-                        {% if item.quality_description.get('score_summary') %}
-                        <div class="score-summary"><strong>Quality:</strong> {{ item.quality_description.score_summary }}</div>
-                        {% endif %}
-                    </div>
-
-                    {% if item.deletion_result and item.deletion_result.status == "success" %}
-                        <!-- Item was deleted, show external links instead -->
-                        <div class="external-links">
-                            {% if item.provider_id and item.provider_id.startswith('tt') %}
-                            <a href="https://www.imdb.com/title/{{ item.provider_id }}" target="_blank" class="url-link">View on IMDB</a>
-                            {% endif %}
-                            
-                            {% if item.provider_id and item.provider_id.isdigit() %}
-                            <a href="https://www.themoviedb.org/movie/{{ item.provider_id }}" target="_blank" class="url-link">View on TMDB</a>
-                            {% endif %}
-                        </div>
-                    {% else %}
-                        <!-- Item still exists in Emby, show the Emby link -->
-                        <a href="{{ item.url }}" target="_blank" class="url-link">View in Emby</a>
-                    {% endif %}
-                    
-                    {% if item.error %}
-                    <div class="error-message">Error: {{ item.error }}</div>
-                    {% endif %}
-                </div>
-            </div>
+        <div class="pairs-wrap">
+        <table class="pairs">
+            <thead><tr>{% if r.is_episode %}<th class="pf-ep">Episode</th>{% endif %}<th class="pf-file">Kept</th><th class="pf-num fact-runtime">Runtime</th><th class="pf-num fact-size">Size</th><th class="pf-num fact-score">Score</th><th class="pf-file pf-second">{{ "Removed" if name in deleting else "Other" }}</th><th class="pf-num fact-runtime">Runtime</th><th class="pf-num fact-size">Size</th><th class="pf-num fact-score">Score</th><th class="pf-links">Emby</th></tr></thead>
+            <tbody>
+            {% for f in r.files %}
+            <tr data-status="{{ f.status }}" data-item-id="{{ f.delete.id }}" data-keep-id="{{ f.keep.id }}">
+                {% if r.is_episode %}<td class="pf-ep" data-l="Episode"><strong>{{ f.episode or f.title }}</strong>{% if r.per_file_status %}<span class="pf-reason">{{ f.status_text }}</span>{% endif %}{% if r.per_file_reason and f.reason %}<span class="pf-reason">{{ f.reason }}</span>{% endif %}</td>{% endif %}
+                {{ cell(f, f.keep, "keep", name, r) }}
+                {{ cell(f, f.delete, "other", name, r) }}
+                <td class="pf-links" data-l="Emby"><a class="url-link" href="{{ f.keep.url }}" target="_blank" rel="noopener" aria-label="Open the kept copy of {{ f.episode or f.title }} in Emby">kept</a>{% if name != "removed" %} · <a class="url-link" href="{{ f.delete.url }}" target="_blank" rel="noopener" aria-label="Open the other copy of {{ f.episode or f.title }} in Emby">other</a>{% endif %}</td>
+            </tr>
             {% endfor %}
+            </tbody>
+        </table>
         </div>
+        {% set notes = r.files|map(attribute="keep_note")|reject("equalto", "")|unique|list %}
+        {% for note in notes %}<p class="cfile-note">Why this copy: {{ note }}.</p>{% endfor %}
+        {% if r.exclude_ids and name in ["would_remove", "blocked", "would_block"] %}
+        <p class="exclude-hint">{% if name == "would_remove" %}Don't want this removed? Add to <code>--exclude-ids</code> before --doit:{% else %}Keep both copies for good? Add to <code>--exclude-ids</code>:{% endif %} {{ ids(r.exclude_ids) }}{% if r.exclude_numeric %} <span class="muted">(a bare number matches TMDB and TVDB alike; this title has no IMDb id)</span>{% endif %}</p>
+        {% endif %}
     </div>
-    {% endfor %}
+</details>
+{%- endmacro %}
+
+<a class="skip-link" href="#outcomes">Skip to outcomes</a>
+
+<header class="masthead">
+    <p class="eyebrow">Emby Curator · dedupe report</p>
+    <p class="run-line">{{ run.mode_short }} · {{ run.generated_human }}{% if run.libraries %} · librar{{ "y" if run.libraries|length == 1 else "ies" }} {{ run.libraries|join(", ") }}{% endif %}</p>
+</header>
+
+<section class="run-summary" aria-labelledby="verdict">
+    <p class="run-pills"><span class="run-mode{% if run_summary.dry %} dry{% endif %}">{{ run.mode }}</span></p>
+    <h1 id="verdict" class="run-headline">{{ run_summary.headline }}</h1>
+    {% if run_summary.subline %}<p class="run-subline">{{ run_summary.subline }}</p>{% endif %}
+    {% if run_summary.warning %}
+    <p class="run-warning"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3 2 21h20L12 3z"/><path d="M12 10v5"/><circle cx="12" cy="18" r="0.6"/></svg><span class="sr-only">Warning: </span>{{ run_summary.warning }}</p>
+    {% endif %}
+    {% if run_summary.has_files %}
+    <div class="run-bar" role="img" aria-label="{{ run_summary.aria }}">
+        {% for s in run_summary.segments if s.count %}<span class="run-seg {{ s.css }}" style="flex-grow: {{ s.count }}"></span>{% endfor %}
+    </div>
+    {% endif %}
+    <ul class="run-legend" aria-label="Sections">
+        {% for s in run_summary.legend %}<li>{% if s.count %}<a href="{{ s.href }}"{% if s.emphasis %} class="emphasis"{% endif %}>{% else %}<span class="zero-entry">{% endif %}<span class="run-swatch {{ s.css }}{% if not s.count %} zero{% endif %}"></span>{{ s.label }} <strong>{{ s.count }}</strong>{% if s.count %}</a>{% else %}</span>{% endif %}</li>{% endfor %}
+    </ul>
+    {% if run_summary.has_files %}
+    <div class="stats-grid run-stats">
+        {% for t in run_summary.stats_tiles %}<div class="stat-item"><div class="stat-value">{{ t.value }}</div><div class="stat-label">{{ t.label }}</div></div>{% endfor %}
+    </div>
+    {% endif %}
+    {% if run_summary.decide %}
+    <details class="run-decide">
+        <summary>Next steps: copy-paste values</summary>
+        <dl>
+            {% for a in run_summary.decide %}<div><dt>{{ a.label }}</dt><dd><code>{{ a.command }}</code></dd></div>{% endfor %}
+        </dl>
     </details>
     {% endif %}
+</section>
 
+{# ---- Outcomes: one row per title and outcome (reports/clusters.build_clusters) ----
+   Risky deletions come first in their own section; rows never merge across season
+   folders, guard reasons or risk flags. Opening a row shows every file's evidence. #}
+<section class="outcomes" id="outcomes" aria-label="Outcomes">
+{% if clusters.check %}
+<div class="out-section out-check" id="check" data-outcome="check">
+    <h2 class="out-title"><span class="run-swatch seg-check"></span>{{ "Check first" if run_summary.dry else "Removed, worth a second look" }} · {{ clusters.check_files }} file{{ "" if clusters.check_files == 1 else "s" }} · {{ clusters.check|length }} row{{ "" if clusters.check|length == 1 else "s" }}</h2>
+    <p class="out-lead">{% if run_summary.dry %}One signal says the wrong copy may go. Open the row and verify on disk before --doit.{% else %}Already removed. One signal says the wrong copy may have gone: open the row and verify the kept copy on disk.{% endif %}</p>
+    {% for r in clusters.check %}{{ row(r, r.outcome) }}{% endfor %}
+</div>
+{% endif %}
+{% for name in ["other", "failed", "removed", "would_remove", "blocked", "would_block"] %}
+{% set rows = clusters.sections[name]|rejectattr("risk")|list %}
+{% set risky_here = clusters.sections[name]|selectattr("risk")|list|length %}
+{% if clusters.totals[name] or (name == "failed" and not run_summary.dry) %}
+<div class="out-section" id="{{ name }}" data-outcome="{{ name }}">
+    <h2 class="out-title"><span class="run-swatch {{ out_css[name] }}{% if not clusters.totals[name] %} zero{% endif %}"></span>{{ out_titles[name] }} · {{ clusters.totals[name] }} file{{ "" if clusters.totals[name] == 1 else "s" }}{% if clusters.sizes[name] and name in deleting %} · {{ run_summary.sizes_text[name] }}{% endif %}{% if risky_here %} · {{ risky_here }} row{{ "" if risky_here == 1 else "s" }} {{ "in Check first" if run_summary.dry else "above, worth a second look" }}{% endif %}</h2>
+    {% if not clusters.totals[name] %}<p class="out-empty">Nothing failed.</p>{% endif %}
+    {% if name in ["blocked", "would_block"] and rows %}<p class="out-lead">Both copies stay. Protective, not an error: fix the files, or add the pair ids to --exclude-ids to stop seeing a pair.</p>{% endif %}
+    {% for r in rows %}{{ row(r, name) }}{% endfor %}
+</div>
+{% endif %}
+{% endfor %}
 
-    {# One card per duplicate group an excluded ID actually skipped this run. IDs that
-       matched nothing are listed only in the collapsed banner above: rendering a card for
-       every configured ID buried the report under dozens of "Excluded Media ID: <n>" cards. #}
+{# One line per duplicate group an excluded ID actually skipped this run, folded; ids
+   that matched nothing are counted, not listed one by one. #}
+<div class="out-section" id="excluded" data-outcome="excluded">
+    <h2 class="out-title"><span class="run-swatch seg-excluded{% if not excluded_groups_count %} zero{% endif %}"></span>Skipped by --exclude-ids · {{ excluded_groups_count }} group{{ "" if excluded_groups_count == 1 else "s" }}</h2>
+    {% if not has_excluded_ids %}<p class="out-empty">No ids excluded.</p>{% endif %}
     {% if excluded_titles %}
-    <div class="summary">
-        <h2>Excluded Media (Not Deduplicated)</h2>
-        <p><strong>{{ excluded_titles|length }}</strong> duplicate group{{ "" if excluded_titles|length == 1 else "s" }} skipped because of an excluded provider ID.</p>
-    </div>
-
     <details class="excluded-groups">
-    <summary>Show the {{ excluded_titles|length }} skipped group{{ "" if excluded_titles|length == 1 else "s" }}</summary>
-    {% for id, excluded_item_data in excluded_titles.items() %}
-    <div class="group">
-        <h2>Excluded Media: {{ excluded_item_data.title }}</h2>
-        
-        <div class="keep-item">
-            {% if excluded_item_data.image_url %}
-            {{ poster(excluded_item_data.image_url, excluded_item_data.image_class, excluded_item_data.title) }}
-            {% else %}
-            <div class="item-image" style="background-color: #444; display: flex; align-items: center; justify-content: center;">
-                <span style="color: #aaa; font-size: 14px; text-align: center;">No image<br>available</span>
-            </div>
-            {% endif %}
-            
-            <div class="item-details">
-                <h3>{{ excluded_item_data.title }} {% if excluded_item_data.year %}({{ excluded_item_data.year }}){% endif %}</h3>
-                
-                <div class="quality-info">
-                    {% if id.startswith('tt') %}
-                    <span class="quality-badge">IMDB ID: {{ id }}</span>
-                    {% elif id.isdigit() %}
-                    <span class="quality-badge">TMDB/TVDB ID: {{ id }}</span>
-                    {% else %}
-                    <span class="quality-badge">Provider ID: {{ id }}</span>
-                    {% endif %}
-                </div>
-                
-                <div class="external-links" style="margin-top: 15px;">
-                    {% if id.startswith('tt') %}
-                    <a href="https://www.imdb.com/title/{{ id }}" target="_blank" class="url-link">View on IMDB</a>
-                    {% endif %}
-                    {% if id.isdigit() %}
-                    <a href="https://www.themoviedb.org/movie/{{ id }}" target="_blank" class="url-link">View on TMDB</a>
-                    {% endif %}
-                </div>
-            </div>
-        </div>
-    </div>
-    {% endfor %}
+        <summary><span class="when-closed">Show</span><span class="when-open">Hide</span> the {{ excluded_titles|length }} skipped group{{ "" if excluded_titles|length == 1 else "s" }}</summary>
+        <ul class="excluded-list">
+        {% for id, item in excluded_titles.items() %}
+            <li>{% if item.image_class %}<span class="thumb poster {{ item.image_class }}" aria-hidden="true"></span>{% else %}<span class="thumb" aria-hidden="true"></span>{% endif %}<span><strong>{{ item.title }}</strong>{% if item.year %} ({{ item.year }}){% endif %} · <code>{{ id }}</code>{% if id.startswith('tt') %} · <a class="url-link" href="https://www.imdb.com/title/{{ id }}" target="_blank" rel="noopener">IMDb</a>{% elif id.isdigit() %} · <a class="url-link" href="https://www.themoviedb.org/movie/{{ id }}" target="_blank" rel="noopener">TMDB</a>{% endif %}</span></li>
+        {% endfor %}
+        </ul>
     </details>
     {% endif %}
+    {% if has_excluded_ids %}
+    <details class="exclusion-ids">
+        <summary><span class="when-closed">Show</span><span class="when-open">Hide</span> all {{ excluded_ids|length }} configured id{{ "" if excluded_ids|length == 1 else "s" }}</summary>
+        {{ ids(excluded_ids) }}
+    </details>
+    {% endif %}
+</div>
+</section>
 
-    <footer>
-        <p>Generated by Emby Dedupe - https://github.com/troykelly/emby-dedupe</p>
-    </footer>
+<footer>
+    <p>emby-curator {{ run.version }} · run {{ run.run_id }}{% if run.host %} · host {{ run.host }}{% endif %} · {{ run.generated_at }}{% if run.json_name %} · facts: <code>{{ run.json_name }}</code>{% endif %} · sha256 <code>{{ report_sha[:12] }}</code></p>
+    {% if run_summary.reconcile %}<p>{{ run_summary.reconcile }}{% if run_summary.language_line %} {{ run_summary.language_line }}{% endif %}</p>{% endif %}
+    {% if run.argv %}<details class="run-command"><summary>Command</summary><code>{{ run.argv }}</code></details>{% endif %}
+</footer>
+<script type="application/json" id="report-data">{{ report_json_island|safe }}</script>
 </body>
 </html>

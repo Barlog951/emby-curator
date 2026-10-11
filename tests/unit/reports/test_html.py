@@ -250,15 +250,15 @@ class TestHtmlReports:
                 # Handle the case where jinja2 is not installed
                 pass
 
-    @patch('emby_dedupe.reports.html.format_html_report')
-    def test_generate_html_report(self, mock_format_html, tmp_path):
-        """The report is written to a uniquely named file in the temp dir."""
+    @patch('emby_dedupe.reports.html.render_report')
+    def test_generate_html_report(self, mock_render, tmp_path):
+        """The report is written to a uniquely named file in the temp dir, its JSON twin beside it."""
         base_url = "http://example.com"
         decisions = [{"keep": {"id": "123"}, "delete": [{"id": "456"}]}]
-        mock_format_html.return_value = "<html>Test content</html>"
+        mock_render.return_value = "<html>Test content</html>"
 
         with patch('tempfile.gettempdir', return_value=str(tmp_path)), \
-             patch('emby_dedupe.reports.common.time.time', return_value=1234567890), \
+             patch('emby_dedupe.reports.html.time.time', return_value=1234567890), \
              patch('shutil.copy2'):
             result = generate_html_report(base_url, decisions)
 
@@ -267,8 +267,9 @@ class TestHtmlReports:
         assert result.endswith(".html")
         with open(result, encoding="utf-8") as fh:
             assert fh.read() == "<html>Test content</html>"
+        assert os.path.isfile(result[:-5] + ".json")
 
-    @patch('emby_dedupe.reports.html.format_html_report')
+    @patch('emby_dedupe.reports.html.render_report')
     def test_generate_html_report_with_css_error(self, mock_format_html, tmp_path):
         """The stylesheet is embedded now: nothing is copied beside the report, and an
         unreadable stylesheet is logged while the report is still produced."""
@@ -286,12 +287,12 @@ class TestHtmlReports:
             assert _read_report_css() == ""
         mock_logger.error.assert_called_once()
 
-    @patch('emby_dedupe.reports.html.format_html_report')
+    @patch('emby_dedupe.reports.html.render_report')
     def test_reports_in_same_second_do_not_overwrite(self, mock_format_html, tmp_path):
         """Regression: two reports in the same second shared one file and overwrote each other."""
         mock_format_html.side_effect = ["<html>first</html>", "<html>second</html>"]
         with patch('tempfile.gettempdir', return_value=str(tmp_path)), \
-             patch('emby_dedupe.reports.common.time.time', return_value=1234567890), \
+             patch('emby_dedupe.reports.html.time.time', return_value=1234567890), \
              patch('shutil.copy2'):
             first = generate_html_report("http://x", [])
             second = generate_html_report("http://x", [])
@@ -720,12 +721,11 @@ def test_rendered_space_label_and_value_follow_what_really_happened():
     from emby_dedupe.reports.html import format_html_report
     doit = format_html_report("http://emby", [_group("fold_safe_removed"), _group("skipped_unsafe")])
     from emby_dedupe.reports.common import format_size
-    assert "Size Removed" in doit and "Size to Remove" not in doit
     removed, planned = format_size(1_000_000_000), format_size(2_000_000_000)
-    assert f'<div class="stat-value">{removed}</div>' in doit        # only the fold-safe removal
-    assert f'<div class="stat-value">{planned}</div>' not in doit    # not the guard-kept one too
+    assert f"1 file removed, {removed} freed." in doit               # only the fold-safe removal
+    assert f"{planned} freed." not in doit                           # not the guard-kept one too
     dry = format_html_report("http://emby", [_group(None)])
-    assert "Size to Remove" in dry
+    assert "would be freed." in dry
 
 
 def test_fold_safe_group_is_headed_as_deleted():

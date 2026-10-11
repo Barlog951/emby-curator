@@ -275,6 +275,13 @@ def _enrich_keep_item(keep_item, items_details, base_url, api_key) -> None:
         # The report's --exclude-ids hint for a blocked pair needs the ids both copies share.
         keep_item["provider_ids"] = keep_details.get("ProviderIds", {}) or {}
 
+        # The report row for a season shows the series poster, not one episode's still.
+        # Kept as a nested holder so the poster inliner (reports/images) finds and embeds it.
+        series_url = _build_image_url(keep_details.get("SeriesId", ""),
+                                      {"Primary": keep_details.get("SeriesPrimaryImageTag", "")}, base_url, api_key)
+        if series_url:
+            keep_item["series_poster"] = {"image_url": series_url}
+
         # Add episode metadata if TV episode
         keep_item["is_episode"] = "SeriesName" in keep_details
         if keep_item["is_episode"]:

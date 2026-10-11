@@ -58,7 +58,7 @@ def test_identical_posters_are_embedded_once(same_poster_everywhere):
     encoded = base64.b64encode(PAYLOAD).decode("ascii")
 
     assert html.count(encoded) == 1, "the same poster must be written once"
-    assert html.count('class="item-image poster img-') == 4, "all four cards still show it"
+    assert html.count('class="thumb poster img-') == 2, "both rows still show it"
     assert SECRET not in html
 
 

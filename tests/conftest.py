@@ -107,3 +107,9 @@ def load_fixture(fixture_path):
         with open(filepath) as f:
             return json.load(f)
     return _load_fixture
+
+
+@pytest.fixture(autouse=True)
+def _isolated_dedupe_history(tmp_path, monkeypatch):
+    """Reports count guard refusals into a history file; tests must never touch the user's."""
+    monkeypatch.setenv("DEDUPE_HISTORY_FILE", str(tmp_path / "dedupe-history.json"))

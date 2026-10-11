@@ -3,6 +3,7 @@ Main command-line interface for the Emby Dedupe tool.
 """
 
 import logging
+import os
 import sys
 from dataclasses import dataclass, field
 
@@ -161,13 +162,70 @@ def _resolve_configuration(args) -> ResolvedConfig:
     )
 
 
-def _build_report_metadata(excluded_ids, lang_priorities, exclusion_metadata) -> dict:
-    """Build the report metadata dict (single construction for pipeline + reports)."""
-    return {
+def _build_report_metadata(excluded_ids, lang_priorities, exclusion_metadata,
+                           libraries=None, doit=None) -> dict:
+    """Build the report metadata dict (single construction for pipeline + reports).
+
+    ``libraries`` and ``doit`` fill the report's provenance line (``run``): when, which
+    libraries, which exact command, on which host. Reports without them still render.
+    """
+    metadata = {
         "excluded_ids": excluded_ids if excluded_ids else [],
         "language_priorities": lang_priorities if lang_priorities else [],
         "excluded_groups_count": exclusion_metadata.get("excluded_groups_count", 0),
         "excluded_titles": exclusion_metadata.get("excluded_titles", {}),
+    }
+    if libraries is not None or doit is not None:
+        metadata["run"] = _run_provenance(libraries or [], bool(doit))
+    return metadata
+
+
+# Options whose value must never reach a report (the report is opened and shared).
+_SECRET_OPTIONS = frozenset({"--api-key", "--password", "--token", "--anthropic-api-key", "--typesafe-key"})
+
+
+def _redact_argv(argv: list) -> list:
+    """The command line with every credential value replaced by ``***``.
+
+    Handles ``--api-key VALUE`` and ``--api-key=VALUE``. The first token is the program
+    name (``python -m emby_dedupe`` shows as ``__main__.py``, printed as ``emby-curator``).
+    """
+    out: list = []
+    hide_next = False
+    for i, token in enumerate(argv):
+        if i == 0:
+            name = os.path.basename(token)
+            out.append("emby-curator" if name in ("__main__.py", "emby_dedupe", "emby-dedupe") else name)
+            continue
+        if hide_next:
+            out.append("***")
+            hide_next = False
+            continue
+        key, sep, _value = token.partition("=")
+        if key in _SECRET_OPTIONS:
+            if sep:
+                out.append(f"{key}=***")
+            else:
+                out.append(token)
+                hide_next = True
+            continue
+        out.append(token)
+    return out
+
+
+def _run_provenance(libraries: list, doit: bool) -> dict:
+    """What the report prints as its provenance: time, host, libraries, the command line."""
+    import shlex
+    import socket
+    import sys
+    from datetime import datetime
+
+    return {
+        "generated_at": datetime.now().astimezone().replace(microsecond=0).isoformat(),
+        "host": socket.gethostname(),
+        "libraries": list(libraries),
+        "argv": shlex.join(_redact_argv(list(sys.argv))),
+        "doit": doit,
     }
 
 
@@ -290,7 +348,8 @@ def _run_deduplication_pipeline(client, base_url, all_provider_tables, excluded_
 
 
 def _generate_reports(base_url, decisions, exclusion_metadata, excluded_ids,
-                     lang_priorities, html_report, html_only, no_open):
+                     lang_priorities, html_report, html_only, no_open,
+                     libraries=None, doit=None):
     """
     Generate and output reports (markdown and/or HTML).
 
@@ -311,7 +370,8 @@ def _generate_reports(base_url, decisions, exclusion_metadata, excluded_ids,
         no_open: Whether to skip opening browser.
     """
     # Create metadata dictionary for report generation
-    report_metadata = _build_report_metadata(excluded_ids, lang_priorities, exclusion_metadata)
+    report_metadata = _build_report_metadata(excluded_ids, lang_priorities, exclusion_metadata,
+                                             libraries, doit)
 
     # Pure function of `decisions` — no I/O, safe to (re-)render at this point.
     markdown_report = format_markdown_table(base_url, decisions, report_metadata)

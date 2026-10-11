@@ -40,22 +40,25 @@ def test_rows_show_each_files_paths_and_scores():
 
     assert 'data-outcome="removed"' in html
     assert "Removed · 2 files" in html
-    assert "/S/Show/S01/Show S01E01 - CZ.mkv" in html and "/S/Show/S01/Show S01E02 - HDTV.mkv" in html
-    assert "score 90.0" in html and "score 50.0" in html
+    assert '<dt>Folder</dt><dd><span class="fact-path">/S/Show/S01</span></dd>' in html, "the shared folder is said once"
+    assert 'title="/S/Show/S01/Show S01E01 - CZ.mkv">CZ.mkv</span>' in html
+    assert 'title="/S/Show/S01/Show S01E02 - HDTV.mkv">HDTV.mkv</span>' in html
+    assert "90.0 vs 50.0" in html
 
 
 def test_deleted_copy_has_no_dead_emby_link():
     html = _render([_ep(1, "success")])
-    body = html[html.index('<div class="out-section" data-outcome="removed"'):html.index('<details class="legacy-groups">')]
+    body = html[html.index('id="removed" data-outcome="removed"'):html.index('id="excluded"')]
 
-    assert body.count("Open in Emby") == 1, "only the kept copy still exists in Emby"
+    assert body.count('class="url-link"') == 1, "only the kept copy still exists in Emby"
+    assert "Open the other copy" not in body
 
 
 def test_risky_row_is_marked_check():
     html = _render([_ep(1, "success", keep_rating=10)])
 
     assert 'class="crow risky"' in html
-    assert "Check: kept copy scores lower" in html
+    assert 'class="chip chip-check" title="kept copy scores lower">scores lower</span>' in html
 
 
 def test_blocked_row_explains_the_runtime_and_offers_the_exclude_ids_value():
@@ -63,9 +66,9 @@ def test_blocked_row_explains_the_runtime_and_offers_the_exclude_ids_value():
     html = _render([_ep(1, "skipped_unsafe", error="duration-mismatch (keeper 3127s vs delete 3506s)",
                         runtimes=(3127, 3506), ids=ids)])
 
-    assert "Kept by the safety check · both copies stay" in html
-    assert "Runtime differs · 52 vs 58 min" in html
-    assert "9514669,tt24786748" in html
+    assert "Blocked by the safety guard · 1 file" in html
+    assert "runtime 52 vs 58 min (×1.12, different cut)" in html
+    assert "<span>tt24786748</span>" in html and "9514669" not in html, "IMDb id only"
 
 
 def test_real_run_always_shows_the_failed_section():
@@ -79,13 +82,14 @@ def test_dry_run_sections_and_no_failed_section():
     html = _render([_ep(1, "not_attempted"), _ep(2, "would_block", error="duration-mismatch (x)")])
 
     assert "Would be removed · 1 file" in html
-    assert "Would be kept by the safety check · 1 file" in html
+    assert "Would be blocked by the safety guard · 1 file" in html
     assert "Nothing failed." not in html
 
 
-def test_old_group_cards_stay_available_folded():
+def test_old_group_cards_are_gone_and_their_facts_live_in_the_row():
     html = _render([_ep(1, "success")])
 
-    assert '<details class="legacy-groups">' in html
-    assert "Full detail, one card per group (1 group)" in html
-    assert "Group 1:" in html
+    assert '<details class="legacy-groups">' not in html
+    assert "Group 1:" not in html
+    body = html[html.index('class="crow-body"'):]
+    assert "1.00 GB" in body and "2026-10-01" in body and "aac 2.0" in body

@@ -9,17 +9,33 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ### Added
 
-- **The dedupe report opens with a verdict and one row per title and outcome.** A sentence
-  says what happened ("5 files removed, 12.8 GB freed. 24 more were kept by the safety check,
-  and nothing failed."), with an outcome bar. Below it, sections (Failed, Removed, Kept by the
-  safety check, and the dry-run equivalents) list one row per series season or film, e.g.
-  "Call the Midwife · S12 · 8 files · Runtime differs · 52 vs 58 min". Opening a row shows every
-  file: both paths, quality, audio, runtime, score and Emby links. Outcomes are per file, rows
-  never merge across season folders, guard reasons or risk flags, and a risky deletion (kept
-  copy scores lower, deleted copy has a language the kept one lacks, a `(n)` file name,
-  episodes in different folders) gets its own row marked "Check", first. A blocked row offers
-  the `--exclude-ids` value that silences it. The previous per-group cards stay available,
-  folded. The stylesheet is now embedded, so a report is one self-contained file.
+- **The dedupe report opens with a verdict and one row per title and outcome.** One sentence
+  says what happened ("191 files removed, 152.56 GB freed." / "Nothing would be removed."), then
+  an outcome bar whose legend is the page navigation (Check first, Failed, Removed, Blocked by
+  guard, Excluded, each with its count) and a folded "Next steps" line with the `--exclude-ids`
+  value for every guarded pair. The nine "Summary Statistics" tiles are gone. Sections follow in
+  risk order: Check first (risky deletions, open by default), Failed, Removed, Blocked by the
+  safety guard, Skipped by `--exclude-ids`; every header carries file counts and sizes. A row is
+  two calm lines: "Call the Midwife · S12 · 8 files · 10.54 GB · blocked in 6 runs" and only what
+  differs between the copies ("1080p H264 HDTV vs 1080i H264 HDTV · cs vs eng audio · runtime
+  52 vs 58 min (×1.12, different cut)"), plus short chips when there is something to say
+  ("scores lower", "loses eng", "loses HDR", "'(n)' name", "different folders", "name lies"),
+  amber on a deletion, grey on a blocked pair, the full sentence on hover. Opening a row says
+  the facts that are the same for every file once (folder, kept copy, other copy, the guard's
+  reason or the error) and then one table line per episode: the part of each file name that
+  differs, runtime, size and score for both copies, Emby links; a file whose fact differs from
+  the rest of the row carries that fact as a small mark. A file name that claims a resolution
+  the video does not have is flagged. The `--exclude-ids` hint names the IMDb id only (a bare
+  number matches TMDB and TVDB alike) and appears where a decision is still open. The header
+  says mode, time and libraries; version, run id, host, the exact command (credentials redacted),
+  the JSON twin and a reconciling sentence live in the footer. Every section and row has an
+  `id`, rows and files carry `data-outcome` / `data-reason` / `data-flags` / `data-item-id`, and
+  the same facts sit in a `#report-data` JSON island and in a `.json` twin written beside the
+  report (its SHA-256 is in the footer). Blocked pairs are remembered in
+  `~/.emby-dedupe/dedupe-history.json` (`DEDUPE_HISTORY_FILE`), so a row can say "blocked in
+  6 runs". Season rows show the series poster; the other copy shows its own poster only when it
+  differs from the kept one. The per-group cards are gone: their facts live in the rows. Print
+  opens every row on a light page; the layout stacks at phone width.
 
 - **`csfd fill --ai-match` can ask Claude, with Jev as a cross-check.** The new `--ai-provider auto|jev|claude|both`
   chooses the backend; `auto` (the default) uses every backend that has a key, so existing setups are unchanged.

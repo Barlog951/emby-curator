@@ -186,3 +186,24 @@ def test_cleanup_report_posters_do_not_leak_the_key(failing_fetch):
 
     assert SECRET not in html
     assert "api_key" not in html
+
+
+def test_the_provenance_command_line_never_carries_a_credential(monkeypatch):
+    """Regression 2026-10-11: the first v2 report printed ``--api-key <live key>`` in its header."""
+    from emby_dedupe.cli.main import _build_report_metadata, _redact_argv
+    from emby_dedupe.reports.html import format_html_report
+
+    argv = ["/x/emby_dedupe/__main__.py", "--host", "https://emby.example.com", "--api-key", SECRET,
+            "--library", "HD & 4k", "dedupe", "--token=" + SECRET, "--password", "pw", "--html-report"]
+    monkeypatch.setattr("sys.argv", argv)
+
+    assert _redact_argv(argv) == ["emby-curator", "--host", "https://emby.example.com", "--api-key", "***",
+                                  "--library", "HD & 4k", "dedupe", "--token=***", "--password", "***",
+                                  "--html-report"]
+    metadata = _build_report_metadata([], [], {}, libraries=["HD & 4k"], doit=False)
+    assert SECRET not in metadata["run"]["argv"] and "pw" not in metadata["run"]["argv"].split()
+    assert metadata["run"]["argv"].startswith("emby-curator --host")
+
+    html = format_html_report("https://emby.example.com:443", [], metadata)
+    assert SECRET not in html
+    assert "--api-key &#39;***&#39;" in html or "--api-key ***" in html

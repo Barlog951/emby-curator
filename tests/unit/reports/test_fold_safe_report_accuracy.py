@@ -66,16 +66,16 @@ def test_guard_refusal_is_not_reported_as_pending():
     """Defect 2: a protective refusal must not read like a dry run's 'nothing happened'."""
     html = _render(_decision("skipped_unsafe"))
 
-    assert "Blocked by safety guard" in html
+    assert "Blocked by the safety guard · 1 file" in html and 'pill-blocked">Blocked</span>' in html
     assert ">Pending<" not in html
 
 
-def test_dry_run_still_reports_pending():
-    """The 'Pending' label must survive for the case it actually describes."""
+def test_dry_run_still_reports_a_planned_delete_as_planned():
+    """A dry run's delete reads as what --doit would do, never as a refusal."""
     html = _render(_decision("not_attempted"))
 
-    assert ">Pending<" in html
-    assert "Blocked by safety guard" not in html
+    assert "Would be removed · 1 file" in html and 'pill-would_remove">Would remove</span>' in html
+    assert 'pill-blocked">Blocked</span>' not in html
 
 
 def test_fold_safe_removal_overrides_the_guard_verdict():
@@ -87,8 +87,8 @@ def test_fold_safe_removal_overrides_the_guard_verdict():
 
     assert decisions[0]["delete"][0]["deletion_result"]["status"] == "fold_safe_removed"
     html = _render(decisions)
-    assert "fold-safe" in html
-    assert "Blocked by safety guard" not in html
+    assert "1 file only (SSH)" in html and 'pill-removed">Removed</span>' in html
+    assert 'pill-blocked">Blocked</span>' not in html
 
 
 def test_only_a_real_removal_clears_the_refusal():

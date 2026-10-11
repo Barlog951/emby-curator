@@ -77,7 +77,7 @@ def test_rows_never_merge_across_season_folders():
     rows = _rows(build_clusters(decisions, BASE), "removed")
 
     assert sorted((r["season_folder"], r["count"]) for r in rows) == [(1, 2), (2, 1)]
-    assert {r["sub"] for r in rows} == {"S01 · 2 files", "S02 · S02E01"}
+    assert {r["sub"] for r in rows} == {"S01 · 2 files", "S02E01"}
 
 
 def test_rows_never_merge_across_guard_reasons():
@@ -107,15 +107,20 @@ def test_language_loss_is_flagged():
     row = _rows(build_clusters(decisions, BASE), "removed")[0]
 
     assert "language_loss" in row["flags"] and row["risk"]
-    assert row["delete_langs"] == "kor eng cs"
+    assert row["files"][0]["delete"]["langs"] == "kor eng cs"
 
 
-def test_dup_suffix_is_flagged():
+def test_dup_suffix_is_flagged_only_when_the_runtimes_differ():
+    """Initial D hid a different episode behind "(2)"; the same runtime means the same episode."""
     keep = _item("k", "/M/HD/Film (2020)/Film.mkv")
-    decisions = [{"keep": keep, "delete": [_item("d", "/M/HD/Film (2020)/Film (2).mkv", status="success")]}]
-    row = _rows(build_clusters(decisions, BASE), "removed")[0]
-
+    other = _item("d", "/M/HD/Film (2020)/Film (2).mkv", status="success")
+    other["runtime_ticks"] = 3300 * 10_000_000
+    row = _rows(build_clusters([{"keep": keep, "delete": [other]}], BASE), "removed")[0]
     assert "dup_suffix" in row["flags"]
+
+    same = _item("d2", "/M/HD/Film (2020)/Film (2).mkv", status="success")  # 2700 s, like the keeper
+    row = _rows(build_clusters([{"keep": keep, "delete": [same]}], BASE), "removed")[0]
+    assert "dup_suffix" not in row["flags"]
 
 
 def test_dry_run_sections():
@@ -146,7 +151,7 @@ def test_every_file_keeps_its_evidence():
     row = _rows(build_clusters([_episode("Show", 1, 1)], BASE), "removed")[0]
     f = row["files"][0]
 
-    assert f["keep_path"].endswith("2160p.mkv") and f["delete_path"].endswith("1080p.mkv")
-    assert f["keep_score"] == 100 and f["delete_score"] == 50
-    assert f["keep_runtime"] == "45:00"
-    assert "id=k11" in f["keep_url"] and "id=d11" in f["delete_url"]
+    assert f["keep"]["path"].endswith("2160p.mkv") and f["delete"]["path"].endswith("1080p.mkv")
+    assert f["keep"]["score"] == 100 and f["delete"]["score"] == 50
+    assert f["keep"]["runtime"] == "45:00"
+    assert "id=k11" in f["keep"]["url"] and "id=d11" in f["delete"]["url"]

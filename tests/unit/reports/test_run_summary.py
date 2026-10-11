@@ -37,14 +37,14 @@ def test_real_run_verdict():
                     _group(3, "skipped_unsafe", "duration-mismatch (keeper 1s vs delete 99s)")])
 
     assert "2 files removed, 2.00 GB freed." in html
-    assert "1 more was kept by the safety check, and nothing failed." in html
+    assert "Blocked by guard <strong>1</strong>" in html, "the legend carries the guard count"
     assert "Real run (--doit)" in html
 
 
 def test_failures_are_named_in_the_verdict():
     html = _render([_group(1, "success"), _group(2, "failed", "HTTP 500")])
 
-    assert "and 1 failed." in html
+    assert "1 delete failed. 1 file removed, 1.00 GB freed." in html
     assert 'class="run-seg seg-failed"' in html
 
 
@@ -52,7 +52,7 @@ def test_dry_run_verdict_counts_what_the_guard_will_refuse():
     html = _render([_group(1, "not_attempted"), _group(2, "would_block", "duration-mismatch (x)")])
 
     assert "Dry run: 1 file would be removed, 1.00 GB would be freed." in html
-    assert "1 more would be kept by the safety check. Nothing was deleted." in html
+    assert "1 more would be blocked by the safety guard." in html
     assert "Dry run · nothing deleted" in html
 
 
@@ -67,7 +67,7 @@ def test_empty_run_verdict():
 def test_bar_has_a_text_alternative_and_zero_states_are_outlined():
     html = _render([_group(1, "success")])
 
-    assert 'aria-label="1 removed, 0 kept by safety check, 0 failed"' in html
+    assert 'aria-label="0 failed, 1 removed, 0 blocked by guard"' in html
     assert 'class="run-swatch seg-failed zero"' in html
 
 
@@ -76,7 +76,7 @@ def test_risky_rows_are_announced():
     decisions = [_group(1, "success")]
     decisions[0]["keep"]["rating"] = 10
 
-    assert "1 row below needs a look" in _render(decisions)
+    assert '<a href="#check" class="emphasis"><span class="run-swatch seg-check"></span>Second look <strong>1</strong></a>' in _render(decisions)
 
 
 def test_stylesheet_is_embedded_not_linked():
