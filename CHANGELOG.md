@@ -7,6 +7,8 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.1] — 2026-10-12
+
 ### Changed
 
 - **Dedupe removes an episode copy of a different length when the kept copy holds all of it.**
