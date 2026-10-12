@@ -21,6 +21,8 @@ from emby_dedupe.api.content_check import (
     cache_key,
     cache_path,
     classify,
+    coverage_verdict,
+    expected_speed,
     frames_from_raw,
     is_speedup_pair,
     point_match,
@@ -362,17 +364,27 @@ DRIFTING = (-17.6, -40.0, -62.6, -85.2, -102.1)  # S05E15 avi: same pictures, ~1
 
 
 class _Frames:
-    def __init__(self, verdict, offsets=STEADY):
+    def __init__(self, verdict, offsets=STEADY, covered="same"):
         self.verdict = FrameVerdict(verdict, (0.9,) * 5, offsets if verdict == "same" else ())
+        self.covered = FrameVerdict(covered, (0.9,) * 7, (), "covered" if covered == "same" else "61s at the start")
         self.calls = 0
+        self.cover_calls = 0
 
     def compare(self, keeper, other):
         self.calls += 1
         return self.verdict
 
+    def covers(self, keeper, other):
+        self.cover_calls += 1
+        return self.covered
+
+
+def _film(item_id, seconds, fps, path="/M/A (2001)/a.mkv"):
+    return {**_ep(item_id, seconds, fps, path), "is_episode": False}
+
 
 def test_speedup_is_removed_only_when_frames_match():
-    sk, cz = _ep("sk", 2423, 25.0), _ep("cz", 2423 * 1.0427, 23.976)
+    sk, cz = _film("sk", 2423, 25.0), _film("cz", 2423 * 1.0427, 23.976)
     assert dd._different_content_reason(cz, sk, _Frames("same")) is None
     refused = dd._different_content_reason(cz, sk, _Frames("unsure"))
     assert "duration-mismatch" in refused and "PAL speed-up not confirmed" in refused
@@ -382,7 +394,7 @@ def test_speedup_is_removed_only_when_frames_match():
 def test_matching_pictures_with_a_drifting_offset_are_not_a_speedup():
     """NCIS S05E15: the SD avi shows the same pictures but runs ~110 s longer at the same
     speed; the runtime ratio only happens to fit 25/24, so the avi is kept."""
-    avi, sk = _ep("avi", 2423 * 1.0443, 23.976), _ep("sk", 2423, 25.0)
+    avi, sk = _film("avi", 2423 * 1.0443, 23.976), _film("sk", 2423, 25.0)
     refused = dd._different_content_reason(avi, sk, _Frames("same", DRIFTING))
     assert "duration-mismatch" in refused and "offset drifts" in refused
 
@@ -392,10 +404,103 @@ def test_drift_needs_enough_matched_points():
     assert FrameVerdict("same", (0.9,) * 5, STEADY).steady
 
 
-def test_a_runtime_gap_that_is_not_a_speedup_never_asks_the_frames():
+def test_a_film_runtime_gap_that_is_not_a_speedup_never_asks_the_frames():
     frames = _Frames("same")
-    reason = dd._different_content_reason(_ep("cz", 2569, 24.0), _ep("sk", 2387, 25.0), frames)
-    assert "duration-mismatch" in reason and frames.calls == 0
+    reason = dd._different_content_reason(_film("cz", 2569, 24.0), _film("sk", 2387, 25.0), frames)
+    assert "duration-mismatch" in reason and frames.calls == 0 and frames.cover_calls == 0
+
+
+def test_episode_runtime_gap_goes_when_the_kept_copy_holds_all_of_it():
+    """Fuki 2026-10-12: TVD S06 720p BluRay (EN) vs 1080p CZ+EN, 0.03 % off the PAL ratio."""
+    blu, cz = _ep("blu", 2536, 23.976), _ep("cz", 2417, 25.0)
+    frames = _Frames("same")
+    assert dd._different_content_reason(blu, cz, frames) is None
+    assert frames.cover_calls == 1 and frames.calls == 0
+
+
+def test_episode_with_a_lead_in_the_kept_copy_lacks_stays():
+    """TVD S08E16: the copy to delete has a 61 s TV lead-in (Fuki: such cases stay manual)."""
+    refused = dd._different_content_reason(_ep("tv", 2606, 23.976), _ep("cz", 2431, 25.0), _Frames("same", covered="unsure"))
+    assert "duration-mismatch" in refused and "not proven that the kept copy holds all of it" in refused
+
+
+def test_episode_runtime_gap_without_frames_stays():
+    assert "duration-mismatch" in dd._different_content_reason(_ep("tv", 2606, 23.976), _ep("cz", 2431, 25.0), None)
+
+
+# --- coverage: does the kept copy hold everything? (real offsets, 2026-10-12) -----------------
+
+TVD_S06E16 = [(45, -0.6), (380, 1.4), (887, 2.5), (1395, 3.6), (1902, 2.9), (2282, 3.2), (2461, 4.2)]
+
+
+def test_tvd_bluray_is_covered_by_the_pal_web_dl():
+    verdict, note = coverage_verdict(TVD_S06E16, 2536, 2417, 2417 / 2536, 23.976 / 25)
+    assert verdict == "same" and "covered" in note
+
+
+def test_kept_copy_longer_than_the_copy_to_delete_covers_it():
+    # NCIS S14E15: 480p CZ (25 fps, 38:37) inside the 1080p CZ (23.976, 41:04)
+    points = [(45, 0.0), (348, -7.4), (811, -14.1), (1275, -25.2), (1738, -33.9), (2086, -40.2), (2243, -43.9)]
+    assert coverage_verdict(points, 2318, 2465, 2465 / 2318, 25 / 23.976)[0] == "same"
+
+
+def test_a_lead_in_on_the_copy_to_delete_is_not_covered():
+    # TVD S08E16 480p: 61 s before the kept copy starts
+    points = [(45, -56.3), (391, -47.6), (912, -39.9), (1433, -28.2), (1954, -16.4), (2345, -6.3), (2531, -1.5)]
+    verdict, note = coverage_verdict(points, 2606, 2431, 2431 / 2606, 23.976 / 25)
+    assert verdict == "unsure" and "at the start" in note
+
+
+def test_a_missing_scene_is_a_step_off_the_line():
+    points = [(45, 0.0), (380, 0.1), (887, 0.2), (1395, 40.3), (1902, 40.4), (2282, 40.5), (2461, 40.6)]
+    verdict, note = coverage_verdict(points, 2536, 2577, 1.0, 1.0)
+    assert verdict == "unsure" and "missing or extra" in note
+
+
+def test_extra_minutes_spread_evenly_are_not_a_speed_up():
+    """NCIS S05E15: the avi ran ~110 s longer at the SAME speed; spread over the episode the
+    offsets made a straight line that looked like 25/23.976, but the frame rates say 1.0."""
+    points = [(45, 0.0), (380, -16.6), (887, -40.0), (1395, -62.6), (1902, -85.2), (2282, -102.1), (2461, -110.0)]
+    verdict, note = coverage_verdict(points, 2533, 2423, 1.0, 1.0)
+    assert verdict == "unsure" and "frame rates" in note
+
+
+def test_coverage_needs_both_frame_rates():
+    assert coverage_verdict(TVD_S06E16, 2536, 2417, 2417 / 2536, None) == ("unsure", "frame rate unknown")
+    assert expected_speed(_ep("k", 2417, 25.0), _ep("o", 2536, None)) is None
+    assert abs(expected_speed(_ep("k", 2417, 25.0), _ep("o", 2536, 23.976)) - 0.95904) < 1e-4
+
+
+def test_covers_stops_at_the_first_part_not_found():
+    checker = FrameChecker("https://emby", "k", ffmpeg_path="ffmpeg")
+    with patch.object(checker, "_score_point", side_effect=[(0.9, 0.1), (0.1, None)]) as score:
+        verdict = checker._covers(_ep("k", 2417, 25.0), _ep("o", 2536, 23.976))
+    assert verdict.verdict == "different" and score.call_count == 2 and "not found" in verdict.note
+
+
+def test_covers_samples_the_copy_to_delete_from_its_first_to_its_last_minute():
+    checker = FrameChecker("https://emby", "k", ffmpeg_path="ffmpeg")
+    offsets = iter(o for _, o in TVD_S06E16)
+    with patch.object(checker, "_score_point", side_effect=lambda *a: (1.0, next(offsets))) as score:
+        verdict = checker._covers(_ep("k", 2417, 25.0), _ep("o", 2536, 23.976))
+    sampled = [call.args[2] for call in score.call_args_list]
+    assert sampled[0] == 45 and sampled[-1] == 2536 - 75 and len(sampled) == 7
+    assert all(call.args[0]["id"] == "o" for call in score.call_args_list)  # the copy to delete is sampled
+    assert verdict.verdict == "same"
+
+
+def test_cover_and_compare_verdicts_are_saved_apart(tmp_path):
+    checker = _cached_checker(tmp_path)
+    keeper, other = _ep("k", 2417, 25.0), _ep("o", 2536, 23.976)
+    with patch.object(checker, "_compare", return_value=FrameVerdict("same")), \
+         patch.object(checker, "_covers", return_value=FrameVerdict("unsure", (), (), "61s at the start")):
+        assert checker.compare(keeper, other).verdict == "same"
+        assert checker.covers(keeper, other).verdict == "unsure"
+    again = _cached_checker(tmp_path)
+    with patch.object(again, "_covers") as rerun:
+        saved = again.covers(keeper, other)
+    assert saved.note == "61s at the start" and not rerun.called
+    assert cache_key(keeper, other, "cover") != cache_key(keeper, other)
 
 
 def test_swapped_episode_with_matching_length_is_kept():
@@ -419,11 +524,32 @@ def test_prefetch_list_holds_only_pairs_the_guard_will_ask_about():
     speedup = {"keep": _ep("k2", 2423, 25.0), "delete": [_ep("d2", 2423 * 1.0427, 23.976)]}
     recap = {"keep": _ep("k3", 2387, 25.0), "delete": [_ep("d3", 2569, 24.0)]}
     unprobed = {"keep": _ep("k4", 2400, 25), "delete": [{**_ep("d4", 0, 25), "runtime_ticks": None}]}
-    pairs = dd._frame_check_pairs([same_len, speedup, recap, unprobed])
-    assert [(k["id"], o["id"]) for k, o in pairs] == [("k1", "d1"), ("k2", "d2")]
+    pairs, covering = dd._frame_check_pairs([same_len, speedup, recap, unprobed])
+    assert [(k["id"], o["id"]) for k, o in pairs] == [("k1", "d1")]
+    assert [(k["id"], o["id"]) for k, o in covering] == [("k2", "d2"), ("k3", "d3")]
 
 
 def test_video_frame_rate_comes_from_the_first_video_stream():
     details = {"MediaStreams": [{"Type": "Audio"}, {"Type": "Video", "RealFrameRate": 25}]}
     assert dd._video_frame_rate(details) == 25.0
     assert dd._video_frame_rate({}) is None
+
+
+def test_prefetch_runs_covers_for_pairs_whose_lengths_differ(tmp_path):
+    checker = _cached_checker(tmp_path)
+    same_len, gap = (_ep("k1", 2461, 25), _ep("d1", 2470, 25)), (_ep("k2", 2417, 25.0), _ep("d2", 2536, 23.976))
+    with patch.object(checker, "_compare", return_value=FrameVerdict("same")) as compare, \
+         patch.object(checker, "_covers", return_value=FrameVerdict("same", (), (), "covered")) as covers:
+        checker.prefetch([same_len], [gap])
+        assert checker.covers(*gap).verdict == "same" and checker.compare(*same_len).verdict == "same"
+    assert compare.call_count == 1 and covers.call_count == 1  # the guard reuses the prefetched verdicts
+
+
+def test_a_search_window_never_starts_before_the_file():
+    """TVD S08E16: the copy to delete has a 61 s lead-in, so its 45 s point lies before the
+    kept copy starts; ffmpeg would read from 0 while the frame times said -14 s."""
+    checker = FrameChecker("https://emby", "k", ffmpeg_path="ffmpeg")
+    frames = [(45.0 + n, [1.0]) for n in range(4)]
+    with patch.object(checker, "_keyframes", side_effect=[frames, [(0.0, [1.0])], [(0.0, [1.0])]]) as read:
+        checker._score_point(_ep("o", 2606, 23.976), _ep("k", 2431, 25.0), 45.0, 0.93, -56.0)
+    assert all(call.args[1] >= 0 for call in read.call_args_list[1:])

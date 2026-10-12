@@ -1289,8 +1289,10 @@ def _different_content_reason(item: dict, keeper: dict, frames: FrameChecker | N
     episode), or (episodes, when ``frames`` is given) the pictures do not match: a swapped
     NCIS S19E07/E08 had lengths within 2 % and its Czech E08 was deleted (2026-10-12).
 
-    The one exception to the running-time rule is a PAL speed-up (25 fps vs 23.976/24,
-    4.2 % shorter), and only when the frame check proves the same picture.
+    The exception to the running-time rule needs the frame check: for an episode, proof
+    that the kept copy holds every part of the copy to delete (a PAL speed-up, or a kept
+    copy that is longer); for a movie, only a PAL speed-up (25 fps vs 23.976/24, 4.2 %
+    shorter) the frames confirm.
     """
     reason = (episode_identity_conflict(keeper.get("path"), item.get("path"))
               or _unknown_runtime(item, keeper))
@@ -1298,7 +1300,7 @@ def _different_content_reason(item: dict, keeper: dict, frames: FrameChecker | N
         return reason
     mismatch = duration_mismatch(keeper.get("runtime_ticks"), item.get("runtime_ticks"))
     if mismatch:
-        return _speedup_exception(item, keeper, frames, mismatch)
+        return _runtime_gap_exception(item, keeper, frames, mismatch)
     return _frame_mismatch(item, keeper, frames)
 
 
@@ -1307,14 +1309,34 @@ def _frame_check_wanted(item: dict, keeper: dict) -> bool:
     return bool(keeper.get("is_episode") or item.get("is_episode"))
 
 
-def _speedup_exception(item: dict, keeper: dict, frames: FrameChecker | None, mismatch: str) -> str | None:
+def _runtime_gap_exception(item: dict, keeper: dict, frames: FrameChecker | None, mismatch: str) -> str | None:
+    """None when the frames prove the delete loses nothing, else the refusal.
+
+    Episodes (Fuki, 2026-10-12): the kept copy must hold every part of the copy to delete
+    (``FrameChecker.covers``). That removed 8 English-only Vampire Diaries copies 0.03 % off
+    the PAL ratio and a Czech NCIS S14E15 480p shorter than its kept copy; a copy to delete
+    with a 61 s TV lead-in (TVD S08E16) or a second episode inside (NCIS S05E18-19) stays.
+    Movies keep the narrower PAL rule: two cuts of one film are both kept.
+    """
+    if frames is None:
+        return mismatch
+    if not _frame_check_wanted(item, keeper):
+        return _speedup_exception(item, keeper, frames, mismatch)
+    verdict = frames.covers(keeper, item)
+    if verdict.verdict == "same":
+        logger.info(f"Kept copy holds all of id={item.get('id')} ({verdict.describe()}).")
+        return None
+    return f"{mismatch}; not proven that the kept copy holds all of it: {verdict.describe()}"
+
+
+def _speedup_exception(item: dict, keeper: dict, frames: FrameChecker, mismatch: str) -> str | None:
     """None when the running-time gap is a PAL speed-up the frames confirm, else the refusal.
 
     The frames must match AND line up at a steady offset: NCIS S05E15 (SD avi) matched
     picture for picture but drifted ~23 s per sample point, so it is ~110 s longer at the
     same speed, not sped up, and the extra minutes may be scenes the kept copy lacks.
     """
-    if frames is None or not is_speedup_pair(keeper, item):
+    if not is_speedup_pair(keeper, item):
         return mismatch
     verdict = frames.compare(keeper, item)
     if verdict.verdict == "same" and verdict.steady:
@@ -1335,9 +1357,11 @@ def _frame_mismatch(item: dict, keeper: dict, frames: FrameChecker | None) -> st
     return verdict.describe() if verdict.verdict in ("different", "unsure") else None
 
 
-def _frame_check_pairs(decisions: list) -> list[tuple[dict, dict]]:
-    """Every (keeper, delete) pair the frame check will be asked about, for a parallel prefetch."""
-    pairs = []
+def _frame_check_pairs(decisions: list) -> tuple[list[tuple[dict, dict]], list[tuple[dict, dict]]]:
+    """Every (keeper, delete) episode pair the frame check will be asked about, for a parallel
+    prefetch: pairs of one length (``compare``) and pairs whose lengths differ (``covers``)."""
+    pairs: list[tuple[dict, dict]] = []
+    covering: list[tuple[dict, dict]] = []
     for decision in decisions:
         keeper = decision.get("keep") or {}
         for item in decision.get("delete", []):
@@ -1347,9 +1371,8 @@ def _frame_check_pairs(decisions: list) -> list[tuple[dict, dict]]:
                     or _unknown_runtime(item, keeper)):
                 continue
             mismatch = duration_mismatch(keeper.get("runtime_ticks"), item.get("runtime_ticks"))
-            if not mismatch or is_speedup_pair(keeper, item):
-                pairs.append((keeper, item))
-    return pairs
+            (covering if mismatch else pairs).append((keeper, item))
+    return pairs, covering
 
 
 def _unknown_runtime(item: dict, keeper: dict) -> str | None:
@@ -1638,7 +1661,7 @@ def process_deletion_and_generate_report(
 
     # The frame check streams from Emby; run all pairs up front, a few at a time.
     if frames is not None:
-        frames.prefetch(_frame_check_pairs(decisions))
+        frames.prefetch(*_frame_check_pairs(decisions))
 
     if not doit:
         deletion_progress_bar = tqdm(

@@ -19,6 +19,12 @@ how many keyframes have a twin at ONE common time offset: the same episode lines
 point is carried to the next, so a copy with a cut or an extra scene stays in the search
 window. The offsets also tell a real speed-up (offset stays flat) from a copy that is
 simply longer (offset keeps growing), which dedupe uses to allow only the former.
+
+When the two copies differ in length, ``covers`` asks the opposite question: is every
+part of the copy that would be deleted also in the kept copy? It samples the copy to
+delete from its first to its last minute, needs every point found in the kept copy on one
+straight line, at the speed the two frame rates predict, with almost nothing left over at
+the edges. Only then is nothing lost by the delete (Fuki, 2026-10-12).
 """
 
 from __future__ import annotations
@@ -59,6 +65,10 @@ MISS_SCORE = 0.3  # a point clearly misses below this
 MISSES_FOR_DIFFERENT = 4  # of the 5 points
 EARLY_MISS_SCORE = 0.15  # two points this low settle "different" without the rest
 MAX_SPEEDUP_DRIFT_SECONDS = 15.0  # offset change allowed across matched points of a speed-up
+COVER_HEAD_SECONDS = 45.0  # "covers" samples the copy to delete from this far into it...
+COVER_TAIL_SECONDS = 75.0  # ...to this far before its end, plus every SAMPLE_POINTS point
+COVER_LINE_TOLERANCE_SECONDS = 3.0  # a point this far off the straight line = a cut or extra scene
+COVER_EDGE_EXTRA_SECONDS = 10.0  # unaccounted seconds allowed at the edges (studio logos, black)
 MIN_KEYFRAMES = 2
 WINDOW_FPS = 4  # the other copy is sampled this densely, so every keyframe has a near twin
 FFMPEG_TIMEOUT_SECONDS = 120
@@ -66,7 +76,7 @@ PARALLEL_PAIRS = 4  # streaming from Emby over the network
 PARALLEL_PAIRS_ON_HOST = 12  # ffmpeg on the media host, next to the files (24 cores on emby-gpu)
 # Saved verdicts are keyed by this: bump it whenever the method or a threshold changes,
 # so every pair is checked again under the new rules.
-CHECK_VERSION = 3
+CHECK_VERSION = 4
 ENV_CACHE_FILE = "DEDUPE_FRAME_CHECK_CACHE"
 CACHE_KEEP_DAYS = 180  # a saved verdict not used for this long is dropped
 _DEFAULT_CACHE = Path.home() / ".emby-dedupe" / "frame-check-cache.json"
@@ -95,6 +105,7 @@ class FrameVerdict:
     verdict: Verdict
     scores: tuple[float, ...] = field(default_factory=tuple)
     offsets: tuple[float, ...] = field(default_factory=tuple)
+    note: str = ""  # why "covers" said what it said
 
     @property
     def drift(self) -> float | None:
@@ -116,7 +127,8 @@ class FrameVerdict:
         scores = ", ".join(f"{s:.2f}" for s in self.scores)
         text = f"frame-check {self.verdict}" + (f" ({scores})" if scores else "")
         drift = self.drift
-        return text + (f", offset drift {drift:.0f}s" if drift is not None else "")
+        text += f", offset drift {drift:.0f}s" if drift is not None else ""
+        return text + (f", {self.note}" if self.note else "")
 
 
 def _in(value: float | None, bounds: tuple[float, float]) -> bool:
@@ -138,6 +150,48 @@ def is_speedup_pair(keeper: dict, other: dict) -> bool:
         return False
     ratio = max(a, b) / min(a, b)
     return any(abs(ratio - r) <= SPEEDUP_TOLERANCE for r in SPEEDUP_RATIOS)
+
+
+def expected_speed(keeper: dict, other: dict) -> float | None:
+    """Kept-copy seconds per second of ``other`` if both show the same frames (None when a frame rate is unknown).
+
+    25 fps from a 23.976 fps master runs 23.976/25 = 0.959 as long; equal rates give 1.0.
+    """
+    keeper_fps, other_fps = keeper.get("frame_rate"), other.get("frame_rate")
+    if not keeper_fps or not other_fps:
+        return None
+    return float(other_fps) / float(keeper_fps)
+
+
+def coverage_verdict(points: list[tuple[float, float]], other_seconds: float, keeper_seconds: float,
+                     speed: float, expected: float | None) -> tuple[Verdict, str]:
+    """Does the kept copy hold everything of the other copy? ("same" = yes) and why.
+
+    ``points`` are (time in the other copy, offset) of every sampled point, all of them
+    found in the kept copy; offset = kept-copy time minus time * ``speed``. They must lie on
+    one straight line (a cut or extra scene shows as a step), the line's speed must be what
+    the frame rates predict (NCIS S05E15: an avi ~110 s longer at the SAME speed had its
+    extra minutes spread so evenly that the line looked like a PAL speed-up, but both frame
+    rates said otherwise), and the line may leave at most ``COVER_EDGE_EXTRA_SECONDS`` of
+    the other copy outside the kept one (a TV lead-in or a cold open is content).
+    """
+    if expected is None:
+        return "unsure", "frame rate unknown"
+    if len(points) < 3:
+        return "unsure", "too few points"
+    times, offsets = [t for t, _ in points], [o for _, o in points]
+    slope, intercept = statistics.linear_regression(times, offsets)
+    off_line = max(abs(o - (slope * t + intercept)) for t, o in points)
+    if off_line > COVER_LINE_TOLERANCE_SECONDS:
+        return "unsure", f"a part is missing or extra ({off_line:.0f}s off the line)"
+    fitted = speed + slope
+    if abs(fitted / expected - 1) > SPEEDUP_TOLERANCE:
+        return "unsure", f"speed {fitted:.4f} is not the {expected:.4f} the frame rates give"
+    head = max(0.0, -intercept / fitted)  # other-copy seconds before the kept copy starts
+    tail = max(0.0, (fitted * other_seconds + intercept - keeper_seconds) / fitted)
+    if head + tail > COVER_EDGE_EXTRA_SECONDS:
+        return "unsure", f"{head:.0f}s at the start and {tail:.0f}s at the end are not in the kept copy"
+    return "same", f"covered (speed {fitted:.4f}, {head + tail:.0f}s at the edges)"
 
 
 def classify(scores: list[float]) -> Verdict:
@@ -219,15 +273,16 @@ def cache_path() -> Path:
     return Path(os.environ.get(ENV_CACHE_FILE) or _DEFAULT_CACHE)
 
 
-def cache_key(keeper: dict, other: dict) -> str:
-    """The saved-verdict key: method version, then id, path and running time of both copies.
+def cache_key(keeper: dict, other: dict, kind: str = "compare") -> str:
+    """The saved-verdict key: method version, check kind, then id, path and running time of both copies.
 
     A replaced or renamed file, or a re-probed running time, makes a new key, so a saved
     verdict is only ever reused for exactly the files it was measured on.
     """
     def part(item: dict) -> str:
         return f"{item.get('id')}|{item.get('path') or ''}|{item.get('runtime_ticks') or ''}"
-    return f"v{CHECK_VERSION}|{part(keeper)}|{part(other)}"
+    kind_part = "" if kind == "compare" else f"{kind}|"
+    return f"v{CHECK_VERSION}|{kind_part}{part(keeper)}|{part(other)}"
 
 
 def load_cache(path: Path) -> dict[str, dict]:
@@ -281,7 +336,7 @@ class FrameChecker:
             self._ffmpeg = ffmpeg_path or "ffmpeg"  # resolved on the media host
         else:
             self._ffmpeg = ffmpeg_path if ffmpeg_path is not None else shutil.which("ffmpeg")
-        self._cache: dict[tuple[str, str], FrameVerdict] = {}
+        self._cache: dict[tuple[str, str, str], FrameVerdict] = {}
         self._sources: dict[str, str | None] = {}
         self._cache_file = cache_file
         self._saved: dict[str, dict] = load_cache(cache_file) if cache_file else {}
@@ -373,25 +428,25 @@ class FrameChecker:
                            f"{len(run.stdout) // (FRAME_WIDTH * FRAME_HEIGHT)} frames; treated as unreadable.")
         return keyframes
 
-    def _known(self, keeper: dict, other: dict) -> FrameVerdict | None:
+    def _known(self, keeper: dict, other: dict, kind: str = "compare") -> FrameVerdict | None:
         """The verdict already measured for this pair, this run or a saved earlier one."""
-        verdict = self._cache.get((str(keeper.get("id")), str(other.get("id"))))
+        verdict = self._cache.get((kind, str(keeper.get("id")), str(other.get("id"))))
         if verdict is None and self._cache_file:
-            entry = self._saved.get(cache_key(keeper, other))
+            entry = self._saved.get(cache_key(keeper, other, kind))
             if entry:
                 entry["used"] = datetime.now(UTC).replace(microsecond=0).isoformat()
                 verdict = FrameVerdict(entry["verdict"], tuple(entry.get("scores") or ()),
-                                       tuple(entry.get("offsets") or ()))
-                self._cache[(str(keeper.get("id")), str(other.get("id")))] = verdict
+                                       tuple(entry.get("offsets") or ()), str(entry.get("note") or ""))
+                self._cache[(kind, str(keeper.get("id")), str(other.get("id")))] = verdict
         return verdict
 
-    def _remember(self, keeper: dict, other: dict, verdict: FrameVerdict) -> None:
-        self._cache[(str(keeper.get("id")), str(other.get("id")))] = verdict
+    def _remember(self, keeper: dict, other: dict, verdict: FrameVerdict, kind: str = "compare") -> None:
+        self._cache[(kind, str(keeper.get("id")), str(other.get("id")))] = verdict
         if self._cache_file and verdict.verdict in _SAVED_VERDICTS:  # never "unavailable"
             now = datetime.now(UTC).replace(microsecond=0).isoformat()
-            self._saved[cache_key(keeper, other)] = {
+            self._saved[cache_key(keeper, other, kind)] = {
                 "verdict": verdict.verdict, "scores": list(verdict.scores), "offsets": list(verdict.offsets),
-                "checked": now, "used": now}
+                "note": verdict.note, "checked": now, "used": now}
 
     def save(self) -> None:
         """Write the saved verdicts (no-op without a cache file)."""
@@ -400,17 +455,31 @@ class FrameChecker:
 
     def compare(self, keeper: dict, other: dict) -> FrameVerdict:
         """Same / different / unsure for the pair, or unavailable when it cannot be checked."""
-        verdict = self._known(keeper, other)
+        return self._checked(keeper, other, "compare")
+
+    def covers(self, keeper: dict, other: dict) -> FrameVerdict:
+        """"same" only when the kept copy holds every part of ``other`` (see ``coverage_verdict``)."""
+        return self._checked(keeper, other, "cover")
+
+    def _checked(self, keeper: dict, other: dict, kind: str) -> FrameVerdict:
+        verdict = self._known(keeper, other, kind)
         if verdict is None:
-            verdict = self._compare(keeper, other)
-            self._remember(keeper, other, verdict)
+            verdict = self._run(kind, keeper, other)
+            self._remember(keeper, other, verdict, kind)
             self.save()
         return verdict
 
-    def prefetch(self, pairs: list[tuple[dict, dict]]) -> None:
-        """Check many pairs up front, a few at a time (ffmpeg runs as separate processes)."""
-        todo = [(k, o) for k, o in pairs if self._known(k, o) is None]
-        reused = len(pairs) - len(todo)
+    def _run(self, kind: str, keeper: dict, other: dict) -> FrameVerdict:
+        return self._covers(keeper, other) if kind == "cover" else self._compare(keeper, other)
+
+    def prefetch(self, pairs: list[tuple[dict, dict]], covering: list[tuple[dict, dict]] | None = None) -> None:
+        """Check many pairs up front, a few at a time (ffmpeg runs as separate processes).
+
+        ``pairs`` get ``compare``, ``covering`` (pairs whose lengths differ) get ``covers``.
+        """
+        tasks = [("compare", k, o) for k, o in pairs] + [("cover", k, o) for k, o in covering or []]
+        todo = [(kind, k, o) for kind, k, o in tasks if self._known(k, o, kind) is None]
+        reused = len(tasks) - len(todo)
         if reused:
             logger.info(f"Frame check: {reused} pair(s) already checked in an earlier run.")
         if not (todo and self.available):
@@ -420,12 +489,13 @@ class FrameChecker:
         logger.info(f"Frame check: comparing {len(todo)} pair(s), {self._parallel} at a time, {where}...")
         counts: Counter[str] = Counter()
         with ThreadPoolExecutor(max_workers=self._parallel) as pool:
-            futures = {pool.submit(self._compare, keeper, other): (keeper, other) for keeper, other in todo}
+            futures = {pool.submit(self._run, kind, keeper, other): (kind, keeper, other)
+                       for kind, keeper, other in todo}
             with tqdm(as_completed(futures), total=len(futures), desc="Frame check", unit="pair") as progress:
                 for future in progress:
-                    keeper, other = futures[future]
+                    kind, keeper, other = futures[future]
                     verdict = future.result()
-                    self._remember(keeper, other, verdict)
+                    self._remember(keeper, other, verdict, kind)
                     counts[verdict.verdict] += 1
                     progress.set_postfix(dict(counts))
         self.save()
@@ -448,8 +518,13 @@ class FrameChecker:
         windows = [(NARROW_WINDOW_SECONDS, NARROW_WINDOW_SECONDS), (WINDOW_BEFORE_SECONDS, WINDOW_AFTER_SECONDS)]
         result: tuple[float, float | None] = (0.0, None)
         for before, after in windows:
-            window = self._keyframes(other, at * speed + (shift or 0.0) - before,
-                                     (before + KEEPER_SPAN_SECONDS + after) * speed, dense=True)
+            start = at * speed + (shift or 0.0) - before
+            seconds = (before + KEEPER_SPAN_SECONDS + after) * speed
+            if start < 0:  # ffmpeg reads from 0 then, so the frame times must start there too
+                start, seconds = 0.0, seconds + start
+            if seconds <= 0:
+                return result
+            window = self._keyframes(other, start, seconds, dense=True)
             if not window:
                 return None
             result = point_match(keyframes, window, speed)
@@ -480,3 +555,31 @@ class FrameChecker:
             if len(offsets) == MATCHES_FOR_SAME:  # the vote is won; the rest cannot change it
                 return FrameVerdict("same", tuple(scores), tuple(offsets))
         return FrameVerdict(classify(scores), tuple(scores), tuple(offsets))
+
+    def _covers(self, keeper: dict, other: dict) -> FrameVerdict:
+        """Sample ``other`` (the copy to delete) and find every point in the kept copy."""
+        keeper_ticks, other_ticks = keeper.get("runtime_ticks"), other.get("runtime_ticks")
+        if not (self.available and keeper.get("id") and other.get("id") and keeper_ticks and other_ticks):
+            return FrameVerdict("unavailable")
+        speed = keeper_ticks / other_ticks
+        other_seconds = other_ticks / _TICKS_PER_SECOND
+        times = [COVER_HEAD_SECONDS, *(other_seconds * p for p in SAMPLE_POINTS), other_seconds - COVER_TAIL_SECONDS]
+        times = sorted(t for t in times if 0 <= t <= other_seconds - KEEPER_SPAN_SECONDS)
+        scores: list[float] = []
+        points: list[tuple[float, float]] = []
+        shift: float | None = None
+        for at in times:
+            result = self._score_point(other, keeper, at, speed, shift)
+            if result is None:
+                return FrameVerdict("unavailable", tuple(scores), tuple(o for _, o in points))
+            score, offset = result
+            scores.append(round(score, 2))
+            if score < MATCH_SCORE or offset is None:  # a part of the copy to delete is not in the kept one
+                verdict: Verdict = "different" if score < MISS_SCORE else "unsure"
+                return FrameVerdict(verdict, tuple(scores), tuple(o for _, o in points),
+                                    f"{at:.0f}s of the copy to delete not found in the kept copy")
+            points.append((at, round(offset, 1)))
+            shift = offset
+        verdict, note = coverage_verdict(points, other_seconds, keeper_ticks / _TICKS_PER_SECOND,
+                                         speed, expected_speed(keeper, other))
+        return FrameVerdict(verdict, tuple(scores), tuple(o for _, o in points), note)

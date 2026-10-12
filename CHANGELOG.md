@@ -7,6 +7,23 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+### Changed
+
+- **Dedupe removes an episode copy of a different length when the kept copy holds all of it.**
+  The frame check now samples the copy that would be deleted, from 45 s in to 75 s before its
+  end, and needs every point found in the kept copy on one straight line, at the speed the two
+  frame rates predict (±0.6 %), with at most 10 s left over at the edges. This replaces the
+  fixed "25/23.976 ± 0.6 %" running-time test for episodes: 8 English-only Vampire Diaries
+  copies (0.03 % outside it) and a Czech NCIS 480p shorter than its kept copy now go, while a
+  copy with a TV lead-in (61 s), a double-episode file, or extra minutes spread through the
+  episode (NCIS S05E15) stays. Films keep the PAL-only rule, so two cuts of a film both stay.
+  Saved frame-check verdicts are measured again once (method version 4).
+
+### Fixed
+
+- A frame-check search window that would start before 0 s is now read from 0 with matching
+  frame times (ffmpeg clamped it, so the offsets came out shifted).
+
 ## [3.4.0] — 2026-10-12
 
 ### Added
