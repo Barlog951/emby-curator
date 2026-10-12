@@ -7,6 +7,14 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The frame check reads the picture rate behind Emby's frame rate.** Emby reports interlaced
+  TV recordings at their field rate (50 for 25) and some x265 encodes at 23.809525 for 23.976,
+  so the speed the two copies should play at came out wrong and nine identical The Killing pairs
+  stayed blocked. Rates of 47 and more are halved and rates within 1 % of a standard one
+  (23.976, 24, 25, 29.97, 30) are snapped to it. Saved verdicts are measured again (version 5).
+
 ## [3.4.1] — 2026-10-12
 
 ### Changed

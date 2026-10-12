@@ -76,7 +76,7 @@ PARALLEL_PAIRS = 4  # streaming from Emby over the network
 PARALLEL_PAIRS_ON_HOST = 12  # ffmpeg on the media host, next to the files (24 cores on emby-gpu)
 # Saved verdicts are keyed by this: bump it whenever the method or a threshold changes,
 # so every pair is checked again under the new rules.
-CHECK_VERSION = 4
+CHECK_VERSION = 5
 ENV_CACHE_FILE = "DEDUPE_FRAME_CHECK_CACHE"
 CACHE_KEEP_DAYS = 180  # a saved verdict not used for this long is dropped
 _DEFAULT_CACHE = Path.home() / ".emby-dedupe" / "frame-check-cache.json"
@@ -152,6 +152,22 @@ def is_speedup_pair(keeper: dict, other: dict) -> bool:
     return any(abs(ratio - r) <= SPEEDUP_TOLERANCE for r in SPEEDUP_RATIOS)
 
 
+STANDARD_FRAME_RATES = (24000 / 1001, 24.0, 25.0, 30000 / 1001, 30.0)
+_SNAP_TOLERANCE = 0.01
+
+
+def standard_frame_rate(fps: float) -> float:
+    """The picture rate behind what Emby reports.
+
+    Emby reports interlaced video at its field rate (a 1080i TV recording of The Killing:
+    50 for 25 pictures a second) and some x265 encodes at 23.809525 for 23.976, so a rate
+    of 47 or more is halved and a rate within 1 % of a standard one is snapped to it.
+    """
+    rate = fps / 2 if fps >= 47 else fps
+    nearest = min(STANDARD_FRAME_RATES, key=lambda r: abs(rate / r - 1))
+    return nearest if abs(rate / nearest - 1) <= _SNAP_TOLERANCE else rate
+
+
 def expected_speed(keeper: dict, other: dict) -> float | None:
     """Kept-copy seconds per second of ``other`` if both show the same frames (None when a frame rate is unknown).
 
@@ -160,7 +176,7 @@ def expected_speed(keeper: dict, other: dict) -> float | None:
     keeper_fps, other_fps = keeper.get("frame_rate"), other.get("frame_rate")
     if not keeper_fps or not other_fps:
         return None
-    return float(other_fps) / float(keeper_fps)
+    return standard_frame_rate(float(other_fps)) / standard_frame_rate(float(keeper_fps))
 
 
 def coverage_verdict(points: list[tuple[float, float]], other_seconds: float, keeper_seconds: float,

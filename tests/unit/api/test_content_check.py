@@ -553,3 +553,20 @@ def test_a_search_window_never_starts_before_the_file():
     with patch.object(checker, "_keyframes", side_effect=[frames, [(0.0, [1.0])], [(0.0, [1.0])]]) as read:
         checker._score_point(_ep("o", 2606, 23.976), _ep("k", 2431, 25.0), 45.0, 0.93, -56.0)
     assert all(call.args[1] >= 0 for call in read.call_args_list[1:])
+
+
+def test_frame_rates_are_read_as_the_picture_rate():
+    """The Killing S03/S04 (2026-10-12): Emby reported the x265 copies at 23.809525 and the
+    1080i Czech copies at 50, so the predicted speed was 0.952 / 0.476 instead of 0.959 and
+    nine identical pairs stayed blocked."""
+    from emby_dedupe.api.content_check import standard_frame_rate
+    assert abs(standard_frame_rate(23.809525) - 23.976) < 0.001
+    assert standard_frame_rate(50) == 25.0 and abs(standard_frame_rate(59.94) - 29.97) < 0.001
+    assert standard_frame_rate(25) == 25.0 and standard_frame_rate(12.5) == 12.5  # unusual rates stay as they are
+    x265, cz_1080i = _ep("x", 3543, 23.809525), _ep("cz", 3395, 50)
+    assert abs(expected_speed(cz_1080i, x265) - 0.95904) < 1e-4
+
+
+def test_snapped_rates_still_tell_a_speed_up_from_equal_speed():
+    assert expected_speed(_ep("k", 2400, 25.0), _ep("o", 2400, 25.0)) == 1.0
+    assert abs(expected_speed(_ep("k", 2400, 25.0), _ep("o", 2500, 23.976)) - 0.95904) < 1e-4
