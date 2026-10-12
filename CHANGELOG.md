@@ -7,6 +7,8 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.0] — 2026-10-12
+
 ### Added
 
 - **The dedupe report opens with a verdict and one row per title and outcome.** One sentence
