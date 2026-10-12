@@ -45,8 +45,44 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
   or `conflict`, and `--ai-auto` applies agreed picks only. With Claude alone, `--ai-auto` is refused. Install
   with `pip install 'emby-curator[claude]'` and set `DEDUPE_ANTHROPIC_API_KEY`.
 
+- **Dedupe compares the pictures before it deletes an episode.** Running time, season and
+  episode number cannot tell two episodes of similar length apart: a Slovak NCIS S19E08 that was
+  really E07 (swapped in the source pack) matched the Czech E08 within 2 %, and the Czech copy was
+  deleted. Before deleting an episode, dedupe now takes keyframes of the kept copy at up to five
+  points, finds their twins in the other copy (sampled 4 times a second) and needs most of them to
+  line up at one time offset. Different or unclear pictures keep both copies. On 134 live pairs,
+  every different-episode control scored 0.0-0.1 and every real pair 0.5-1.0. With
+  `--frame-check-host user@host` (`DEDUPE_FRAME_CHECK_HOST`) ffmpeg runs on the media host next to
+  the files and only 32x18 frames come back (2-5 s per pair); without it the copies are streamed
+  from Emby (~0.5 GB per 1080p pair). The stream always names the item's own media source: Emby
+  otherwise serves a version group's default copy for every item in the group. It needs `ffmpeg`;
+  without it, or with `--no-frame-check` (`DEDUPE_FRAME_CHECK=false`), the other checks decide alone.
+- **A PAL speed-up is no longer blocked as a different cut.** A 25 fps copy of a 23.976/24 fps show
+  runs 4.2 % shorter, so 42 Slovak/Czech NCIS pairs were refused every run. Such a pair now goes
+  when the frame rates and the running-time ratio fit a speed-up, the pictures match, and the time
+  offset stays flat across the episode (within 15 s). A copy whose offset keeps growing is longer
+  for another reason, so it is still kept: the extra minutes may hold scenes the other copy lacks.
+
+### Changed
+
+- **`cleanup` removes a collection (franchise) whole or not at all.** Collections are Emby BoxSets
+  with a TMDb id. If any owned part is protected, new or not yet scanned, every part stays. A
+  delete that is blocked by the safety guard or fails keeps the rest of its collection. A film that
+  is the only owned part is judged like any other film. The console, JSON and HTML reports show the
+  collection and count kept and removed collections.
+
 ### Fixed
 
+- **Dedupe paired episodes of two different shows with the same name.** Episodes without
+  provider ids were matched by series name, season and episode, so the 2005 *Avatar* cartoon and
+  the 2024 live-action show paired. The key now includes the Emby series id.
+- **Dedupe could delete an episode whose copy had no running time yet.** A download that Emby
+  had not probed yet passed the running-time check. Either copy without a running time now keeps
+  both.
+- **The pre-download check matched an episode to a film with the same id number.** TMDb and TVDB
+  number films and shows separately (NCIS is TMDb 4614, and so is *The Sum of All Fears*); an
+  episode check now only looks at episodes.
+- **"AI Upscale" with a space was not detected as an AI upscale.**
 - **A dry run now shows what `--doit` would really do.** The safety guard already ran in a dry
   run, but its verdict only reached the log, so a dry run promised every deletion (one promised
   30 deletions and 42 GB; the real run blocked 24). Each delete the guard would refuse is now

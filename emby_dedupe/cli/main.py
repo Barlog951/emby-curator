@@ -13,6 +13,7 @@ from emby_dedupe.api.client import (
     fetch_and_process_media_items,
     get_library_id,
 )
+from emby_dedupe.api.content_check import FrameChecker
 from emby_dedupe.api.deduplication import (
     identify_duplicates,
     process_deletion_and_generate_report,
@@ -277,7 +278,8 @@ def _connect_and_fetch_libraries(client, base_url, library):
 
 
 def _run_deduplication_pipeline(client, base_url, all_provider_tables, excluded_ids,
-                                lang_priorities, api_key, doit, username, password):
+                                lang_priorities, api_key, doit, username, password,
+                                frame_check=True, frame_check_host=""):
     """
     Run the deduplication pipeline: identify, rationalize, process.
 
@@ -291,6 +293,8 @@ def _run_deduplication_pipeline(client, base_url, all_provider_tables, excluded_
         doit: Whether to actually delete.
         username: Username for auth.
         password: Password for auth.
+        frame_check: Compare the pictures of episode pairs before deleting (needs ffmpeg).
+        frame_check_host: ``user@host`` to run that ffmpeg on, next to the files.
 
     Returns:
         Tuple of (decisions, exclusion_metadata, markdown_report).
@@ -332,9 +336,12 @@ def _run_deduplication_pipeline(client, base_url, all_provider_tables, excluded_
             f"Fetched {len(library_paths)} library paths for the deletion safety guard."
         )
 
+    frames = (FrameChecker(base_url, api_key, ssh_host=frame_check_host or None)
+              if (frame_check and has_deletes) else None)
+
     markdown_report = process_deletion_and_generate_report(
         client, base_url, decisions, doit, username, password, api_key,
-        report_metadata, library_paths,
+        report_metadata, library_paths, frames,
     )
 
     dump_object_to_file(decisions, "testing/deletions") if logger.isEnabledFor(

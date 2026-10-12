@@ -252,6 +252,26 @@ def dedupe_cmd(
             "combined with --doit."
         ),
     ),
+    frame_check: bool = typer.Option(
+        True,
+        "--frame-check/--no-frame-check",
+        envvar="DEDUPE_FRAME_CHECK",
+        help=(
+            "Before deleting an episode copy, compare its pictures with the kept copy "
+            "(keyframes at 5 points, via ffmpeg). Different or unclear pictures keep both; "
+            "a PAL speed-up (25 fps, 4 % shorter) is removed only when the pictures match."
+        ),
+    ),
+    frame_check_host: str = typer.Option(
+        "",
+        "--frame-check-host",
+        envvar="DEDUPE_FRAME_CHECK_HOST",
+        help=(
+            "user@host of the machine that serves the media files: the frame check runs "
+            "ffmpeg there over SSH on the files Emby reports (a few KB back per pair). "
+            "Without it the copies are streamed from Emby (~0.5 GB per 1080p pair)."
+        ),
+    ),
     fold_safe_host: str = typer.Option(
         "",
         "--fold-safe-host",
@@ -319,7 +339,8 @@ def dedupe_cmd(
         decisions, exclusion_metadata, _pipeline_markdown = _run_deduplication_pipeline(
             client, base_url, all_provider_tables, resolved.excluded_ids,
             resolved.lang_priorities, resolved.api_key, resolved.doit,
-            resolved.username, resolved.password,
+            resolved.username, resolved.password, frame_check=frame_check,
+            frame_check_host=frame_check_host,
         )
 
         # Fold-safe runs BEFORE the report: it removes guard-refused duplicates over SSH

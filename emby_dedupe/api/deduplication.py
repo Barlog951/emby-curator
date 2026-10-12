@@ -11,6 +11,7 @@ import httpx
 from tqdm import tqdm
 
 from emby_dedupe.api.client import delete_item, fetch_items_details
+from emby_dedupe.api.content_check import FrameChecker, is_speedup_pair
 from emby_dedupe.api.deletion_guard import (
     collect_delete_paths,
     collect_known_paths,
@@ -282,12 +283,23 @@ def _enrich_keep_item(keep_item, items_details, base_url, api_key) -> None:
         if series_url:
             keep_item["series_poster"] = {"image_url": series_url}
 
+        keep_item["frame_rate"] = _video_frame_rate(keep_details)
+
         # Add episode metadata if TV episode
         keep_item["is_episode"] = "SeriesName" in keep_details
         if keep_item["is_episode"]:
             keep_item["series_name"] = keep_details.get("SeriesName", "")
             keep_item["season_number"] = keep_details.get("ParentIndexNumber", "")
             keep_item["episode_number"] = keep_details.get("IndexNumber", "")
+
+
+def _video_frame_rate(details: dict) -> float | None:
+    """Frame rate of the first video stream (Emby's RealFrameRate, else AverageFrameRate)."""
+    for stream in details.get("MediaStreams") or []:
+        if stream.get("Type") == "Video":
+            rate = stream.get("RealFrameRate") or stream.get("AverageFrameRate")
+            return float(rate) if rate else None
+    return None
 
 
 def _extract_primary_provider_id(provider_ids: dict) -> str | None:
@@ -341,6 +353,8 @@ def _enrich_delete_item(delete_item, items_details, base_url, keep_serverid, api
             primary_id = _extract_primary_provider_id(provider_ids)
             if primary_id:
                 delete_item["provider_id"] = primary_id
+
+        delete_item["frame_rate"] = _video_frame_rate(delete_details)
 
         # Add episode metadata if TV episode
         delete_item["is_episode"] = "SeriesName" in delete_details
@@ -1266,19 +1280,76 @@ def process_duplicate_groups(
     return decisions, exclusion_metadata
 
 
-def _different_content_reason(item: dict, keeper: dict) -> str | None:
+def _different_content_reason(item: dict, keeper: dict, frames: FrameChecker | None = None) -> str | None:
     """Why ``item`` may not be a copy of ``keeper`` at all, or None.
 
-    Three independent tells: the episode sits in a different season folder (Initial D,
-    2026-09-27), the running time differs well beyond tolerance (Rust filed as Runt,
-    a "(2)" copy that is another episode), or either running time is unknown. Emby has
-    no runtime for a file it has not probed yet: a download still landing scored as
-    "unknown quality" and was picked for deletion against an old SD copy (NCIS S03,
-    2026-10-12; only the folder rule stopped it), so an unverifiable pair is not deleted.
+    Tells: the episode sits in a different season folder (Initial D, 2026-09-27), either
+    running time is unknown (a download still landing, NCIS S03 2026-10-12), the running
+    time differs well beyond tolerance (Rust filed as Runt, a "(2)" copy that is another
+    episode), or (episodes, when ``frames`` is given) the pictures do not match: a swapped
+    NCIS S19E07/E08 had lengths within 2 % and its Czech E08 was deleted (2026-10-12).
+
+    The one exception to the running-time rule is a PAL speed-up (25 fps vs 23.976/24,
+    4.2 % shorter), and only when the frame check proves the same picture.
     """
-    return (episode_identity_conflict(keeper.get("path"), item.get("path"))
-            or _unknown_runtime(item, keeper)
-            or duration_mismatch(keeper.get("runtime_ticks"), item.get("runtime_ticks")))
+    reason = (episode_identity_conflict(keeper.get("path"), item.get("path"))
+              or _unknown_runtime(item, keeper))
+    if reason:
+        return reason
+    mismatch = duration_mismatch(keeper.get("runtime_ticks"), item.get("runtime_ticks"))
+    if mismatch:
+        return _speedup_exception(item, keeper, frames, mismatch)
+    return _frame_mismatch(item, keeper, frames)
+
+
+def _frame_check_wanted(item: dict, keeper: dict) -> bool:
+    """Episodes get the frame check: movies have no siblings to be confused with."""
+    return bool(keeper.get("is_episode") or item.get("is_episode"))
+
+
+def _speedup_exception(item: dict, keeper: dict, frames: FrameChecker | None, mismatch: str) -> str | None:
+    """None when the running-time gap is a PAL speed-up the frames confirm, else the refusal.
+
+    The frames must match AND line up at a steady offset: NCIS S05E15 (SD avi) matched
+    picture for picture but drifted ~23 s per sample point, so it is ~110 s longer at the
+    same speed, not sped up, and the extra minutes may be scenes the kept copy lacks.
+    """
+    if frames is None or not is_speedup_pair(keeper, item):
+        return mismatch
+    verdict = frames.compare(keeper, item)
+    if verdict.verdict == "same" and verdict.steady:
+        logger.info(f"PAL speed-up confirmed by frames for id={item.get('id')} ({verdict.describe()}).")
+        return None
+    why = "pictures match but the offset drifts" if verdict.verdict == "same" else "frames do not match"
+    return f"{mismatch}; PAL speed-up not confirmed ({why}): {verdict.describe()}"
+
+
+def _frame_mismatch(item: dict, keeper: dict, frames: FrameChecker | None) -> str | None:
+    """The refusal when the frames show different (or unclear) pictures; None otherwise.
+
+    "unavailable" (no ffmpeg, stream unreadable) falls back to the checks above.
+    """
+    if frames is None or not _frame_check_wanted(item, keeper):
+        return None
+    verdict = frames.compare(keeper, item)
+    return verdict.describe() if verdict.verdict in ("different", "unsure") else None
+
+
+def _frame_check_pairs(decisions: list) -> list[tuple[dict, dict]]:
+    """Every (keeper, delete) pair the frame check will be asked about, for a parallel prefetch."""
+    pairs = []
+    for decision in decisions:
+        keeper = decision.get("keep") or {}
+        for item in decision.get("delete", []):
+            if not _frame_check_wanted(item, keeper):
+                continue
+            if (episode_identity_conflict(keeper.get("path"), item.get("path"))
+                    or _unknown_runtime(item, keeper)):
+                continue
+            mismatch = duration_mismatch(keeper.get("runtime_ticks"), item.get("runtime_ticks"))
+            if not mismatch or is_speedup_pair(keeper, item):
+                pairs.append((keeper, item))
+    return pairs
 
 
 def _unknown_runtime(item: dict, keeper: dict) -> str | None:
@@ -1289,14 +1360,14 @@ def _unknown_runtime(item: dict, keeper: dict) -> str | None:
     return f"runtime-unknown ({' and '.join(missing)} not probed by Emby yet; cannot verify same content)"
 
 
-def _refuse_different_content(item: dict, keeper: dict) -> str | None:
+def _refuse_different_content(item: dict, keeper: dict, frames: FrameChecker | None = None) -> str | None:
     """Delete-time backstop: refuse a delete when the "duplicate" may be different content.
 
     Returns the reason when refused (and records it on the item), else None. Deliberately
     does NOT set the fold-safe marker: --fold-safe-delete removes guard-refused duplicates
     file-only, and these may be different episodes or films, not duplicates.
     """
-    reason = _different_content_reason(item, keeper)
+    reason = _different_content_reason(item, keeper, frames)
     if reason:
         item["deletion_result"] = {"id": item["id"], "status": "skipped_unsafe", "error": reason}
     return reason
@@ -1316,7 +1387,8 @@ def _mark_guard_refused(item: dict, keeper_path: str | None, reason: str) -> Non
 
 
 def _warn_unsafe_deletions(
-    decisions: list, known_paths: list, delete_paths: list = None
+    decisions: list, known_paths: list, delete_paths: list = None,
+    frames: FrameChecker | None = None,
 ) -> None:
     """Dry-run visibility: log any deletion the safety guard would refuse under
     ``--doit`` (keeper co-located in a folder Emby would fold-delete), so the user
@@ -1326,7 +1398,7 @@ def _warn_unsafe_deletions(
     for decision in decisions:
         keeper_path = (decision.get("keep") or {}).get("path")
         for item in decision.get("delete", []):
-            conflict = _different_content_reason(item, decision.get("keep") or {})
+            conflict = _different_content_reason(item, decision.get("keep") or {}, frames)
             if conflict:
                 unsafe += 1
                 item["dry_run_refusal"] = conflict
@@ -1446,7 +1518,7 @@ def _extract_original_item_data(item: dict) -> dict:
 
 def _execute_one_deletion(
     client, base_url, item, keeper_path, decision, known_paths, delete_paths,
-    username, password, api_key, progress_bar,
+    username, password, api_key, progress_bar, frames: FrameChecker | None = None,
 ) -> None:
     """Delete a single item unless the safety guard refuses it, then restore the item's
     display data (lost during deletion) and advance the progress bar. Extracted from the
@@ -1468,7 +1540,7 @@ def _execute_one_deletion(
 
     # SAFETY GUARD 1: never delete a "duplicate" that may be different content: another
     # season folder (the Initial D loss, 2026-09-27) or a clearly different running time.
-    conflict = _refuse_different_content(item, (decision or {}).get("keep") or {"path": keeper_path})
+    conflict = _refuse_different_content(item, (decision or {}).get("keep") or {"path": keeper_path}, frames)
     # SAFETY GUARD 2: never issue an Emby delete that would fold-delete a folder holding
     # the keeper (the data-loss bug). Refuse and skip — keep both files.
     safe, reason = (True, "") if conflict else is_delete_safe(
@@ -1518,6 +1590,7 @@ def process_deletion_and_generate_report(
     api_key: str,
     metadata: dict = None,
     library_paths: list = None,
+    frames: FrameChecker | None = None,
 ) -> str:
     """
     Processes deletions based on the decisions and generates a markdown report.
@@ -1536,6 +1609,8 @@ def process_deletion_and_generate_report(
             deletion safety guard true folder visibility (so it tells a dedicated folder
             from a shared one). When omitted, the guard sees only the decision paths and
             may over-refuse safe deletes (the Dutton/Proud false positives). Defaults to None.
+        frames (FrameChecker, optional): compares the pictures of episode pairs before a
+            delete (and confirms PAL speed-ups). None skips the frame check.
 
     Returns:
         str: The generated markdown report.
@@ -1561,11 +1636,15 @@ def process_deletion_and_generate_report(
     # away (the Marty Supreme multi-version-folder fold-delete).
     delete_paths = collect_delete_paths(decisions)
 
+    # The frame check streams from Emby; run all pairs up front, a few at a time.
+    if frames is not None:
+        frames.prefetch(_frame_check_pairs(decisions))
+
     if not doit:
         deletion_progress_bar = tqdm(
             total=total_deletions, desc="Skipping deletion", unit="item"
         )
-        _warn_unsafe_deletions(decisions, known_paths, delete_paths)
+        _warn_unsafe_deletions(decisions, known_paths, delete_paths, frames)
         _mark_items_as_not_attempted(decisions, deletion_progress_bar)
         deletion_progress_bar.close()
         return markdown.format_markdown_table(base_url, decisions, metadata)
@@ -1579,7 +1658,7 @@ def process_deletion_and_generate_report(
         for item in decision.get("delete", []):
             _execute_one_deletion(
                 client, base_url, item, keeper_path, decision, known_paths,
-                delete_paths, username, password, api_key, deletion_progress_bar,
+                delete_paths, username, password, api_key, deletion_progress_bar, frames,
             )
 
     deletion_progress_bar.close()
