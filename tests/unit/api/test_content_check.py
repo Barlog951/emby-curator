@@ -18,6 +18,8 @@ from emby_dedupe.api.content_check import (
     FRAME_WIDTH,
     FrameChecker,
     FrameVerdict,
+    cache_key,
+    cache_path,
     classify,
     frames_from_raw,
     is_speedup_pair,
@@ -144,12 +146,20 @@ def test_a_known_offset_searches_narrow_first_and_falls_back_to_the_full_window(
     assert calls == [("k", 1000, 30, False), ("o", 975, 70, True), ("o", 950, 165, True)]
 
 
-def test_without_an_offset_the_full_window_is_searched_once():
+def test_the_first_point_also_searches_narrow_first():
+    """Real copies line up within a few seconds, so even the first point decodes 70 s
+    before falling back to the full 165 s window (Fuki: "why that slow?")."""
     checker = FrameChecker("http://emby", "k", ffmpeg_path="ffmpeg")
-    with patch.object(checker, "_keyframes", return_value=_keyframes([(1, 600.0), (2, 603.0)])) as frames, \
-         patch("emby_dedupe.api.content_check.point_match", return_value=(0.1, None)):
-        checker._score_point({"id": "k"}, {"id": "o"}, 1000.0, 1.0, None)
-    assert frames.call_count == 2 and frames.call_args.kwargs["dense"] is True
+    calls = []
+
+    def frames(item, start, seconds, dense=False):
+        calls.append((round(start), round(seconds)))
+        return _keyframes([(1, 600.0), (2, 603.0)])
+
+    with patch.object(checker, "_keyframes", side_effect=frames), \
+         patch("emby_dedupe.api.content_check.point_match", side_effect=[(0.9, -2.0)]):
+        assert checker._score_point({"id": "k"}, {"id": "o"}, 1000.0, 1.0, None) == (0.9, -2.0)
+    assert calls == [(1000, 30), (980, 70)]
 
 
 def test_two_foreign_points_stop_early():
@@ -276,6 +286,73 @@ def test_prefetch_shows_a_progress_bar_and_caches_every_pair():
     with patch.object(checker, "_compare") as again:
         assert all(checker.compare(k, o).verdict == "same" for k, o in pairs)
     again.assert_not_called()
+
+
+# --- saved verdicts ---------------------------------------------------------------------
+
+def _cached_checker(tmp_path):
+    return FrameChecker("http://emby", "k", ffmpeg_path="ffmpeg", cache_file=tmp_path / "fc.json")
+
+
+def test_a_verdict_is_reused_by_the_next_run(tmp_path):
+    """Fuki 2026-10-12: pairs that stay (kept by the guard) were re-checked every run."""
+    keeper, other = {**_ep("k", 2400, 25), "path": "/a.mkv"}, {**_ep("o", 2500, 24), "path": "/b.mkv"}
+    first = _cached_checker(tmp_path)
+    with patch.object(first, "_compare", return_value=FrameVerdict("unsure", (0.4,), ())):
+        first.prefetch([(keeper, other)])
+    second = _cached_checker(tmp_path)
+    with patch.object(second, "_compare") as measured:
+        second.prefetch([(keeper, other)])
+        assert second.compare(keeper, other) == FrameVerdict("unsure", (0.4,), ())
+    measured.assert_not_called()
+
+
+def test_unavailable_is_never_saved(tmp_path):
+    first = _cached_checker(tmp_path)
+    with patch.object(first, "_compare", return_value=FrameVerdict("unavailable")):
+        first.compare(_ep("k", 2400, 25), _ep("o", 2400, 25))
+    second = _cached_checker(tmp_path)
+    with patch.object(second, "_compare", return_value=FrameVerdict("same")) as measured:
+        second.compare(_ep("k", 2400, 25), _ep("o", 2400, 25))
+    measured.assert_called_once()
+
+
+def test_a_replaced_file_or_a_new_method_version_is_checked_again(tmp_path):
+    keeper, other = {**_ep("k", 2400, 25), "path": "/a.mkv"}, {**_ep("o", 2500, 24), "path": "/b.mkv"}
+    renamed = {**other, "path": "/b2.mkv"}
+    reprobed = {**other, "runtime_ticks": other["runtime_ticks"] + TICKS}
+    assert len({cache_key(keeper, other), cache_key(keeper, renamed), cache_key(keeper, reprobed)}) == 3
+    first = _cached_checker(tmp_path)
+    with patch.object(first, "_compare", return_value=FrameVerdict("same", (0.9,) * 3, (-3.0, -3.1, -3.2))):
+        first.compare(keeper, other)
+    with patch("emby_dedupe.api.content_check.CHECK_VERSION", 999):
+        newer = _cached_checker(tmp_path)
+        with patch.object(newer, "_compare", return_value=FrameVerdict("same")) as measured:
+            newer.compare(keeper, other)
+    measured.assert_called_once()
+
+
+def test_an_unreadable_cache_starts_fresh(tmp_path):
+    (tmp_path / "fc.json").write_text("{not json")
+    checker = _cached_checker(tmp_path)
+    with patch.object(checker, "_compare", return_value=FrameVerdict("different", (0.0, 0.1))):
+        assert checker.compare(_ep("k", 2400, 25), _ep("o", 2400, 25)).verdict == "different"
+
+
+def test_old_unused_verdicts_are_dropped(tmp_path):
+    import json
+    stale = {"verdict": "same", "scores": [], "offsets": [], "checked": "2020-01-01T00:00:00+00:00",
+             "used": "2020-01-01T00:00:00+00:00"}
+    key = cache_key(_ep("x", 2400, 25), _ep("y", 2400, 25))
+    (tmp_path / "fc.json").write_text(json.dumps({"pairs": {key: stale}}))
+    checker = _cached_checker(tmp_path)
+    with patch.object(checker, "_compare", return_value=FrameVerdict("same")):
+        checker.compare(_ep("k", 2400, 25), _ep("o", 2400, 25))
+    assert key not in json.loads((tmp_path / "fc.json").read_text())["pairs"]
+
+
+def test_tests_never_touch_the_users_cache(tmp_path):
+    assert cache_path() == tmp_path / "frame-check-cache.json"  # conftest points it here
 
 
 # --- the dedupe guard ------------------------------------------------------------------------

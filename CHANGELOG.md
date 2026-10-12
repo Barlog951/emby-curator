@@ -53,8 +53,10 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
   line up at one time offset. Different or unclear pictures keep both copies. On 134 live pairs,
   every different-episode control scored 0.0-0.1 and every real pair 0.5-1.0. With
   `--frame-check-host user@host` (`DEDUPE_FRAME_CHECK_HOST`) ffmpeg runs on the media host next to
-  the files and only 32x18 frames come back (2-5 s per pair); without it the copies are streamed
-  from Emby (~0.5 GB per 1080p pair). The stream always names the item's own media source: Emby
+  the files and only 32x18 frames come back (about 1-3.5 s per pair); without it the copies are streamed
+  from Emby (~0.5 GB per 1080p pair). Verdicts are saved in `~/.emby-dedupe/frame-check-cache.json`
+  (`DEDUPE_FRAME_CHECK_CACHE`) and reused while both files stay the same, so a pair the guard keeps
+  is checked once, not every run. The stream always names the item's own media source: Emby
   otherwise serves a version group's default copy for every item in the group. It needs `ffmpeg`;
   without it, or with `--no-frame-check` (`DEDUPE_FRAME_CHECK=false`), the other checks decide alone.
 - **A PAL speed-up is no longer blocked as a different cut.** A 25 fps copy of a 23.976/24 fps show

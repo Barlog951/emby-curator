@@ -13,7 +13,7 @@ from emby_dedupe.api.client import (
     fetch_and_process_media_items,
     get_library_id,
 )
-from emby_dedupe.api.content_check import FrameChecker
+from emby_dedupe.api.content_check import FrameChecker, cache_path
 from emby_dedupe.api.deduplication import (
     identify_duplicates,
     process_deletion_and_generate_report,
@@ -336,7 +336,7 @@ def _run_deduplication_pipeline(client, base_url, all_provider_tables, excluded_
             f"Fetched {len(library_paths)} library paths for the deletion safety guard."
         )
 
-    frames = (FrameChecker(base_url, api_key, ssh_host=frame_check_host or None)
+    frames = (FrameChecker(base_url, api_key, ssh_host=frame_check_host or None, cache_file=cache_path())
               if (frame_check and has_deletes) else None)
 
     markdown_report = process_deletion_and_generate_report(

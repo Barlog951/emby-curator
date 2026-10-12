@@ -23,15 +23,20 @@ simply longer (offset keeps growing), which dedupe uses to allow only the former
 
 from __future__ import annotations
 
+import json
 import math
+import os
 import re
 import shlex
 import shutil
 import statistics
 import subprocess
+import tempfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Literal
 from urllib.parse import quote, urlsplit
 
@@ -45,7 +50,7 @@ SAMPLE_POINTS = (0.15, 0.35, 0.55, 0.75, 0.9)
 KEEPER_SPAN_SECONDS = 30.0  # keyframes of the kept copy taken from this span at each point
 WINDOW_BEFORE_SECONDS = 45.0  # where their twins are searched in the other copy
 WINDOW_AFTER_SECONDS = 90.0  # (an extra intro or recap shifts them later)
-NARROW_WINDOW_SECONDS = 20.0  # once an offset is known: search this far either side of it first
+NARROW_WINDOW_SECONDS = 20.0  # search this far either side of the expected spot first
 TWIN_CORRELATION = 0.6  # a keyframe has a twin at or above this correlation
 OFFSET_TOLERANCE_SECONDS = 2.0  # twins this close agree on one offset (keyframes ~3 s apart)
 MATCH_SCORE = 0.5  # a point matches when half of its keyframes agree on one offset
@@ -58,7 +63,14 @@ MIN_KEYFRAMES = 2
 WINDOW_FPS = 4  # the other copy is sampled this densely, so every keyframe has a near twin
 FFMPEG_TIMEOUT_SECONDS = 120
 PARALLEL_PAIRS = 4  # streaming from Emby over the network
-PARALLEL_PAIRS_ON_HOST = 8  # ffmpeg on the media host, next to the files
+PARALLEL_PAIRS_ON_HOST = 12  # ffmpeg on the media host, next to the files (24 cores on emby-gpu)
+# Saved verdicts are keyed by this: bump it whenever the method or a threshold changes,
+# so every pair is checked again under the new rules.
+CHECK_VERSION = 3
+ENV_CACHE_FILE = "DEDUPE_FRAME_CHECK_CACHE"
+CACHE_KEEP_DAYS = 180  # a saved verdict not used for this long is dropped
+_DEFAULT_CACHE = Path.home() / ".emby-dedupe" / "frame-check-cache.json"
+_SAVED_VERDICTS = frozenset({"same", "different", "unsure"})
 SSH_OPTIONS = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/emby-curator-%r@%h:%p",
                "-o", "ControlPersist=120")
@@ -202,16 +214,64 @@ def stream_base_url(base_url: str) -> str:
     return base_url
 
 
+def cache_path() -> Path:
+    """Where saved verdicts live: ``$DEDUPE_FRAME_CHECK_CACHE`` or ``~/.emby-dedupe/frame-check-cache.json``."""
+    return Path(os.environ.get(ENV_CACHE_FILE) or _DEFAULT_CACHE)
+
+
+def cache_key(keeper: dict, other: dict) -> str:
+    """The saved-verdict key: method version, then id, path and running time of both copies.
+
+    A replaced or renamed file, or a re-probed running time, makes a new key, so a saved
+    verdict is only ever reused for exactly the files it was measured on.
+    """
+    def part(item: dict) -> str:
+        return f"{item.get('id')}|{item.get('path') or ''}|{item.get('runtime_ticks') or ''}"
+    return f"v{CHECK_VERSION}|{part(keeper)}|{part(other)}"
+
+
+def load_cache(path: Path) -> dict[str, dict]:
+    """Saved verdicts of this method version; empty when there are none or the file is unreadable."""
+    try:
+        with path.open(encoding="utf-8") as fh:
+            pairs = (json.load(fh) or {}).get("pairs") or {}
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, AttributeError) as exc:
+        logger.warning(f"Frame check cache {path} unreadable, starting fresh: {exc}")
+        return {}
+    prefix = f"v{CHECK_VERSION}|"
+    return {key: entry for key, entry in pairs.items()
+            if key.startswith(prefix) and isinstance(entry, dict) and entry.get("verdict") in _SAVED_VERDICTS}
+
+
+def save_cache(path: Path, pairs: dict[str, dict]) -> None:
+    """Write the verdicts atomically, dropping those unused for ``CACHE_KEEP_DAYS``."""
+    cutoff = (datetime.now(UTC) - timedelta(days=CACHE_KEEP_DAYS)).isoformat()
+    kept = {key: entry for key, entry in pairs.items() if str(entry.get("used", "")) >= cutoff}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".frame-check-cache-", suffix=".json", dir=path.parent)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump({"version": CHECK_VERSION, "pairs": kept}, fh, indent=1, sort_keys=True)
+        os.replace(tmp, path)
+    except OSError as exc:
+        logger.warning(f"Frame check cache {path} not written: {exc}")
+
+
 class FrameChecker:
     """Compares two Emby items frame by frame (results cached per pair).
 
     With ``ssh_host`` (``user@host`` of the machine that serves the media) ffmpeg runs
     there and reads each item's own file path; only the 32x18 frames (a few KB) come
     back. Without it, the copies are streamed from Emby, about 0.5 GB per 1080p pair.
+
+    With ``cache_file`` the same/different/unsure verdicts are saved between runs, so a pair
+    that stays (kept by the guard, or not deleted yet) is checked once, not every run.
     """
 
     def __init__(self, base_url: str, api_key: str, ffmpeg_path: str | None = None,
-                 ssh_host: str | None = None) -> None:
+                 ssh_host: str | None = None, cache_file: Path | None = None) -> None:
         self._base_url = stream_base_url(base_url)
         self._api_key = api_key
         self._ssh_host = ssh_host or None
@@ -223,6 +283,8 @@ class FrameChecker:
             self._ffmpeg = ffmpeg_path if ffmpeg_path is not None else shutil.which("ffmpeg")
         self._cache: dict[tuple[str, str], FrameVerdict] = {}
         self._sources: dict[str, str | None] = {}
+        self._cache_file = cache_file
+        self._saved: dict[str, dict] = load_cache(cache_file) if cache_file else {}
         if not self._ffmpeg:
             logger.warning("ffmpeg not found: the dedupe frame check is off "
                            "(deletes rely on the running-time and folder checks only).")
@@ -311,17 +373,48 @@ class FrameChecker:
                            f"{len(run.stdout) // (FRAME_WIDTH * FRAME_HEIGHT)} frames; treated as unreadable.")
         return keyframes
 
+    def _known(self, keeper: dict, other: dict) -> FrameVerdict | None:
+        """The verdict already measured for this pair, this run or a saved earlier one."""
+        verdict = self._cache.get((str(keeper.get("id")), str(other.get("id"))))
+        if verdict is None and self._cache_file:
+            entry = self._saved.get(cache_key(keeper, other))
+            if entry:
+                entry["used"] = datetime.now(UTC).replace(microsecond=0).isoformat()
+                verdict = FrameVerdict(entry["verdict"], tuple(entry.get("scores") or ()),
+                                       tuple(entry.get("offsets") or ()))
+                self._cache[(str(keeper.get("id")), str(other.get("id")))] = verdict
+        return verdict
+
+    def _remember(self, keeper: dict, other: dict, verdict: FrameVerdict) -> None:
+        self._cache[(str(keeper.get("id")), str(other.get("id")))] = verdict
+        if self._cache_file and verdict.verdict in _SAVED_VERDICTS:  # never "unavailable"
+            now = datetime.now(UTC).replace(microsecond=0).isoformat()
+            self._saved[cache_key(keeper, other)] = {
+                "verdict": verdict.verdict, "scores": list(verdict.scores), "offsets": list(verdict.offsets),
+                "checked": now, "used": now}
+
+    def save(self) -> None:
+        """Write the saved verdicts (no-op without a cache file)."""
+        if self._cache_file:
+            save_cache(self._cache_file, self._saved)
+
     def compare(self, keeper: dict, other: dict) -> FrameVerdict:
         """Same / different / unsure for the pair, or unavailable when it cannot be checked."""
-        key = (str(keeper.get("id")), str(other.get("id")))
-        if key not in self._cache:
-            self._cache[key] = self._compare(keeper, other)
-        return self._cache[key]
+        verdict = self._known(keeper, other)
+        if verdict is None:
+            verdict = self._compare(keeper, other)
+            self._remember(keeper, other, verdict)
+            self.save()
+        return verdict
 
     def prefetch(self, pairs: list[tuple[dict, dict]]) -> None:
         """Check many pairs up front, a few at a time (ffmpeg runs as separate processes)."""
-        todo = [(k, o) for k, o in pairs if (str(k.get("id")), str(o.get("id"))) not in self._cache]
+        todo = [(k, o) for k, o in pairs if self._known(k, o) is None]
+        reused = len(pairs) - len(todo)
+        if reused:
+            logger.info(f"Frame check: {reused} pair(s) already checked in an earlier run.")
         if not (todo and self.available):
+            self.save()
             return
         where = f"on {self._ssh_host}" if self._ssh_host else "streamed from Emby"
         logger.info(f"Frame check: comparing {len(todo)} pair(s), {self._parallel} at a time, {where}...")
@@ -332,9 +425,10 @@ class FrameChecker:
                 for future in progress:
                     keeper, other = futures[future]
                     verdict = future.result()
-                    self._cache[(str(keeper.get("id")), str(other.get("id")))] = verdict
+                    self._remember(keeper, other, verdict)
                     counts[verdict.verdict] += 1
                     progress.set_postfix(dict(counts))
+        self.save()
         summary = ", ".join(f"{n} {verdict}" for verdict, n in counts.most_common())
         (logger.warning if counts["unavailable"] else logger.info)(f"Frame check: {summary}.")
 
@@ -343,15 +437,15 @@ class FrameChecker:
         """Score and offset of the point ``at`` (None when either copy cannot be read).
 
         The other copy is searched around ``at * speed + shift``. ``shift`` is the offset
-        the previous matched point found (None before the first match): a cut or an extra
-        scene then does not push the rest of the episode out of the window, and only
-        +/-20 s around it are decoded first; the full window is the fallback on a miss.
+        the previous matched point found (None before the first match, then 0): a cut or an
+        extra scene then does not push the rest of the episode out of the window. Only
+        +/-20 s around the expected spot are decoded first, where real copies line up
+        (offsets of a few seconds); the full window is the fallback on a miss.
         """
         keyframes = self._keyframes(keeper, at, KEEPER_SPAN_SECONDS)
         if len(keyframes) < MIN_KEYFRAMES:
             return None
-        windows = [(NARROW_WINDOW_SECONDS, NARROW_WINDOW_SECONDS)] if shift is not None else []
-        windows.append((WINDOW_BEFORE_SECONDS, WINDOW_AFTER_SECONDS))
+        windows = [(NARROW_WINDOW_SECONDS, NARROW_WINDOW_SECONDS), (WINDOW_BEFORE_SECONDS, WINDOW_AFTER_SECONDS)]
         result: tuple[float, float | None] = (0.0, None)
         for before, after in windows:
             window = self._keyframes(other, at * speed + (shift or 0.0) - before,

@@ -113,3 +113,5 @@ def load_fixture(fixture_path):
 def _isolated_dedupe_history(tmp_path, monkeypatch):
     """Reports count guard refusals into a history file; tests must never touch the user's."""
     monkeypatch.setenv("DEDUPE_HISTORY_FILE", str(tmp_path / "dedupe-history.json"))
+    # ...and the frame check saves its verdicts between runs; never into the user's file.
+    monkeypatch.setenv("DEDUPE_FRAME_CHECK_CACHE", str(tmp_path / "frame-check-cache.json"))
