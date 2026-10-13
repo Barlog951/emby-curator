@@ -119,3 +119,11 @@ class TestSetLoggingLevel:
         # Verify that exactly 1 filter is present (not 2 accumulated filters)
         assert len(logger.filters) == 1
         assert isinstance(logger.filters[0], SensitiveDataFilter)
+
+
+def test_redacted_message_with_arguments_formats_once():
+    """`logger.info("%d/%d", a, b)` raised "not all arguments converted" once the filter
+    had already put the arguments into the message (report posters, fold-safe errors)."""
+    record = logging.LogRecord("t", logging.INFO, __file__, 1, "Report posters: %d/%d inlined", (3, 3), None)
+    assert SensitiveDataFilter().filter(record)
+    assert logging.Formatter("%(message)s").format(record) == "Report posters: 3/3 inlined"

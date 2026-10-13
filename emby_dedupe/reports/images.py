@@ -128,8 +128,7 @@ def inline_poster_urls(
             replacements.update(zip(to_fetch, results, strict=True))
 
     inlined = sum(1 for v in replacements.values() if v.startswith("data:"))
-    logger.info("Report posters: %d/%d inlined (no API key written to the report)",
-                inlined, len(to_fetch))
+    logger.info(f"Report posters: {inlined}/{len(to_fetch)} inlined (no API key written to the report)")
     return replacements
 
 

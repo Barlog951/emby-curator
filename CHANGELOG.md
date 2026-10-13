@@ -9,6 +9,11 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ### Fixed
 
+- **Log lines with arguments no longer fail.** The redaction filter put the arguments into
+  the message but left them on the record, so every `%`-style log call (report posters,
+  fold-safe delete errors, the dedupe history) raised "not all arguments converted" and
+  lost its line.
+
 - **Dedupe never pairs two films whose IMDb or TMDb ids differ.** Copies were grouped
   when they shared ANY provider id, and TVDB gives some unrelated films one id: Squared
   Love Everlasting and Squared Love All Over Again (2023) were paired through TVDB 348427
