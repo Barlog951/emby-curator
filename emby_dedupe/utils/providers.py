@@ -26,6 +26,25 @@ def normalize_provider_ids(provider_ids: dict[str, Any] | None) -> dict[str, Any
     return {k.lower(): v for k, v in (provider_ids or {}).items()}
 
 
+IDENTITY_PROVIDERS = ("imdb", "tmdb")  # ids that name exactly one film or episode
+
+
+def provider_id_conflict(a: dict[str, Any] | None, b: dict[str, Any] | None) -> str | None:
+    """Why two items are certainly different titles (their IMDb or TMDb ids differ), or None.
+
+    Grouping unions items that share ANY provider id, and TVDB gives some unrelated films
+    one id: Squared Love Everlasting and Squared Love All Over Again (2023) share TVDB
+    348427 but not their IMDb/TMDb ids, so dedupe paired them (2026-10-13). An id that
+    only one side has is no conflict.
+    """
+    left, right = normalize_provider_ids(a), normalize_provider_ids(b)
+    for provider in IDENTITY_PROVIDERS:
+        x, y = left.get(provider), right.get(provider)
+        if x and y and str(x).strip().lower() != str(y).strip().lower():
+            return f"{provider} {x} vs {y}"
+    return None
+
+
 def iter_provider_ids(
     imdb: str | None, tmdb: str | None, tvdb: str | None
 ) -> Iterator[tuple[str, str]]:

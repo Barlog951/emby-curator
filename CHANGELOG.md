@@ -9,6 +9,12 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ### Fixed
 
+- **Dedupe never pairs two films whose IMDb or TMDb ids differ.** Copies were grouped
+  when they shared ANY provider id, and TVDB gives some unrelated films one id: Squared
+  Love Everlasting and Squared Love All Over Again (2023) were paired through TVDB 348427
+  and only the running-time check stopped the delete. Grouping now skips such pairs, and
+  the delete guard refuses any keeper/delete pair with different IMDb or TMDb ids.
+
 - **The frame check reads the picture rate behind Emby's frame rate.** Emby reports interlaced
   TV recordings at their field rate (50 for 25) and some x265 encodes at 23.809525 for 23.976,
   so the speed the two copies should play at came out wrong and nine identical The Killing pairs

@@ -583,6 +583,7 @@ def _create_item_info(item: dict, library_name: str, provider_id: str) -> dict:
         "id": item["Id"],
         "library_name": library_name,
         "provider_id": provider_id,
+        "identity_ids": normalize_provider_ids(item.get("ProviderIds")),
     }
 
     # Add TV series metadata if available

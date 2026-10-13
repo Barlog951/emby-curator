@@ -26,7 +26,11 @@ from emby_dedupe.reports import markdown
 from emby_dedupe.utils.constants import LANGUAGE_NORMALIZATION_MAP
 from emby_dedupe.utils.formatting import format_file_size
 from emby_dedupe.utils.logging import logger
-from emby_dedupe.utils.providers import PROVIDER_PRIORITY, normalize_provider_ids
+from emby_dedupe.utils.providers import (
+    PROVIDER_PRIORITY,
+    normalize_provider_ids,
+    provider_id_conflict,
+)
 
 
 def _extract_episode_key_from_path(filename: str) -> tuple[str | None, str | None]:
@@ -911,11 +915,17 @@ def _union_movie_groups(ds, movie_items) -> int:
                 logger.debug(f"Found movie group with provider ID: {provider_id} ({len(group)} items)")
 
     for movie_group in movie_groups_by_provider.values():
-        if len(movie_group) > 1:
-            first_item = movie_group[0]
-            for other_item in movie_group[1:]:
-                ds.union(first_item, other_item)
-                update_count += 1
+        clusters: list[list[dict]] = []
+        for item in movie_group:
+            # Join the first cluster none of whose members names a different film.
+            home = next((c for c in clusters
+                         if not any(provider_id_conflict(m.get("identity_ids"), item.get("identity_ids")) for m in c)), None)
+            if home is None:
+                clusters.append([item])
+                continue
+            ds.union(home[0], item)
+            home.append(item)
+            update_count += 1
 
     return update_count
 
@@ -1283,7 +1293,8 @@ def process_duplicate_groups(
 def _different_content_reason(item: dict, keeper: dict, frames: FrameChecker | None = None) -> str | None:
     """Why ``item`` may not be a copy of ``keeper`` at all, or None.
 
-    Tells: the episode sits in a different season folder (Initial D, 2026-09-27), either
+    Tells: the two copies carry different IMDb/TMDb ids (two films TVDB gave one id,
+    2026-10-13), the episode sits in a different season folder (Initial D, 2026-09-27), either
     running time is unknown (a download still landing, NCIS S03 2026-10-12), the running
     time differs well beyond tolerance (Rust filed as Runt, a "(2)" copy that is another
     episode), or (episodes, when ``frames`` is given) the pictures do not match: a swapped
@@ -1294,8 +1305,9 @@ def _different_content_reason(item: dict, keeper: dict, frames: FrameChecker | N
     copy that is longer); for a movie, only a PAL speed-up (25 fps vs 23.976/24, 4.2 %
     shorter) the frames confirm.
     """
-    reason = (episode_identity_conflict(keeper.get("path"), item.get("path"))
-              or _unknown_runtime(item, keeper))
+    conflict = provider_id_conflict(keeper.get("provider_ids"), item.get("provider_ids"))
+    reason = (f"provider-id-conflict ({conflict}): a different title" if conflict else None) or (
+        episode_identity_conflict(keeper.get("path"), item.get("path")) or _unknown_runtime(item, keeper))
     if reason:
         return reason
     mismatch = duration_mismatch(keeper.get("runtime_ticks"), item.get("runtime_ticks"))
@@ -1367,7 +1379,8 @@ def _frame_check_pairs(decisions: list) -> tuple[list[tuple[dict, dict]], list[t
         for item in decision.get("delete", []):
             if not _frame_check_wanted(item, keeper):
                 continue
-            if (episode_identity_conflict(keeper.get("path"), item.get("path"))
+            if (provider_id_conflict(keeper.get("provider_ids"), item.get("provider_ids"))
+                    or episode_identity_conflict(keeper.get("path"), item.get("path"))
                     or _unknown_runtime(item, keeper)):
                 continue
             mismatch = duration_mismatch(keeper.get("runtime_ticks"), item.get("runtime_ticks"))
