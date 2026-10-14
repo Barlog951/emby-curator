@@ -484,7 +484,8 @@ class TestDeduplication:
 
         result = determine_items_to_delete(["101", "101_dupe"], [test_items[0], duplicate_item])
         # Should identify them as duplicates
-        assert "keep" in result and "delete" in result
+        assert "keep" in result
+        assert "delete" in result
         assert len(result["delete"]) == 1
         # The 1080p version should be kept, 720p should be deleted
         assert result["keep"]["id"] == "101"
@@ -1155,8 +1156,10 @@ class TestGradeFSafetyNet:
             groups = _group_by_disjoint_root(ds)
 
         assert len(groups) == 2
-        assert "1" in groups and "2" in groups["1"]
-        assert "3" in groups and "4" in groups["3"]
+        assert "1" in groups
+        assert "2" in groups["1"]
+        assert "3" in groups
+        assert "4" in groups["3"]
 
     def test_verify_movie_group_all_movies(self):
         """Test _verify_movie_group identifies movie-only groups."""

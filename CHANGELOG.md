@@ -7,6 +7,17 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+### Changed
+
+- **Dedupe keeps both copies when deleting one would lose a language or the better picture.**
+  A delete is held, with the reason "merge audio first", when the copy to delete has an
+  audio language from `--lang-prio` that the kept copy lacks, or a higher picture class
+  (480p/720p/1080p/4K by width or height, so a 1920x800 scope film still counts as 1080p).
+  On 2026-10-14 a run removed nine English AHS S07 copies (the Czech BluRay was kept) and
+  five 1080p English Regular Show copies (720p Czech kept). Such pairs belong merged into
+  one file with the original language + SK + CZ. Extra dubs outside `--lang-prio` and
+  untagged tracks never hold a pair. The report names these rows "merge audio first".
+
 ## [3.4.2] — 2026-10-14
 
 ### Fixed

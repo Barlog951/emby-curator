@@ -113,7 +113,7 @@ def _hdr_tag(item: dict[str, Any]) -> str:
     resolution = str(video.get("resolution") or "").lower()
     if "dovi" in profile or "dolby" in video_range or "dolby vision" in resolution:
         return "DV P5" if video.get("is_dovi_p5") else "DV"
-    if video_range.startswith("hdr10+") or video_range.startswith("hdr10plus"):
+    if video_range.startswith(("hdr10+", "hdr10plus")):
         return "HDR10+"
     if video_range.startswith("hdr") or video_range == "hlg":
         return video_range.upper()
@@ -193,6 +193,8 @@ def _reason_code(error: str | None) -> str:
         return "runtime"
     if "season folder" in text:
         return "season_folder"
+    if text.startswith("merge-audio-first"):
+        return "merge_audio"
     return "guard" if text else ""
 
 
@@ -346,6 +348,9 @@ def _guard_line(row: dict[str, Any], files: list[dict[str, Any]]) -> str:
         return f"{_reason_text('runtime', files, '')}, beyond the guard's tolerance"
     if row["reason_code"] == "season_folder":
         return "the two copies sit in different season folders"
+    if row["reason_code"] == "merge_audio":
+        return ("deleting a copy would lose a language or the better picture: merge the audio into one file "
+                "first (" + "; ".join(sorted(r.split(": ", 1)[-1] for r in reasons)) + ")")
     if len(reasons) == 1:
         reason = next(iter(reasons))
         if "co-located" in reason:
@@ -530,7 +535,7 @@ def _finish_row(row: dict[str, Any], index: int, history: dict[str, int]) -> dic
     row["blocked_runs"] = max((history.get(f["pair_key"], 0) for f in files), default=0)
     row["shared"] = _shared_facts(files, row)
     row["per_file_status"] = len({f["status_text"] for f in files}) > 1
-    row["per_file_reason"] = (row["reason_code"] not in ("runtime", "season_folder")
+    row["per_file_reason"] = (row["reason_code"] not in ("runtime", "season_folder", "merge_audio")
                               and len({f["reason"] for f in files if f["reason"]}) > 1)
     row["diff_text"] = _diff_text(row, files)
     return row
@@ -545,6 +550,8 @@ def _short_reason(row: dict[str, Any], files: list[dict[str, Any]]) -> str:
         return _reason_text(code, files, row["reason"])
     if code == "season_folder":
         return "different season folders"
+    if code == "merge_audio":
+        return "merge audio first"
     if code == "guard":
         return "guard: shared folder" if "co-located" in row["reason"] else "guard refused"
     return ""
@@ -630,6 +637,8 @@ def _reason_text(code: str, files: list[dict[str, Any]], reason: str) -> str:
         return "runtime differs"
     if code == "season_folder":
         return "different season folders"
+    if code == "merge_audio":
+        return "merge audio first"
     return reason[:80] if reason else ""
 
 

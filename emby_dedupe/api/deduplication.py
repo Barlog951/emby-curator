@@ -56,7 +56,7 @@ def _extract_episode_key_from_path(filename: str) -> tuple[str | None, str | Non
     # Try alternative common patterns if standard doesn't match
     if not ep_match:
         # 1x01 format
-        ep_match = re.search(r'(\d+)[xX](\d+)', filename)
+        ep_match = re.search(r'(?<!\d)(\d{1,4})[xX](\d{1,4})', filename)  # bounded: linear (Sonar S8786)
     if not ep_match:
         # s01.e01 format
         ep_match = re.search(r'[sS](\d+)\.?[eE](\d+)', filename)
@@ -1396,14 +1396,71 @@ def _unknown_runtime(item: dict, keeper: dict) -> str | None:
     return f"runtime-unknown ({' and '.join(missing)} not probed by Emby yet; cannot verify same content)"
 
 
+MERGE_AUDIO_FIRST = "merge-audio-first"
+_ENGLISH_CODES = {"eng": "en", "english": "en"}
+# (min width, min height, class): a 2.39:1 1080p film is 1920x800, so width counts as much as height
+_RESOLUTION_CLASSES = ((3400, 2000, 4, "4K"), (1800, 1000, 3, "1080p"), (1200, 680, 2, "720p"), (640, 440, 1, "480p"))
+
+
+def _normalized_language(code: str) -> str:
+    """"cze"/"ces" → "cs", "slo" → "sk", "eng" → "en"; other codes lower-cased as they are."""
+    code = str(code).lower()
+    return _ENGLISH_CODES.get(code, LANGUAGE_NORMALIZATION_MAP.get(code, code))
+
+
+def _resolution_class(item: dict) -> tuple[int, str]:
+    """(0–4, label) for 480p…4K from the video width or height; (0, "") when unknown."""
+    video = (item.get("quality_description") or {}).get("video") or {}
+    width, height = video.get("width") or 0, video.get("height") or 0
+    return next(((rank, label) for min_w, min_h, rank, label in _RESOLUTION_CLASSES
+                 if width >= min_w or height >= min_h), (0, ""))
+
+
+def merge_audio_first_reason(item: dict, keeper: dict) -> str | None:
+    """Why deleting ``item`` would lose something that belongs in ONE merged file, or None.
+
+    Fuki's ideal state (2026-10-13): one best file per title with the original language +
+    SK + CZ. A delete that throws away either half of that is held for an audio merge
+    (the box tools add a dub into the better picture, or the original track into the
+    dubbed file, with proven sync) instead:
+
+    - the copy to delete has an audio language from ``--lang-prio`` that the kept copy
+      lacks (AHS S07: nine English 720p copies deleted, the Czech BluRay kept, 2026-10-14);
+    - the copy to delete has the better picture class and the kept copy won on language
+      (Regular Show S01: five 1080p English copies deleted, 720p Czech kept, 2026-10-14).
+
+    Languages outside ``--lang-prio`` (the extra dubs of multi-language packs) and
+    untagged tracks never hold a pair.
+    """
+    priorities = {_normalized_language(c) for c in keeper.get("language_priority_list") or []}
+    if priorities:
+        def languages(side: dict) -> set[str]:
+            return {_normalized_language(c) for c in _get_clean_languages(side)}
+        lost = sorted((languages(item) - languages(keeper)) & priorities)
+        if lost:
+            return (f"{MERGE_AUDIO_FIRST}: the copy to delete has {', '.join(lost)} audio the kept copy lacks; "
+                    "merge the tracks into one file first")
+    (item_rank, item_label), (keep_rank, keep_label) = _resolution_class(item), _resolution_class(keeper)
+    if keep_rank and item_rank > keep_rank:
+        return (f"{MERGE_AUDIO_FIRST}: the copy to delete has the better picture ({item_label} vs {keep_label}); "
+                "merge the kept copy's audio into it first")
+    return None
+
+
+def _refusal_reason(item: dict, keeper: dict, frames: FrameChecker | None = None) -> str | None:
+    """Every reason the guard keeps both copies: different content first, then an audio merge."""
+    return _different_content_reason(item, keeper, frames) or merge_audio_first_reason(item, keeper)
+
+
 def _refuse_different_content(item: dict, keeper: dict, frames: FrameChecker | None = None) -> str | None:
-    """Delete-time backstop: refuse a delete when the "duplicate" may be different content.
+    """Delete-time backstop: refuse a delete when the "duplicate" may be different content,
+    or when deleting it would lose a language or the better picture (merge audio first).
 
     Returns the reason when refused (and records it on the item), else None. Deliberately
     does NOT set the fold-safe marker: --fold-safe-delete removes guard-refused duplicates
     file-only, and these may be different episodes or films, not duplicates.
     """
-    reason = _different_content_reason(item, keeper, frames)
+    reason = _refusal_reason(item, keeper, frames)
     if reason:
         item["deletion_result"] = {"id": item["id"], "status": "skipped_unsafe", "error": reason}
     return reason
@@ -1434,7 +1491,7 @@ def _warn_unsafe_deletions(
     for decision in decisions:
         keeper_path = (decision.get("keep") or {}).get("path")
         for item in decision.get("delete", []):
-            conflict = _different_content_reason(item, decision.get("keep") or {}, frames)
+            conflict = _refusal_reason(item, decision.get("keep") or {}, frames)
             if conflict:
                 unsafe += 1
                 item["dry_run_refusal"] = conflict
