@@ -43,8 +43,9 @@ class TestPaginateEmbyItems:
         """The opt-in raise contract: callers that must not treat a partial result as
         complete (provider-table build) pass raise_on_error=True."""
         mock_req.side_effect = httpx.RequestError("boom")
+        pages = paginate_emby_items(Mock(), "http://emby/Items", {}, raise_on_error=True)  # a generator: nothing runs yet
         with pytest.raises(httpx.RequestError):
-            list(paginate_emby_items(Mock(), "http://emby/Items", {}, raise_on_error=True))
+            list(pages)
 
     @patch("emby_dedupe.api.pagination.make_http_request")
     def test_raise_on_error_reraises_after_partial_pages(self, mock_req):

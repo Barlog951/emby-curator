@@ -122,10 +122,9 @@ def inline_poster_urls(
     if not to_fetch:
         return replacements
 
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
-            results = pool.map(lambda u: _fetch_data_uri(client, u, api_key), to_fetch)
-            replacements.update(zip(to_fetch, results, strict=True))
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client, ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
+        results = pool.map(lambda u: _fetch_data_uri(client, u, api_key), to_fetch)
+        replacements.update(zip(to_fetch, results, strict=True))
 
     inlined = sum(1 for v in replacements.values() if v.startswith("data:"))
     logger.info(f"Report posters: {inlined}/{len(to_fetch)} inlined (no API key written to the report)")

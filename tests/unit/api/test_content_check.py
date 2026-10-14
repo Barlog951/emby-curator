@@ -42,7 +42,8 @@ def _ep(item_id, seconds, fps, path="/S/NCIS/S19/x.mkv"):
 def test_pal_speedup_pair_is_recognised():
     sk = _ep("sk", 2423, 25.0)  # 25 fps copy runs 4.2 % shorter
     cz = _ep("cz", 2423 * 25 / 23.976, 23.976)
-    assert is_speedup_pair(sk, cz) and is_speedup_pair(cz, sk)
+    assert is_speedup_pair(sk, cz)
+    assert is_speedup_pair(cz, sk)
 
 
 def test_extra_recap_is_not_a_speedup():
@@ -79,7 +80,8 @@ def test_twins_at_one_offset_score_high_and_report_the_offset():
     keeper = _keyframes([(1, 600.0), (2, 603.0), (3, 606.0)])
     window = _keyframes([(9, 590.0), (1, 595.0), (2, 598.1), (3, 601.0)])
     score, offset = point_match(keeper, window, 1.0)
-    assert score == 1.0 and abs(offset + 5.0) < 0.2
+    assert score == 1.0
+    assert abs(offset + 5.0) < 0.2
 
 
 def test_look_alike_frames_at_scattered_offsets_score_low():
@@ -121,9 +123,11 @@ def test_compare_votes_over_points_and_caches():
     with patch.object(checker, "_score_point", side_effect=points) as point:
         verdict = checker.compare(_ep("a", 2400, 25), _ep("b", 2500, 24))
         again = checker.compare(_ep("a", 2400, 25), _ep("b", 2500, 24))
-    assert verdict.verdict == "same" and again is verdict
+    assert verdict.verdict == "same"
+    assert again is verdict
     assert point.call_count == 4  # the third matched point wins the vote; the fifth is not read
-    assert verdict.offsets == (-3.0, -3.5, -4.0) and verdict.steady
+    assert verdict.offsets == (-3.0, -3.5, -4.0)
+    assert verdict.steady
 
 
 def test_matched_offset_moves_the_next_window_and_a_miss_does_not():
@@ -183,7 +187,8 @@ def test_keyframes_go_through_emby_with_the_token_in_a_header():
     assert [at for at, _ in frames] == [600.02, 603.02]
     assert "http://emby:8096/Videos/123/stream?static=true&MediaSourceId=mediasource_123" in cmd
     assert all("SECRET" not in part for part in cmd if part.startswith("http"))
-    assert "-skip_frame" in cmd and "nokey" in cmd
+    assert "-skip_frame" in cmd
+    assert "nokey" in cmd
 
 
 def test_default_port_is_left_out_of_the_stream_url():
@@ -253,10 +258,13 @@ def test_on_the_media_host_ffmpeg_reads_the_items_own_file_over_ssh():
         run.return_value = MagicMock(stdout=b"", stderr=b"", returncode=0)
         checker._keyframes(item, 600, 30)
     cmd = run.call_args.args[0]
-    assert cmd[0] == "ssh" and "me@media" in cmd and "BatchMode=yes" in cmd
+    assert cmd[0] == "ssh"
+    assert "me@media" in cmd
+    assert "BatchMode=yes" in cmd
     remote = cmd[-1]
     assert "'/Movies/Serials/It'\"'\"'s NCIS/S19/NCIS S19E01 - 1080p SK.mkv'" in remote
-    assert "SECRET" not in remote and "/Videos/" not in remote
+    assert "SECRET" not in remote
+    assert "/Videos/" not in remote
     get.assert_not_called()
     assert checker.available
 
@@ -284,7 +292,8 @@ def test_prefetch_shows_a_progress_bar_and_caches_every_pair():
     with patch.object(checker, "_compare", return_value=FrameVerdict("same", (0.9,) * 3)), \
          patch("emby_dedupe.api.content_check.tqdm", wraps=__import__("tqdm").tqdm) as bar:
         checker.prefetch(pairs)
-    assert bar.call_args.kwargs["total"] == 3 and bar.call_args.kwargs["desc"] == "Frame check"
+    assert bar.call_args.kwargs["total"] == 3
+    assert bar.call_args.kwargs["desc"] == "Frame check"
     with patch.object(checker, "_compare") as again:
         assert all(checker.compare(k, o).verdict == "same" for k, o in pairs)
     again.assert_not_called()
@@ -387,7 +396,8 @@ def test_speedup_is_removed_only_when_frames_match():
     sk, cz = _film("sk", 2423, 25.0), _film("cz", 2423 * 1.0427, 23.976)
     assert dd._different_content_reason(cz, sk, _Frames("same")) is None
     refused = dd._different_content_reason(cz, sk, _Frames("unsure"))
-    assert "duration-mismatch" in refused and "PAL speed-up not confirmed" in refused
+    assert "duration-mismatch" in refused
+    assert "PAL speed-up not confirmed" in refused
     assert "duration-mismatch" in dd._different_content_reason(cz, sk, None)
 
 
@@ -396,7 +406,8 @@ def test_matching_pictures_with_a_drifting_offset_are_not_a_speedup():
     speed; the runtime ratio only happens to fit 25/24, so the avi is kept."""
     avi, sk = _film("avi", 2423 * 1.0443, 23.976), _film("sk", 2423, 25.0)
     refused = dd._different_content_reason(avi, sk, _Frames("same", DRIFTING))
-    assert "duration-mismatch" in refused and "offset drifts" in refused
+    assert "duration-mismatch" in refused
+    assert "offset drifts" in refused
 
 
 def test_drift_needs_enough_matched_points():
@@ -407,7 +418,9 @@ def test_drift_needs_enough_matched_points():
 def test_a_film_runtime_gap_that_is_not_a_speedup_never_asks_the_frames():
     frames = _Frames("same")
     reason = dd._different_content_reason(_film("cz", 2569, 24.0), _film("sk", 2387, 25.0), frames)
-    assert "duration-mismatch" in reason and frames.calls == 0 and frames.cover_calls == 0
+    assert "duration-mismatch" in reason
+    assert frames.calls == 0
+    assert frames.cover_calls == 0
 
 
 def test_episode_runtime_gap_goes_when_the_kept_copy_holds_all_of_it():
@@ -415,13 +428,15 @@ def test_episode_runtime_gap_goes_when_the_kept_copy_holds_all_of_it():
     blu, cz = _ep("blu", 2536, 23.976), _ep("cz", 2417, 25.0)
     frames = _Frames("same")
     assert dd._different_content_reason(blu, cz, frames) is None
-    assert frames.cover_calls == 1 and frames.calls == 0
+    assert frames.cover_calls == 1
+    assert frames.calls == 0
 
 
 def test_episode_with_a_lead_in_the_kept_copy_lacks_stays():
     """TVD S08E16: the copy to delete has a 61 s TV lead-in (Fuki: such cases stay manual)."""
     refused = dd._different_content_reason(_ep("tv", 2606, 23.976), _ep("cz", 2431, 25.0), _Frames("same", covered="unsure"))
-    assert "duration-mismatch" in refused and "not proven that the kept copy holds all of it" in refused
+    assert "duration-mismatch" in refused
+    assert "not proven that the kept copy holds all of it" in refused
 
 
 def test_episode_runtime_gap_without_frames_stays():
@@ -435,7 +450,8 @@ TVD_S06E16 = [(45, -0.6), (380, 1.4), (887, 2.5), (1395, 3.6), (1902, 2.9), (228
 
 def test_tvd_bluray_is_covered_by_the_pal_web_dl():
     verdict, note = coverage_verdict(TVD_S06E16, 2536, 2417, 2417 / 2536, 23.976 / 25)
-    assert verdict == "same" and "covered" in note
+    assert verdict == "same"
+    assert "covered" in note
 
 
 def test_kept_copy_longer_than_the_copy_to_delete_covers_it():
@@ -448,13 +464,15 @@ def test_a_lead_in_on_the_copy_to_delete_is_not_covered():
     # TVD S08E16 480p: 61 s before the kept copy starts
     points = [(45, -56.3), (391, -47.6), (912, -39.9), (1433, -28.2), (1954, -16.4), (2345, -6.3), (2531, -1.5)]
     verdict, note = coverage_verdict(points, 2606, 2431, 2431 / 2606, 23.976 / 25)
-    assert verdict == "unsure" and "at the start" in note
+    assert verdict == "unsure"
+    assert "at the start" in note
 
 
 def test_a_missing_scene_is_a_step_off_the_line():
     points = [(45, 0.0), (380, 0.1), (887, 0.2), (1395, 40.3), (1902, 40.4), (2282, 40.5), (2461, 40.6)]
     verdict, note = coverage_verdict(points, 2536, 2577, 1.0, 1.0)
-    assert verdict == "unsure" and "missing or extra" in note
+    assert verdict == "unsure"
+    assert "missing or extra" in note
 
 
 def test_extra_minutes_spread_evenly_are_not_a_speed_up():
@@ -462,7 +480,8 @@ def test_extra_minutes_spread_evenly_are_not_a_speed_up():
     offsets made a straight line that looked like 25/23.976, but the frame rates say 1.0."""
     points = [(45, 0.0), (380, -16.6), (887, -40.0), (1395, -62.6), (1902, -85.2), (2282, -102.1), (2461, -110.0)]
     verdict, note = coverage_verdict(points, 2533, 2423, 1.0, 1.0)
-    assert verdict == "unsure" and "frame rates" in note
+    assert verdict == "unsure"
+    assert "frame rates" in note
 
 
 def test_coverage_needs_both_frame_rates():
@@ -475,7 +494,9 @@ def test_covers_stops_at_the_first_part_not_found():
     checker = FrameChecker("https://emby", "k", ffmpeg_path="ffmpeg")
     with patch.object(checker, "_score_point", side_effect=[(0.9, 0.1), (0.1, None)]) as score:
         verdict = checker._covers(_ep("k", 2417, 25.0), _ep("o", 2536, 23.976))
-    assert verdict.verdict == "different" and score.call_count == 2 and "not found" in verdict.note
+    assert verdict.verdict == "different"
+    assert score.call_count == 2
+    assert "not found" in verdict.note
 
 
 def test_covers_samples_the_copy_to_delete_from_its_first_to_its_last_minute():
@@ -484,7 +505,9 @@ def test_covers_samples_the_copy_to_delete_from_its_first_to_its_last_minute():
     with patch.object(checker, "_score_point", side_effect=lambda *a: (1.0, next(offsets))) as score:
         verdict = checker._covers(_ep("k", 2417, 25.0), _ep("o", 2536, 23.976))
     sampled = [call.args[2] for call in score.call_args_list]
-    assert sampled[0] == 45 and sampled[-1] == 2536 - 75 and len(sampled) == 7
+    assert sampled[0] == 45
+    assert sampled[-1] == 2536 - 75
+    assert len(sampled) == 7
     assert all(call.args[0]["id"] == "o" for call in score.call_args_list)  # the copy to delete is sampled
     assert verdict.verdict == "same"
 
@@ -499,7 +522,8 @@ def test_cover_and_compare_verdicts_are_saved_apart(tmp_path):
     again = _cached_checker(tmp_path)
     with patch.object(again, "_covers") as rerun:
         saved = again.covers(keeper, other)
-    assert saved.note == "61s at the start" and not rerun.called
+    assert saved.note == "61s at the start"
+    assert not rerun.called
     assert cache_key(keeper, other, "cover") != cache_key(keeper, other)
 
 
@@ -516,7 +540,8 @@ def test_movies_skip_the_frame_check():
     frames = _Frames("different")
     movie_a = {**_ep("a", 7000, 24), "is_episode": False, "path": "/M/A (2001)/a.mkv"}
     movie_b = {**_ep("b", 7010, 24), "is_episode": False, "path": "/M/A (2001) 4K/b.mkv"}
-    assert dd._different_content_reason(movie_b, movie_a, frames) is None and frames.calls == 0
+    assert dd._different_content_reason(movie_b, movie_a, frames) is None
+    assert frames.calls == 0
 
 
 def test_prefetch_list_holds_only_pairs_the_guard_will_ask_about():
@@ -541,8 +566,10 @@ def test_prefetch_runs_covers_for_pairs_whose_lengths_differ(tmp_path):
     with patch.object(checker, "_compare", return_value=FrameVerdict("same")) as compare, \
          patch.object(checker, "_covers", return_value=FrameVerdict("same", (), (), "covered")) as covers:
         checker.prefetch([same_len], [gap])
-        assert checker.covers(*gap).verdict == "same" and checker.compare(*same_len).verdict == "same"
-    assert compare.call_count == 1 and covers.call_count == 1  # the guard reuses the prefetched verdicts
+        assert checker.covers(*gap).verdict == "same"
+        assert checker.compare(*same_len).verdict == "same"
+    assert compare.call_count == 1
+    assert covers.call_count == 1  # the guard reuses the prefetched verdicts
 
 
 def test_a_search_window_never_starts_before_the_file():
@@ -561,8 +588,10 @@ def test_frame_rates_are_read_as_the_picture_rate():
     nine identical pairs stayed blocked."""
     from emby_dedupe.api.content_check import standard_frame_rate
     assert abs(standard_frame_rate(23.809525) - 23.976) < 0.001
-    assert standard_frame_rate(50) == 25.0 and abs(standard_frame_rate(59.94) - 29.97) < 0.001
-    assert standard_frame_rate(25) == 25.0 and standard_frame_rate(12.5) == 12.5  # unusual rates stay as they are
+    assert standard_frame_rate(50) == 25.0
+    assert abs(standard_frame_rate(59.94) - 29.97) < 0.001
+    assert standard_frame_rate(25) == 25.0
+    assert standard_frame_rate(12.5) == 12.5  # unusual rates stay as they are
     x265, cz_1080i = _ep("x", 3543, 23.809525), _ep("cz", 3395, 50)
     assert abs(expected_speed(cz_1080i, x265) - 0.95904) < 1e-4
 

@@ -76,7 +76,7 @@ class TestWriteToFile:
         # Use an invalid path (null byte in filename)
         invalid_path = str(tmp_path / "test\x00invalid.txt")
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError, match="null byte"):
             write_to_file("content", invalid_path)
 
 

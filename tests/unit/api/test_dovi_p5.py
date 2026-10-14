@@ -150,7 +150,8 @@ def test_extract_video_quality_clean_file():
 def test_extract_video_quality_defaults_include_dv_keys():
     vq = _extract_video_quality(None)
     assert vq["is_dovi_p5"] is False
-    assert "dv_profile" in vq and "video_range" in vq
+    assert "dv_profile" in vq
+    assert "video_range" in vq
 
 
 # --------------------------------------------------------------------------- #

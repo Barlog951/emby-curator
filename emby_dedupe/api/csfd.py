@@ -176,32 +176,50 @@ def _first_int(text: str) -> int | None:
 # parsers (pure functions over page HTML)
 # ---------------------------------------------------------------------------
 
-_SECTION_RE = re.compile(
-    r'<section[^>]+data-search-results="(films|series)"[^>]*>(.*?)</section>', re.S
-)
+# Opening tags are matched whole ([^>]*>) and their attributes tested separately: a pattern like
+# '<section[^>]+data-…="x"[^>]*>' backtracks super-linearly (Sonar S8786, 2026-10-14).
+_SECTION_OPEN_RE = re.compile(r"<section\b([^>]*)>")
+_SEARCH_KIND_RE = re.compile(r'data-search-results="([a-z]+)"')
 _ARTICLE_RE = re.compile(r"<article\b.*?</article>", re.S)
-_TITLE_LINK_RE = re.compile(
-    r'<a href="(/film/[^"]+)"[^>]*class="film-title-name"[^>]*>(.*?)</a>', re.S
-)
+_FILM_LINK_RE = re.compile(r'<a href="(/film/[^"]+)"([^>]*)>(.*?)</a>', re.S)
 _TITLE_INFO_RE = re.compile(r'<span class="film-title-info">(.*?)</span>\s*</h3>', re.S)
+
+
+def _search_sections(page: str, kinds: set[str]) -> list[tuple[str, str]]:
+    """(kind, body) of every ``<section data-search-results="kind">``; the body runs to the first
+    ``</section>`` after the opening tag."""
+    sections = []
+    for opening in _SECTION_OPEN_RE.finditer(page):
+        kind = _SEARCH_KIND_RE.search(opening.group(1))
+        end = page.find("</section>", opening.end())
+        if kind and kind.group(1) in kinds and end != -1:
+            sections.append((kind.group(1), page[opening.end():end]))
+    return sections
+
+
+def _title_link(article: str) -> tuple[str, str] | None:
+    """(href, inner html) of the first /film/ link carrying class="film-title-name"."""
+    for link in _FILM_LINK_RE.finditer(article):
+        if 'class="film-title-name"' in link.group(2):
+            return link.group(1), link.group(3)
+    return None
 
 
 def parse_search(page: str) -> list[CsfdHit]:
     """Extract film and series hits from a ČSFD search page."""
     hits: list[CsfdHit] = []
-    for section_kind, body in _SECTION_RE.findall(page):
+    for section_kind, body in _search_sections(page, {"films", "series"}):
         kind = KIND_FILM if section_kind == "films" else KIND_SERIES
         for article in _ARTICLE_RE.findall(body):
-            link = _TITLE_LINK_RE.search(article)
+            link = _title_link(article)
             if not link:
                 continue
             info = _TITLE_INFO_RE.search(article)
             year = _first_int(_strip_tags(info.group(1))) if info else None
-            hits.append(CsfdHit(CSFD_BASE + link.group(1), _strip_tags(link.group(2)), year, kind))
+            hits.append(CsfdHit(CSFD_BASE + link[0], _strip_tags(link[1]), year, kind))
     return hits
 
 
-_CREATOR_SECTION_RE = re.compile(r'<section[^>]+data-search-results="creators"[^>]*>(.*?)</section>', re.S)
 _CREATOR_TITLE_RE = re.compile(r'<h3 class="user-title"><a href="(/tvorca/[^"]+)">(.*?)</a>', re.S)
 _CREATOR_INFO_RE = re.compile(r"<p>(.*?)</p>", re.S)
 _CREATOR_IMG_RE = re.compile(r'<img src="([^"]+)"')
@@ -272,10 +290,10 @@ def _creator_photo(article: str) -> str | None:
 
 def parse_creator_search(page: str) -> list[CsfdCreator]:
     """People rows of a ČSFD search page; a placeholder image means no photo."""
-    section = _CREATOR_SECTION_RE.search(page)
-    if not section:
+    sections = _search_sections(page, {"creators"})
+    if not sections:
         return []
-    creators = (_creator_from_article(a) for a in _ARTICLE_RE.findall(section.group(1)))
+    creators = (_creator_from_article(a) for a in _ARTICLE_RE.findall(sections[0][1]))
     return [c for c in creators if c is not None]
 
 
@@ -298,7 +316,9 @@ _ORIGIN_RE = re.compile(r'<div class="origin">(.*?)</div>', re.S)
 _GENRES_RE = re.compile(r'<div class="genres">(.*?)</div>', re.S)
 _PLOT_RE = re.compile(r'<div class="plot-(?:full|preview)">(.*?)</div>', re.S)
 _RATING_RE = re.compile(r'class="film-rating-average[^"]*"[^>]*>(.*?)</', re.S)
-_POSTER_RE = re.compile(r'<div class="film-posters">.*?<img[^>]+src="([^"]+)"', re.S)
+_POSTERS_DIV = '<div class="film-posters">'
+_IMG_RE = re.compile(r"<img\b([^>]*)>")
+_SRC_RE = re.compile(r'src="([^"]+)"')
 _NAMES_RE = re.compile(r'<ul class="film-names">(.*?)</ul>', re.S)
 _NAME_LI_RE = re.compile(r"<li[^>]*>(.*?)</li>", re.S)
 _CREATORS_RE = re.compile(r'<div class="creators"[^>]*>(.*?)</div>\s*</div>\s*</div>', re.S)
@@ -328,7 +348,7 @@ def _parse_plot(page: str) -> str:
     if not match:
         return ""
     plot = _strip_tags(match.group(1))
-    return re.sub(r"\s*\([^()]*\)\s*$", "", plot).strip()  # drop trailing "( STVR )" source
+    return re.sub(r"\([^()]*\)\s*$", "", plot).strip()  # drop trailing "( STVR )" source
 
 
 def _parse_genres(page: str) -> list[str]:
@@ -337,7 +357,7 @@ def _parse_genres(page: str) -> list[str]:
     if not match:
         return []
     text = _strip_tags(re.sub(r'<span class="bullet">\s*</span>', " | ", match.group(1)))
-    return [g.strip() for g in re.split(r"\s*[|/]\s*", text) if g.strip()]
+    return [g.strip() for g in re.split(r"[|/]", text) if g.strip()]
 
 
 def _parse_names(page: str) -> list[str]:
@@ -373,7 +393,9 @@ def _parse_creators(page: str) -> tuple[list[str], list[list[str]]]:
 
 
 def _parse_poster(page: str) -> str | None:
-    match = _POSTER_RE.search(page)
+    start = page.find(_POSTERS_DIV)
+    srcs = (_SRC_RE.search(img.group(1)) for img in _IMG_RE.finditer(page, start)) if start != -1 else iter(())
+    match = next((m for m in srcs if m), None)          # the first <img> after the div that has a src
     if not match or match.group(1).startswith("data:"):
         return None  # lazy-load placeholder, the film has no poster
     src = match.group(1)

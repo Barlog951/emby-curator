@@ -72,11 +72,14 @@ def test_tally_tie_goes_to_none():
 
 def test_prompt_and_schema():
     prompt = render_prompt(STATE, "Which is it?", CRITERIA)
-    assert prompt.startswith("Which is it?") and '"folder_name": "El Conde (2023)"' in prompt
-    assert "- c1: Hrabě (2023), film; country: Čile" in prompt and "- none: None of them." in prompt
+    assert prompt.startswith("Which is it?")
+    assert '"folder_name": "El Conde (2023)"' in prompt
+    assert "- c1: Hrabě (2023), film; country: Čile" in prompt
+    assert "- none: None of them." in prompt
     schema = answer_schema(list(CRITERIA))
     assert schema["properties"]["choice"]["enum"] == ["c1", "none"]
-    assert schema["required"] == ["reason", "choice"] and schema["additionalProperties"] is False
+    assert schema["required"] == ["reason", "choice"]
+    assert schema["additionalProperties"] is False
 
 
 # --- ClaudeChoiceClient ----------------------------------------------------------------
@@ -84,7 +87,8 @@ def test_prompt_and_schema():
 def test_request_shape_matches_what_was_measured():
     client, sdk = _client(*[_reply()] * 5)
     got = client.choose(STATE, "Which?", CRITERIA)
-    assert (got.choice, got.confidence) == ("c1", 1.0) and len(sdk.requests) == 5
+    assert (got.choice, got.confidence) == ("c1", 1.0)
+    assert len(sdk.requests) == 5
     req = sdk.requests[0]
     assert req["model"] == DEFAULT_CLAUDE_MODEL == "claude-haiku-5-5"
     assert req["output_config"]["effort"] == CLAUDE_EFFORT == "medium"

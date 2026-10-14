@@ -317,7 +317,9 @@ class TestScoreBreakdown:
     def test_format_score_summary(self):
         summary = format_score_summary(compute_quality_breakdown(**self._INPUTS))
         assert summary.startswith("score ")
-        assert "res " in summary and "HDR " in summary and "bitrate " in summary
+        assert "res " in summary
+        assert "HDR " in summary
+        assert "bitrate " in summary
         assert "×1.15 BluRay" in summary  # source multiplier + label
         assert "×0.70 AI-upscale" in summary
 

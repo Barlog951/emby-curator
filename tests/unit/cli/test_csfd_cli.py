@@ -63,13 +63,16 @@ def test_title_queries_use_name_folder_title_and_original_title_once():
 def test_plan_item_fills_only_empty_fields():
     plan = plan_item(_item(), _film())
     assert plan.fields == {"Overview": "Plot.", "Genres": ["Documentary"], "CommunityRating": 8.7}
-    assert plan.poster is True and plan.has_changes
+    assert plan.poster is True
+    assert plan.has_changes
     kept = _item(Overview="Existing", Genres=["Drama"], ImageTags={"Primary": "t"},
                  CommunityRating=6.1, ProductionYear=None)
     plan2 = plan_item(kept, _film(year=2024))
-    assert plan2.fields == {"ProductionYear": 2024} and plan2.poster is False
+    assert plan2.fields == {"ProductionYear": 2024}
+    assert plan2.poster is False
     bare = plan_item(kept, _film(year=None, poster_url=None))
-    assert bare.fields == {} and bare.poster is False
+    assert bare.fields == {}
+    assert bare.poster is False
     assert bare.has_changes                      # still worth a write: the Csfd id stamp
     assert cli._describe(bare) == "csfd id only"
     assert not ItemPlan("1", "x").has_changes    # unmatched: nothing to write
@@ -79,7 +82,8 @@ def test_build_payload_sets_fields_locks_and_provider_id():
     item = _item(LockedFields=["Name"])
     plan = plan_item(item, _film())
     payload = build_payload(item, plan)
-    assert payload["Overview"] == "Plot." and payload["Genres"] == ["Documentary"]
+    assert payload["Overview"] == "Plot."
+    assert payload["Genres"] == ["Documentary"]
     assert payload["GenreItems"] == [{"Name": "Documentary", "Id": ""}]
     assert payload["CommunityRating"] == 8.7
     assert payload["ProviderIds"] == {"Csfd": "1885748"}
@@ -114,11 +118,15 @@ def test_resolve_film_prefers_manual_map_then_strict_search():
     film = _film()
     fake = _FakeCsfd([CsfdHit(film.url, "Tatranský durič", 2026, "film")], film)
     got, reason = resolve_film(fake, _item(), {"1": "https://www.csfd.sk/film/manual/"})
-    assert got is film and reason == "manual map" and fake.fetched == ["https://www.csfd.sk/film/manual/"]
+    assert got is film
+    assert reason == "manual map"
+    assert fake.fetched == ["https://www.csfd.sk/film/manual/"]
     got, reason = resolve_film(fake, _item(), {})
-    assert got is film and reason == "matched 'Tatranský durič'"
+    assert got is film
+    assert reason == "matched 'Tatranský durič'"
     none, reason = resolve_film(_FakeCsfd([], film), _item(), {})
-    assert none is None and "no unambiguous" in reason
+    assert none is None
+    assert "no unambiguous" in reason
 
 
 def test_run_fill_dry_run_and_doit_end_to_end(tmp_path, monkeypatch):
@@ -150,7 +158,8 @@ def test_run_fill_dry_run_and_doit_end_to_end(tmp_path, monkeypatch):
     cli._run_fill(client, "http://emby:8096", "u", ["lib"], args)
     assert [p for p, _ in posted] == ["/Items/1", "/Items/1/Images/Primary"]
     body = json.loads(posted[0][1])
-    assert body["Overview"] == "Plot." and body["ProviderIds"]["Csfd"] == "1885748"
+    assert body["Overview"] == "Plot."
+    assert body["ProviderIds"]["Csfd"] == "1885748"
 
 
 def test_item_plan_describe_and_apply_failure_path():
@@ -183,12 +192,14 @@ def test_resolve_film_second_pass_verifies_original_title_on_page():
     item = _item(Type="Series", Name="Aerial Greece", ProductionYear=2021,
                  Path="/Movies/Dokumenty/Aerial Greece (2021)")
     got, reason = resolve_film(fake, item, {})
-    assert got is localized and reason == "verified 'Aerial Greece' via original title"
+    assert got is localized
+    assert reason == "verified 'Aerial Greece' via original title"
     assert fake.fetched == [localized.url]          # only the same-year hit was fetched
     # a same-year hit whose page does NOT list our title is rejected
     other = _film(title="Něco jiného", names=["Something Else"], year=2021)
     got, reason = resolve_film(_FakeCsfd(hits, other), item, {})
-    assert got is None and "no unambiguous" in reason
+    assert got is None
+    assert "no unambiguous" in reason
 
 
 def test_plan_item_overwrite_poster_replaces_existing_art():
@@ -220,7 +231,8 @@ def test_stamped_items_are_recandidated_only_when_gaps_remain_and_use_stored_id(
     assert is_candidate(gap, only_unmatched=False)
     fake = _FakeCsfd([], _film())
     got, reason = resolve_film(fake, gap, {})
-    assert reason == "stored csfd id" and fake.fetched == ["https://www.csfd.sk/film/1885748/prehlad/"]
+    assert reason == "stored csfd id"
+    assert fake.fetched == ["https://www.csfd.sk/film/1885748/prehlad/"]
     assert fake.searched == []
 
 
@@ -280,7 +292,8 @@ def test_run_people_uploads_only_matched_real_photos(tmp_path, monkeypatch):
     # p1: portrait then bio; p2: nothing (no photo, no bio on ČSFD); p3: bio only — its photo is kept
     assert uploads == ["/Items/p1/Images/Primary", "/Items/p1", "/Items/p3"]
     text = report.read_text(encoding="utf-8")
-    assert "p1\tMilan Lasica\t1\tmatched+bio" in text and "p2\tMilan Vašica\t1\tno_photo" in text
+    assert "p1\tMilan Lasica\t1\tmatched+bio" in text
+    assert "p2\tMilan Vašica\t1\tno_photo" in text
     assert "p3\tMilan Lasica\t1\tmatched+bio" in text
 
 

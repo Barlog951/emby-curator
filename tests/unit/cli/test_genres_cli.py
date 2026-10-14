@@ -365,9 +365,9 @@ class TestFixAction:
         self._setup_common_mocks(mocker)
         mocker.patch("emby_dedupe.cli.genres.fetch_items_with_genres", return_value=[])
         mocker.patch("emby_dedupe.cli.genres.get_env_variable", return_value=None)
+        args = self._make_fix_args()
+        args.tmdb_api_key = None
         with pytest.raises(SystemExit):
-            args = self._make_fix_args()
-            args.tmdb_api_key = None
             run_genres_command(args)
 
     def test_fix_gaps_only_skips_items_with_genres(self, mocker):

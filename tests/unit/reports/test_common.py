@@ -113,5 +113,6 @@ def test_fold_safe_removals_count_as_deleted_and_blocked_space_is_not_removed():
 def test_dry_run_still_reports_the_planned_space():
     stats = calculate_report_statistics([_decision(None), _decision(None)])
     assert stats["deletion_attempted"] is False
-    assert stats["deleted_items"] == 0 and stats["skipped_deletions"] == 2
+    assert stats["deleted_items"] == 0
+    assert stats["skipped_deletions"] == 2
     assert stats["space_saved"] == stats["total_size_to_delete"] == 2 * GB

@@ -42,7 +42,8 @@ def test_claude_pick_jev_none_is_claude_only():
     *Israel and Palestine - Birth of a Conflict* 5/5; Jev said none. Such a pick must stay
     visibly unbacked."""
     got = combine(ChoiceAnswer("c1", 1.0), ChoiceAnswer("none", 0.64))
-    assert got.choice == "c1" and got.note == "claude-only, jev 0.64 for none"
+    assert got.choice == "c1"
+    assert got.note == "claude-only, jev 0.64 for none"
 
 
 def test_jev_pick_below_review_floor_does_not_count_as_agreement():
@@ -52,7 +53,8 @@ def test_jev_pick_below_review_floor_does_not_count_as_agreement():
 
 def test_different_picks_are_a_conflict_led_by_claude():
     got = combine(ChoiceAnswer("c1", 0.8), ChoiceAnswer("c2", 0.9))
-    assert got.choice == "c1" and got.note == "conflict, jev picked c2 (0.90)"
+    assert got.choice == "c1"
+    assert got.note == "conflict, jev picked c2 (0.90)"
 
 
 def test_jev_pick_used_when_claude_has_none():
@@ -62,7 +64,8 @@ def test_jev_pick_used_when_claude_has_none():
 
 def test_both_none_is_none_without_note():
     got = combine(ChoiceAnswer("none", 1.0), ChoiceAnswer("none", 0.9))
-    assert got.choice == "none" and got.note == ""
+    assert got.choice == "none"
+    assert got.note == ""
 
 
 def test_one_failed_backend_leaves_the_other_alone():
@@ -78,7 +81,8 @@ def test_one_failed_backend_leaves_the_other_alone():
 def test_both_asked_with_the_same_question():
     claude, jev = _Backend(ChoiceAnswer("c1", 1.0)), _Backend(ChoiceAnswer("c1", 0.9))
     got = CrossCheckClient(claude, jev).choose({"title": "A"}, "which?", CRITERIA)
-    assert got.note.startswith("both-agree") and claude.calls == jev.calls == 1
+    assert got.note.startswith("both-agree")
+    assert claude.calls == jev.calls == 1
 
 
 def test_a_rejected_key_drops_that_backend_for_the_run():
@@ -114,7 +118,8 @@ def test_close_closes_both_even_after_one_was_dropped():
     client = CrossCheckClient(claude, jev)
     client.choose({}, "q", CRITERIA)
     client.close()
-    assert claude.closed and jev.closed
+    assert claude.closed
+    assert jev.closed
     assert client.label == "haiku checked by jev"
 
 

@@ -224,7 +224,8 @@ def test_remote_script_sweeps_subtitle_sidecars(tmp_path):
 
     script = _build_remote_script(str(keeper), str(d), doit=True)
     proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
-    assert proc.returncode == 0 and "OK" in proc.stdout
+    assert proc.returncode == 0
+    assert "OK" in proc.stdout
 
     assert not d.exists()
     assert not (tmp_path / "S01E07.1080i.HDTV.CZ.en.srt").exists()

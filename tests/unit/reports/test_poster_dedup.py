@@ -72,7 +72,8 @@ def test_share_assigns_one_class_per_distinct_image():
 
     assert classes[0] == classes[1] != classes[2]
     assert css.count("background-image") == 2
-    assert a in css and b in css
+    assert a in css
+    assert b in css
 
 
 def test_plain_url_keeps_an_img_tag():

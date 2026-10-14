@@ -38,7 +38,8 @@ def test_dry_run_never_writes(env, capsys):
     go.run_origin(MagicMock(), "http://emby", "u", ["lib"], _args(False))
     env.update.assert_not_called()
     out = capsys.readouterr().out
-    assert "would add: Pelíšky" in out and "EuroTrip" not in out
+    assert "would add: Pelíšky" in out
+    assert "EuroTrip" not in out
     assert "1 of 3 movies/series already have it" in out
 
 
@@ -46,7 +47,8 @@ def test_doit_adds_to_the_current_full_item_genres(env):
     go.run_origin(MagicMock(), "http://emby", "u", ["lib"], _args(True))
     env.update.assert_called_once()
     _client, _url, item_id, full_item, genres = env.update.call_args.args
-    assert item_id == "1" and full_item is env.full
+    assert item_id == "1"
+    assert full_item is env.full
     # the fresh full item's genres (incl. "Family", absent from the batch fetch) are all kept
     assert genres == ["Comedy", "Drama", "Family", GENRE]
     assert env.update.call_args.kwargs == {"lock": True}
@@ -84,14 +86,17 @@ def test_tagged_titles_the_rules_no_longer_back_are_listed_not_removed(mocker, e
     finally:
         del TMDB["30"]
     out = capsys.readouterr().out
-    assert "1 title(s) have" in out and "check: Son of the Mask" in out and "Kolja" not in out
+    assert "1 title(s) have" in out
+    assert "check: Son of the Mask" in out
+    assert "Kolja" not in out
     env.update.assert_not_called()
 
 
 def test_missing_tmdb_key_exits(mocker, env):
     mocker.patch.object(go, "get_env_variable", return_value=None)
+    client, args = MagicMock(), Namespace(**{**vars(_args(True)), "tmdb_api_key": None})
     with pytest.raises(SystemExit):
-        go.run_origin(MagicMock(), "http://emby", "u", ["lib"], Namespace(**{**vars(_args(True)), "tmdb_api_key": None}))
+        go.run_origin(client, "http://emby", "u", ["lib"], args)
 
 
 def test_a_refused_update_counts_as_an_error(env, capsys):

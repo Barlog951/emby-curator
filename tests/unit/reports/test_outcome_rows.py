@@ -68,7 +68,8 @@ def test_blocked_row_explains_the_runtime_and_offers_the_exclude_ids_value():
 
     assert "Blocked by the safety guard · 1 file" in html
     assert "runtime 52 vs 58 min (×1.12, different cut)" in html
-    assert "<span>tt24786748</span>" in html and "9514669" not in html, "IMDb id only"
+    assert "<span>tt24786748</span>" in html, "IMDb id only"
+    assert "9514669" not in html, "IMDb id only"
 
 
 def test_real_run_always_shows_the_failed_section():
@@ -92,4 +93,6 @@ def test_old_group_cards_are_gone_and_their_facts_live_in_the_row():
     assert '<details class="legacy-groups">' not in html
     assert "Group 1:" not in html
     body = html[html.index('class="crow-body"'):]
-    assert "1.00 GB" in body and "2026-10-01" in body and "aac 2.0" in body
+    assert "1.00 GB" in body
+    assert "2026-10-01" in body
+    assert "aac 2.0" in body

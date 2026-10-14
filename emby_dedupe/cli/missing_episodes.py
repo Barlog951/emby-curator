@@ -147,10 +147,12 @@ def format_structured_json_report(analysis_results: dict) -> str:
 
 def _format_statistics_section(stats: dict) -> list:
     """Format statistics section of the report."""
-    lines = ["## Summary Statistics"]
-    lines.append(f"- **Total Missing Episodes**: {stats.get('total_missing_episodes', 0)}")
-    lines.append(f"- **Series Affected**: {stats.get('total_series_affected', 0)}")
-    lines.append(f"- **Seasons Affected**: {stats.get('total_seasons_affected', 0)}")
+    lines = [
+        "## Summary Statistics",
+        f"- **Total Missing Episodes**: {stats.get('total_missing_episodes', 0)}",
+        f"- **Series Affected**: {stats.get('total_series_affected', 0)}",
+        f"- **Seasons Affected**: {stats.get('total_seasons_affected', 0)}",
+    ]
 
     if stats.get('most_missing_series'):
         lines.append(f"- **Series with Most Missing**: {stats.get('most_missing_series')}")
@@ -214,9 +216,7 @@ def _format_series_section(by_series: dict) -> list:
     sorted_series = sorted(by_series.items(), key=lambda x: x[1]["total_missing"], reverse=True)
 
     for series_name, series_data in sorted_series:
-        lines.append(f"### {series_name}")
-        lines.append(f"**Missing Episodes**: {series_data['total_missing']}")
-        lines.append("")
+        lines.extend([f"### {series_name}", f"**Missing Episodes**: {series_data['total_missing']}", ""])
 
         # Group episodes by season
         episodes_by_season = _group_episodes_by_season(series_data["episodes"])

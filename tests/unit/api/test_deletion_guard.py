@@ -442,4 +442,5 @@ def test_unprobed_copy_is_never_deleted():
     mock_del.assert_not_called()
     result = decisions[0]["delete"][0]["deletion_result"]
     assert result["status"] == "skipped_unsafe"
-    assert "runtime-unknown" in result["error"] and "delete" in result["error"]
+    assert "runtime-unknown" in result["error"]
+    assert "delete" in result["error"]

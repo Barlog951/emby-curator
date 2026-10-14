@@ -117,7 +117,8 @@ def test_candidate_description_carries_country_and_original_titles():
 
 def test_instructions_name_the_fields_actually_sent():
     """Jev reads literally: the instructions must talk about the folder name we send."""
-    assert "folder name" in cli.AI_INSTRUCTIONS and "file path" not in cli.AI_INSTRUCTIONS
+    assert "folder name" in cli.AI_INSTRUCTIONS
+    assert "file path" not in cli.AI_INSTRUCTIONS
 
 
 # --- ai_pick ----------------------------------------------------------------
@@ -160,15 +161,19 @@ def _matcher(*answers, auto=False, threshold=0.9):
 def test_review_mode_never_applies_even_at_high_confidence():
     m = _matcher(ChoiceAnswer("c1", 0.99))
     s = m.resolve(_Csfd([_hit()], {URL_A: _film()}), _item())
-    assert s is not None and not s.applied and m.suggestions == [s]
+    assert s is not None
+    assert not s.applied
+    assert m.suggestions == [s]
 
 
 def test_auto_mode_applies_only_at_or_above_threshold():
     csfd = _Csfd([_hit()], {URL_A: _film()})
     high = _matcher(ChoiceAnswer("c1", 0.9), auto=True).resolve(csfd, _item())
     low = _matcher(ChoiceAnswer("c1", 0.89), auto=True).resolve(csfd, _item())
-    assert high is not None and high.applied
-    assert low is not None and not low.applied
+    assert high is not None
+    assert high.applied
+    assert low is not None
+    assert not low.applied
 
 
 def test_picks_below_review_minimum_are_dropped():
@@ -181,14 +186,16 @@ def test_api_error_is_counted_and_run_continues():
     m = _matcher(TypesafeError("overloaded"), ChoiceAnswer("c1", 0.95))
     csfd = _Csfd([_hit()], {URL_A: _film()})
     assert m.resolve(csfd, _item()) is None
-    assert m.errors == 1 and not m.disabled
+    assert m.errors == 1
+    assert not m.disabled
     assert m.resolve(csfd, _item()) is not None  # next item still asked
 
 
 def test_rejected_key_disables_the_fallback_for_the_run():
     m = _matcher(TypesafeError("bad key", fatal=True))
     csfd = _Csfd([_hit()], {URL_A: _film()})
-    assert m.resolve(csfd, _item()) is None and m.disabled
+    assert m.resolve(csfd, _item()) is None
+    assert m.disabled
     assert m.resolve(csfd, _item()) is None
     assert len(m.client.calls) == 1  # no second call once disabled
 
@@ -223,8 +230,10 @@ def test_lookup_skips_never_match_items_without_searching():
     csfd = _Csfd([_hit()], {URL_A: _film()})
     stats = {"matched": 0, "unmatched": 0, "errors": 0}
     plan = cli._lookup(csfd, _item(), {}, stats, never={"7"})
-    assert plan.film is None and plan.reason == "marked no-match in map"
-    assert csfd.searched == [] and stats["unmatched"] == 1
+    assert plan.film is None
+    assert plan.reason == "marked no-match in map"
+    assert csfd.searched == []
+    assert stats["unmatched"] == 1
 
 
 def test_lookup_uses_ai_only_after_strict_miss():
@@ -232,9 +241,12 @@ def test_lookup_uses_ai_only_after_strict_miss():
     csfd = _Csfd([_hit()], {URL_A: film})  # no title in common: the strict matcher misses
     stats = {"matched": 0, "unmatched": 0, "errors": 0}
     auto = cli._lookup(csfd, _item(), {}, stats, ai=_matcher(ChoiceAnswer("c1", 0.95), auto=True))
-    assert auto.film is film and auto.reason == "ai match (0.95)" and stats["matched"] == 1
+    assert auto.film is film
+    assert auto.reason == "ai match (0.95)"
+    assert stats["matched"] == 1
     review = cli._lookup(csfd, _item(), {}, stats, ai=_matcher(ChoiceAnswer("c1", 0.95)))
-    assert review.film is None and review.reason.startswith("ai suggestion (0.95): review")
+    assert review.film is None
+    assert review.reason.startswith("ai suggestion (0.95): review")
 
 
 def test_make_ai_matcher(monkeypatch):
@@ -242,11 +254,14 @@ def test_make_ai_matcher(monkeypatch):
     monkeypatch.delenv("DEDUPE_TYPESAFE_API_KEY", raising=False)
     monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
     monkeypatch.delenv("DEDUPE_ANTHROPIC_API_KEY", raising=False)
+    no_key = Namespace(ai_match=True)
     with pytest.raises(SystemExit):
-        cli._make_ai_matcher(Namespace(ai_match=True))
+        cli._make_ai_matcher(no_key)
     monkeypatch.setenv("TYPESAFE_API_KEY", "your-api-key")  # vendor-name fallback
     m = cli._make_ai_matcher(Namespace(ai_match=True, ai_auto=True, ai_threshold=0.95, ai_model=None))
-    assert m is not None and m.auto and m.threshold == 0.95
+    assert m is not None
+    assert m.auto
+    assert m.threshold == 0.95
     assert m.client._model == DEFAULT_MODEL
     m.client.close()
 
@@ -278,7 +293,8 @@ def test_run_fill_with_ai_writes_review_and_applies_only_in_auto(tmp_path, monke
         return jev
 
     jev = run(auto=False, doit=True)  # review-only: even --doit writes nothing
-    assert posted == [] and jev.closed
+    assert posted == []
+    assert jev.closed
     assert load_manual_map(str(review)) == {"7": URL_A}
 
     run(auto=True, doit=True)
@@ -293,10 +309,13 @@ def test_strict_verifier_still_wins_before_ai():
     stats = {"matched": 0, "unmatched": 0, "errors": 0}
     jev = _Jev()
     plan = cli._lookup(csfd, _item(OriginalTitle="El Conde"), {}, stats, ai=AiMatcher(jev, auto=True))
-    assert plan.film is not None and "via original title" in plan.reason and jev.calls == []
+    assert plan.film is not None
+    assert "via original title" in plan.reason
+    assert jev.calls == []
     jev = _Jev(ChoiceAnswer("c1", 0.97))
     plan = cli._lookup(csfd, _item(), {}, stats, ai=AiMatcher(jev))  # 'El Conde' only in the folder
-    assert plan.film is None and plan.reason.startswith("ai suggestion (0.97)")
+    assert plan.film is None
+    assert plan.reason.startswith("ai suggestion (0.97)")
     assert jev.calls[0][0]["folder_name"].startswith("El Conde")
 
 def test_episode_and_season_pages_are_never_candidates():
@@ -314,7 +333,8 @@ def test_option_keys_are_unique_even_when_csfd_ids_repeat():
     films = {URL_A: _film(), "https://www.csfd.sk/film/100-a-remaster/prehlad/": _film(title="Other")}
     jev = _Jev(ChoiceAnswer("c2", 0.95))
     film, _ = ai_pick(_Csfd(same_id, films), jev, _item())
-    assert film.title == "Other" and set(jev.calls[0][2]) == {"c1", "c2", AI_NONE}
+    assert film.title == "Other"
+    assert set(jev.calls[0][2]) == {"c1", "c2", AI_NONE}
 
 
 def test_item_fetch_requests_path_and_original_title(monkeypatch):
@@ -328,8 +348,10 @@ def test_item_fetch_requests_path_and_original_title(monkeypatch):
                         lambda *a, extra_fields, **k: seen.setdefault("all", extra_fields) and [])
     cli._fetch_candidates(None, "http://emby", "u", ["lib"], Namespace(item_ids="1,2"))
     cli._fetch_candidates(None, "http://emby", "u", ["lib"], Namespace())
-    assert "Path" in seen["ids"] and "OriginalTitle" in seen["ids"]
-    assert "Path" in seen["all"] and "OriginalTitle" in seen["all"]
+    assert "Path" in seen["ids"]
+    assert "OriginalTitle" in seen["ids"]
+    assert "Path" in seen["all"]
+    assert "OriginalTitle" in seen["all"]
 
 
 def test_strict_matcher_never_searches_the_folder_title():
@@ -341,7 +363,8 @@ def test_strict_matcher_never_searches_the_folder_title():
     peninsula = _film(title="Peninsula", year=2020, names=["Bando"])
     csfd = _Csfd([_hit(URL_A, "Peninsula", 2020)], {URL_A: peninsula})
     film, reason = cli.resolve_film(csfd, item, {})
-    assert film is None and csfd.searched == ["Buklog: The Ritual System"]
+    assert film is None
+    assert csfd.searched == ["Buklog: The Ritual System"]
     assert cli.title_queries(item) == ["Buklog: The Ritual System", "Peninsula"]  # AI path still sees it
     assert [h.url for h in ai_candidates(csfd, item)] == [URL_A]
 
@@ -352,7 +375,8 @@ def test_strict_matcher_uses_emby_original_title():
     film = _film(title="Úžasná Albánie", year=2016, names=["Zauberhaftes Albanien"])
     csfd = _Csfd([_hit(URL_A, "Úžasná Albánie", 2016)], {URL_A: film})
     got, reason = cli.resolve_film(csfd, item, {})
-    assert got is film and reason.endswith("via original title")
+    assert got is film
+    assert reason.endswith("via original title")
     assert "Zauberhaftes Albanien" in csfd.searched
 
 
@@ -362,9 +386,12 @@ def test_write_payload_keeps_its_proven_shape():
     item = _item(OriginalTitle="El Conde")
     plan = cli.plan_item(item, _film())
     payload = cli.build_payload(item, plan)
-    assert "Path" not in payload and "OriginalTitle" not in payload
-    assert payload["Name"] == "The Count" and payload["ProviderIds"]["Csfd"] == "100"
-    assert item["Path"] and item["OriginalTitle"] == "El Conde"  # the fetched item is untouched
+    assert "Path" not in payload
+    assert "OriginalTitle" not in payload
+    assert payload["Name"] == "The Count"
+    assert payload["ProviderIds"]["Csfd"] == "100"
+    assert item["Path"]
+    assert item["OriginalTitle"] == "El Conde"  # the fetched item is untouched
 
 
 # --- Claude + Jev cross-check (2026-10-08, logs/haiku-poc/EVALUATION.md) ---------
@@ -372,11 +399,14 @@ def test_write_payload_keeps_its_proven_shape():
 def test_auto_applies_a_cross_checked_pick_only_when_both_agree():
     csfd = _Csfd([_hit()], {URL_A: _film()})
     agreed = _matcher(ChoiceAnswer("c1", 1.0, note="both-agree, jev 0.92"), auto=True).resolve(csfd, _item())
-    assert agreed is not None and agreed.applied and agreed.note.startswith("both-agree")
+    assert agreed is not None
+    assert agreed.applied
+    assert agreed.note.startswith("both-agree")
     for note in ("claude-only, jev 0.36 for none", "conflict, jev picked c2 (0.90)", "jev-only",
                  "claude-only (other backend failed)"):
         s = _matcher(ChoiceAnswer("c1", 1.0, note=note), auto=True).resolve(csfd, _item())
-        assert s is not None and not s.applied, note
+        assert s is not None, note
+        assert not s.applied, note
 
 
 def test_auto_allowed_rules():
@@ -417,7 +447,8 @@ def test_auto_provider_uses_every_backend_that_has_a_key(monkeypatch):
 
     _keys(monkeypatch, jev=True, claude=False)  # today's prod box: unchanged behaviour
     m = _make()
-    assert isinstance(m.client, TypesafeClient) and m.label == DEFAULT_MODEL
+    assert isinstance(m.client, TypesafeClient)
+    assert m.label == DEFAULT_MODEL
     m.client.close()
     _keys(monkeypatch, jev=False, claude=True)
     m = _make()
@@ -425,7 +456,8 @@ def test_auto_provider_uses_every_backend_that_has_a_key(monkeypatch):
     m.client.close()
     _keys(monkeypatch, jev=True, claude=True)
     m = _make(ai_provider="auto")
-    assert isinstance(m.client, CrossCheckClient) and m.label == f"claude-haiku-5-5 x5 checked by {DEFAULT_MODEL}"
+    assert isinstance(m.client, CrossCheckClient)
+    assert m.label == f"claude-haiku-5-5 x5 checked by {DEFAULT_MODEL}"
     m.client.close()
 
 

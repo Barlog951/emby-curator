@@ -47,13 +47,15 @@ def test_real_copies_still_group_through_any_shared_id():
     copy_without_imdb = {"Tmdb": "1150215", "Tvdb": "348427"}
     ds = dd.build_disjoint_set(_tables(_movie("a", EVERLASTING), _movie("b", ALL_OVER_AGAIN),
                                        _movie("c", copy_without_imdb)))
-    assert ds.find("a") == ds.find("c") and ds.find("b") != ds.find("a")
+    assert ds.find("a") == ds.find("c")
+    assert ds.find("b") != ds.find("a")
 
 
 def test_the_guard_refuses_a_delete_between_different_titles():
     keeper = {"path": "/M/A (2023)/a.mkv", "runtime_ticks": 6007 * 10**7, "provider_ids": ALL_OVER_AGAIN}
     item = {"path": "/M/B (2023)/b.mkv", "runtime_ticks": 6007 * 10**7, "provider_ids": EVERLASTING}
     reason = dd._different_content_reason(item, keeper)
-    assert reason and reason.startswith("provider-id-conflict")
+    assert reason
+    assert reason.startswith("provider-id-conflict")
     assert dd._frame_check_pairs([{"keep": {**keeper, "is_episode": True},
                                    "delete": [{**item, "is_episode": True}]}]) == ([], [])

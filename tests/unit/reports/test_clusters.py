@@ -98,7 +98,8 @@ def test_a_risky_deletion_gets_its_own_row_first():
     assert rows[0]["risk"] is True
     assert rows[0]["count"] == 1
     assert "kept copy scores lower" in rows[0]["risk_text"]
-    assert rows[1]["count"] == 5 and rows[1]["risk"] is False
+    assert rows[1]["count"] == 5
+    assert rows[1]["risk"] is False
 
 
 def test_language_loss_is_flagged():
@@ -106,7 +107,8 @@ def test_language_loss_is_flagged():
     decisions = [_episode("Love", 1, 1, langs=("kor", "eng", "cze"))]
     row = _rows(build_clusters(decisions, BASE), "removed")[0]
 
-    assert "language_loss" in row["flags"] and row["risk"]
+    assert "language_loss" in row["flags"]
+    assert row["risk"]
     assert row["files"][0]["delete"]["langs"] == "kor eng cs"
 
 
@@ -151,7 +153,10 @@ def test_every_file_keeps_its_evidence():
     row = _rows(build_clusters([_episode("Show", 1, 1)], BASE), "removed")[0]
     f = row["files"][0]
 
-    assert f["keep"]["path"].endswith("2160p.mkv") and f["delete"]["path"].endswith("1080p.mkv")
-    assert f["keep"]["score"] == 100 and f["delete"]["score"] == 50
+    assert f["keep"]["path"].endswith("2160p.mkv")
+    assert f["delete"]["path"].endswith("1080p.mkv")
+    assert f["keep"]["score"] == 100
+    assert f["delete"]["score"] == 50
     assert f["keep"]["runtime"] == "45:00"
-    assert "id=k11" in f["keep"]["url"] and "id=d11" in f["delete"]["url"]
+    assert "id=k11" in f["keep"]["url"]
+    assert "id=d11" in f["delete"]["url"]

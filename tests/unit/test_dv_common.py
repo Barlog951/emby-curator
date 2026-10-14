@@ -62,8 +62,9 @@ def _assert_safe(inp, out):
     """Core invariant: the keeper (out) is never inside the folder Emby deletes."""
     owned = _owning_folder_or_none(inp)
     if owned is not None:
-        assert not (out == owned or out.startswith(owned + os.sep)), \
-            f"UNSAFE: keeper {out!r} is inside fold-deleted folder {owned!r}"
+        unsafe = f"UNSAFE: keeper {out!r} is inside fold-deleted folder {owned!r}"
+        assert out != owned, unsafe
+        assert not out.startswith(owned + os.sep), unsafe
 
 
 def test_movie_in_own_folder_goes_to_sibling_folder(tmp_path):

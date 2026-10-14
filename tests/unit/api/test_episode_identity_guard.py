@@ -124,7 +124,8 @@ def test_runtime_mismatch_is_refused_at_delete_time(monkeypatch, keep, delete):
     monkeypatch.setattr(dd, "delete_item", lambda *a, **k: calls.append(a) or {"status": "success"})
     dd._execute_one_deletion(MagicMock(), "http://emby", delete, keep["path"], {"keep": keep, "delete": [delete]},
                              [keep["path"], delete["path"]], [delete["path"]], "u", "p", "k", MagicMock())
-    assert calls == [] and delete["deletion_result"]["status"] == "skipped_unsafe"
+    assert calls == []
+    assert delete["deletion_result"]["status"] == "skipped_unsafe"
     assert "duration-mismatch" in delete["deletion_result"]["error"]
 
 
@@ -135,7 +136,8 @@ def test_same_runtime_copy_is_still_deleted(monkeypatch):
     dup = {"id": "c", "path": "/Movies/HD/Code 3 (2025) - 2160p/Code 3.mkv", "runtime_ticks": int(98.2 * MIN)}
     dd._execute_one_deletion(MagicMock(), "http://emby", dup, keep["path"], {"keep": keep, "delete": [dup]},
                              [keep["path"], dup["path"]], [dup["path"]], "u", "p", "k", MagicMock())
-    assert len(calls) == 1 and dup["deletion_result"] == {"status": "success"}
+    assert len(calls) == 1
+    assert dup["deletion_result"] == {"status": "success"}
 
 
 # --- language: never delete the best copy just because its language is untagged ---
@@ -162,4 +164,5 @@ def test_tagged_priority_language_still_decides_normally():
     items = [_episode("1", "/tv/Duckula/S01/Duckula S01E09 - 720p BluRay CZ.mkv", 1280, 720, 383_000_000, "cze"),
              _episode("2", "/tv/Duckula/S01/Duckula S01E09 - 480p x264.mp4", 640, 480, 159_000_000, "eng")]
     decision = dd.determine_items_to_delete(["1", "2"], items, ["sk", "cs", "eng"])
-    assert decision["keep"]["id"] == "1" and [d["id"] for d in decision["delete"]] == ["2"]
+    assert decision["keep"]["id"] == "1"
+    assert [d["id"] for d in decision["delete"]] == ["2"]

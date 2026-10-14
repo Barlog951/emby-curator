@@ -84,7 +84,8 @@ def test_refused_pairs_with_different_flags_stay_one_row():
     b = _pair("skipped_unsafe", n=2, error="duration-mismatch (x)")
     rows = _rows([a, b], "blocked")
 
-    assert len(rows) == 1 and rows[0]["count"] == 2
+    assert len(rows) == 1
+    assert rows[0]["count"] == 2
     assert rows[0]["flags"] == ["language_loss"]
 
 
@@ -94,7 +95,8 @@ def test_hdr_in_the_quality_label_and_hdr_loss_flag():
     row = _rows([d], "removed")[0]
 
     assert row["delete_quality"] == "2160p HDR10 WEB-DL"
-    assert "hdr_loss" in row["flags"] and row["risk"]
+    assert "hdr_loss" in row["flags"]
+    assert row["risk"]
 
 
 def test_dolby_vision_label_is_not_doubled():
@@ -167,7 +169,8 @@ def test_exclude_hint_prefers_the_imdb_id_and_appears_on_every_outcome():
     assert clusters["sections"]["would_remove"][0]["exclude_ids"] == ["tt24786748"]
     html = _render([blocked, removed])
     assert html.count('<code class="ids"><span>tt24786748</span></code>') == 2
-    assert "Don't want this removed?" in html and "Keep both copies for good?" in html
+    assert "Don't want this removed?" in html
+    assert "Keep both copies for good?" in html
 
 
 def test_numeric_only_ids_come_with_a_collision_warning():
@@ -204,7 +207,8 @@ def test_reconcile_sentence_uses_one_vocabulary():
 def test_dry_run_with_nothing_to_remove_says_so():
     html = _render([_pair("would_block", error="duration-mismatch (x)")])
     assert "<h1 id=\"verdict\" class=\"run-headline\">Nothing would be removed.</h1>" in html
-    assert "Dry run · nothing deleted" in html and 'class="run-warning"' not in html
+    assert "Dry run · nothing deleted" in html
+    assert 'class="run-warning"' not in html
     assert "<title>Dry run: Nothing would be removed.</title>" in html
 
 
@@ -220,10 +224,13 @@ def test_risky_rows_open_first_in_their_own_section():
     check = html.index('id="check"')
     assert check < html.index('id="removed"')
     assert 'class="crow risky" id="row-removed-show-s01-1" data-outcome="removed" data-reason="" data-flags="score_inversion" open>' in html
-    assert "Removed · 2 files" in html and "1 row above, worth a second look" in html
-    assert "Removed, worth a second look · 1 file · 1 row" in html and "Already removed." in html
+    assert "Removed · 2 files" in html
+    assert "1 row above, worth a second look" in html
+    assert "Removed, worth a second look · 1 file · 1 row" in html
+    assert "Already removed." in html
     dry = _render([_pair("not_attempted", n=1, keep={"rating": 10.0})])
-    assert "Check first · 1 file · 1 row" in dry and "before --doit" in dry
+    assert "Check first · 1 file · 1 row" in dry
+    assert "before --doit" in dry
 
 
 def test_empty_sections_are_one_line_and_zero_state_has_no_bar():
@@ -239,7 +246,8 @@ def test_header_and_footer_carry_the_run_provenance():
     run = {"generated_at": "2026-10-11T13:33:00+00:00", "version": "3.4.0", "host": "emby-gpu",
            "argv": "emby-curator dedupe --library Movies", "libraries": ["Movies"], "run_id": "1791726000"}
     html = _render([_pair("success")], {"run": run})
-    assert "2026-10-11T13:33:00+00:00" in html and "library Movies" in html
+    assert "2026-10-11T13:33:00+00:00" in html
+    assert "library Movies" in html
     assert "emby-curator 3.4.0 · run 1791726000 · host emby-gpu" in html
     assert '<meta name="generator" content="emby-curator 3.4.0">' in html
     assert '<p class="eyebrow">Emby Curator · dedupe report</p>' in html
@@ -247,10 +255,13 @@ def test_header_and_footer_carry_the_run_provenance():
 
 def test_every_section_and_row_has_an_anchor_and_data_attributes():
     html = _render([_pair("success")])
-    assert 'id="removed"' in html and 'href="#removed"' in html
+    assert 'id="removed"' in html
+    assert 'href="#removed"' in html
     assert 'id="row-removed-show-s01-1"' in html
-    assert 'data-keep-id="k11"' in html and 'data-item-id="d11"' in html
-    assert 'rel="noopener"' in html and 'target="_blank" class' not in html
+    assert 'data-keep-id="k11"' in html
+    assert 'data-item-id="d11"' in html
+    assert 'rel="noopener"' in html
+    assert 'target="_blank" class' not in html
 
 
 def test_json_island_matches_the_twin_and_carries_no_credential():
@@ -262,7 +273,8 @@ def test_json_island_matches_the_twin_and_carries_no_credential():
     assert data["sections"][2]["outcome"] == "removed"
     row = data["sections"][2]["rows"][0]
     assert row["files"][0]["keep"]["path"].endswith("S01E01 - CZ.mkv")
-    assert "api_key" not in island and "image" not in json.dumps(row)
+    assert "api_key" not in island
+    assert "image" not in json.dumps(row)
     assert "</" not in island
 
 
@@ -270,7 +282,8 @@ def test_per_file_evidence_is_in_the_row_body():
     """Size, added date, audio codec and the score breakdown lived only in the folded cards."""
     html = _render([_pair("success")])
     body = html[html.index('class="crow-body"'):]
-    assert "1.00 GB" in body and '<span class="fact-audio">ac3 5.1 cs</span> · <span class="fact-date">added 2026-10-01</span>' in body
+    assert "1.00 GB" in body
+    assert '<span class="fact-audio">ac3 5.1 cs</span> · <span class="fact-date">added 2026-10-01</span>' in body
     assert "score 90.0 = res 1 + bitrate 1" in body
     assert '<dt>Folder</dt><dd><span class="fact-path">/S/Show/S01</span></dd>' in body
     assert 'title="/S/Show/S01/Show S01E01 - CZ.mkv">CZ.mkv</span>' in body
@@ -343,7 +356,8 @@ def test_other_copy_shows_its_own_poster_only_when_it_differs():
 @pytest.mark.parametrize("status,outcome", [("success", "removed"), ("skipped_unsafe", "blocked")])
 def test_counts_reconcile_for_every_outcome(status, outcome):
     clusters = build_clusters([_pair(status, error="x")], BASE)
-    assert clusters["totals"][outcome] == 1 and clusters["sizes"][outcome] == GB
+    assert clusters["totals"][outcome] == 1
+    assert clusters["sizes"][outcome] == GB
 
 
 # ---- series poster from the scan -------------------------------------------------------
@@ -394,7 +408,9 @@ def test_row_body_says_constant_facts_once_and_marks_the_odd_file():
     assert row["shared"][2]["text"] == "1080i WEB-DL · ac3 5.1 cs · added 2026-10-01", "the majority value is the row's fact"
     assert row["shared"][3]["text"] == "runtime 45 vs 45 min (×1.00, different cut), beyond the guard's tolerance"
     odd = [f for f in row["files"] if f["delete"]["vary"]]
-    assert len(odd) == 1 and odd[0]["episode"] == "S01E05" and odd[0]["delete"]["vary"] == {"video": "1080p WEB-DL"}
+    assert len(odd) == 1
+    assert odd[0]["episode"] == "S01E05"
+    assert odd[0]["delete"]["vary"] == {"video": "1080p WEB-DL"}
     html = _render(files)
     page = html[:html.index('<script type="application/json"')]
     assert page.count("/S/Show/S01") == 1 + 16, "folder once in the shared block, then only in title tooltips"
@@ -455,4 +471,5 @@ def test_stats_row_is_back_under_the_legend():
                          ("Failed", "0"), ("Freed", "1.00 GB"), ("Keepers on disk", "2.00 GB"), ("Space saved", "20.0%")):
         assert f'<div class="stat-value">{value}</div><div class="stat-label">{label}</div>' in html, label
     dry = _render([_pair("not_attempted")])
-    assert '<div class="stat-label">Would remove</div>' in dry and "Failed</div>" not in dry
+    assert '<div class="stat-label">Would remove</div>' in dry
+    assert "Failed</div>" not in dry

@@ -76,7 +76,7 @@ ITEM_EXTRA_FIELDS = "People,Path,OriginalTitle"
 READ_ONLY_FIELDS = ("Path", "OriginalTitle")  # fetched for matching, never written back
 ROLE_ABBREVIATIONS = {"a.z.": "archívne zábery"}  # ČSFD's shorthand for archive footage
 VERIFY_FETCH_LIMIT = 2  # film pages fetched per query when no title matched outright
-_FOLDER_TITLE_RE = re.compile(r"^(.*?)\s*\((?:19|20)\d{2}(?:-\d{4})?\)")
+_FOLDER_TITLE_RE = re.compile(r"^(.*?)\((?:19|20)\d{2}(?:-\d{4})?\)")  # group 1 is stripped by the caller
 
 
 @dataclass

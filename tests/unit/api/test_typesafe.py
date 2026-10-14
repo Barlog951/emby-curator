@@ -61,7 +61,8 @@ def test_overload_is_retried_with_backoff():
     sleeps: list[float] = []
     client, requests = _client([httpx.Response(529), httpx.Response(429), httpx.Response(200, json=_answer())], sleeps)
     assert client.choose("s", "q", CRITERIA).choice == "csfd_1"
-    assert len(requests) == 3 and sleeps == [1, 2]
+    assert len(requests) == 3
+    assert sleeps == [1, 2]
 
 
 def test_connect_failure_is_retried():
@@ -77,21 +78,25 @@ def test_gives_up_after_max_attempts():
     with pytest.raises(TypesafeError) as err:
         client.choose("s", "q", CRITERIA)
     assert not err.value.fatal
-    assert len(requests) == MAX_ATTEMPTS and sleeps == [1, 2, 4]
+    assert len(requests) == MAX_ATTEMPTS
+    assert sleeps == [1, 2, 4]
 
 
 def test_bad_key_is_fatal_and_not_retried():
     client, requests = _client([httpx.Response(401)])
     with pytest.raises(TypesafeError) as err:
         client.choose("s", "q", CRITERIA)
-    assert err.value.fatal and len(requests) == 1
+    assert err.value.fatal
+    assert len(requests) == 1
 
 
 def test_validation_error_is_not_fatal_and_not_retried():
     client, requests = _client([httpx.Response(422, text="criteria needs 2 options")])
     with pytest.raises(TypesafeError) as err:
         client.choose("s", "q", {"none": None})
-    assert not err.value.fatal and "422" in str(err.value) and len(requests) == 1
+    assert not err.value.fatal
+    assert "422" in str(err.value)
+    assert len(requests) == 1
 
 
 def test_unexpected_response_shape_raises():

@@ -26,7 +26,8 @@ def test_prefetch_keeps_only_real_images(monkeypatch):
 
     monkeypatch.setattr(rep, "inline_poster_urls", fake_inline)
     got = rep.prefetch_cleanup_posters("http://emby", [SimpleNamespace(item_id="1"), SimpleNamespace(item_id="2")], API_KEY)
-    assert list(got.values()) == [DATA] and len(seen[0]) == 2
+    assert list(got.values()) == [DATA]
+    assert len(seen[0]) == 2
 
 
 def test_inline_uses_prefetched_posters_and_fetches_only_the_rest(monkeypatch):

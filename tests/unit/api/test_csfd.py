@@ -67,7 +67,8 @@ def test_parse_film_extracts_every_field_and_upgrades_poster():
     assert film.countries == ["Slovensko", "Česko"]
     assert film.genres_sk == ["Dokumentárny", "Krátkometrážny", "Erotický"]
     assert film.genres_en == ["Documentary", "Short"]          # unknown label dropped
-    assert film.rating_pct == 87 and film.rating_10 == 8.7
+    assert film.rating_pct == 87
+    assert film.rating_10 == 8.7
     assert film.plot == "Dokumentárny film predstavuje najmladšie plemeno psa."  # source tag stripped
     assert film.poster_url == (
         "https://image.pmgstatic.com/cache/resized/w1080/files/images/film/posters/167/136/167136394_586fc2.jpg"
@@ -77,8 +78,11 @@ def test_parse_film_extracts_every_field_and_upgrades_poster():
 def test_parse_film_handles_missing_rating_and_poster():
     page = "<h1>X</h1><div class=\"origin\">USA</div><div class=\"film-rating-average\">? %</div>"
     film = parse_film(page, "https://www.csfd.sk/film/5-x/prehlad/")
-    assert film.rating_pct is None and film.rating_10 is None
-    assert film.poster_url is None and film.year is None and film.plot == ""
+    assert film.rating_pct is None
+    assert film.rating_10 is None
+    assert film.poster_url is None
+    assert film.year is None
+    assert film.plot == ""
 
 
 def test_parse_film_placeholder_poster_is_not_a_poster():
@@ -144,9 +148,11 @@ def test_client_search_film_and_poster_round_trip_with_cache():
     hits = client.search("Tatranský durič")
     assert hits[0].title == "Tatranský durič"
     film = client.film(film_url)
-    assert isinstance(film, CsfdFilm) and film.csfd_id == "1885748"
+    assert isinstance(film, CsfdFilm)
+    assert film.csfd_id == "1885748"
     data, ctype = client.fetch_poster(film.poster_url)
-    assert data.startswith(b"\xff\xd8") and ctype == "image/jpeg"
+    assert data.startswith(b"\xff\xd8")
+    assert ctype == "image/jpeg"
     # second round is served from the cache: no new FlareSolverr calls
     before = len(calls)
     assert client.search("Tatranský durič")[0].url == hits[0].url
@@ -218,7 +224,8 @@ def test_client_refetches_cached_film_entries_that_predate_names():
     client = CsfdClient(httpx.Client(transport=_flaresolverr_transport({url: NAMES_HTML}, calls)),
                         "http://fs/v1", cache, calls_per_second=1000)
     assert client.film(url).names == ["Vykoupení z věznice Shawshank", "The Shawshank Redemption"]
-    assert calls == [url] and "names" in cache[f"film:{url}"]
+    assert calls == [url]
+    assert "names" in cache[f"film:{url}"]
 
 
 CREATORS_HTML = """
@@ -290,7 +297,8 @@ def test_client_search_creators_is_cached():
                         "http://fs/v1", cache, calls_per_second=1000)
     assert client.search_creators("Milan Lasica")[0].name == "Milan Lasica"
     assert client.search_creators("Milan Lasica")[2].birth_year == 1971
-    assert calls == [url] and "people:Milan Lasica" in cache
+    assert calls == [url]
+    assert "people:Milan Lasica" in cache
 
 
 CREATOR_PAGE_HTML = """
@@ -304,7 +312,8 @@ CREATOR_PAGE_HTML = """
 def test_parse_creator_page_reads_birth_death_place_and_bio():
     p = csfd.parse_creator_page(CREATOR_PAGE_HTML)
     assert (p.birth_date, p.birth_place, p.death_date) == ("1940-02-03", "Zvolen, Slovenský štát", "2021-07-18")
-    assert p.bio.startswith("Narozen 3. února 1940") and p.bio.endswith("…")
+    assert p.bio.startswith("Narozen 3. února 1940")
+    assert p.bio.endswith("…")
     empty = csfd.parse_creator_page("<h1>x</h1>")
     assert (empty.birth_date, empty.death_date, empty.birth_place, empty.bio) == (None, None, None, "")
 
@@ -316,7 +325,8 @@ def test_client_creator_is_cached():
     client = CsfdClient(httpx.Client(transport=_flaresolverr_transport({url: CREATOR_PAGE_HTML}, calls)),
                         "http://fs/v1", cache, calls_per_second=1000)
     assert client.creator(url).birth_date == "1940-02-03"
-    assert client.creator(url).death_date == "2021-07-18" and calls == [url]
+    assert client.creator(url).death_date == "2021-07-18"
+    assert calls == [url]
 
 
 def test_parse_film_series_origin_has_no_bracket_in_the_country():
@@ -326,4 +336,5 @@ def test_parse_film_series_origin_has_no_bracket_in_the_country():
         '<span>(2012–2017) <span class="bullet"></span> </span>12 h 34 min (Minutáž: 26 min)\n\t</div>'
     )
     film = parse_film(page, "https://www.csfd.sk/film/314255-narodni-klenoty/prehlad/")
-    assert film.countries == ["Česko"] and film.year == 2012
+    assert film.countries == ["Česko"]
+    assert film.year == 2012

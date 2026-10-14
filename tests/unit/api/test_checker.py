@@ -649,8 +649,9 @@ class TestEmbyChecker:
         )
 
         # Connection failure should propagate
+        client = checker._get_client()
         with pytest.raises(httpx.ConnectError):
-            checker._get_client().request("GET", "http://emby.local/test")
+            client.request("GET", "http://emby.local/test")
 
     # ========== Series Provider ID Fallback Tests ==========
 
@@ -973,9 +974,8 @@ class TestSeriesLookupHonoursEmbyKeyCasing:
 
         result = checker._lookup_episode_via_series("tt13624584", None, None, season=1, episode=1)
 
-        assert result is not None and [ep["Id"] for ep in result] == ["ep1"], (
-            "a series whose ProviderIds key is spelled IMDB must be found"
-        )
+        assert result is not None, "a series whose ProviderIds key is spelled IMDB must be found"
+        assert [ep["Id"] for ep in result] == ["ep1"], "a series whose ProviderIds key is spelled IMDB must be found"
 
     @patch('emby_dedupe.api.checker.make_http_request')
     def test_request_uses_the_provider_id_filter_emby_honours(self, mock_request):

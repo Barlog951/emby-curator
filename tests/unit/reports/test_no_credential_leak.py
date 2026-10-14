@@ -201,7 +201,8 @@ def test_the_provenance_command_line_never_carries_a_credential(monkeypatch):
                                   "--library", "HD & 4k", "dedupe", "--token=***", "--password", "***",
                                   "--html-report"]
     metadata = _build_report_metadata([], [], {}, libraries=["HD & 4k"], doit=False)
-    assert SECRET not in metadata["run"]["argv"] and "pw" not in metadata["run"]["argv"].split()
+    assert SECRET not in metadata["run"]["argv"]
+    assert "pw" not in metadata["run"]["argv"].split()
     assert metadata["run"]["argv"].startswith("emby-curator --host")
 
     html = format_html_report("https://emby.example.com:443", [], metadata)

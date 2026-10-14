@@ -322,8 +322,9 @@ class TestClient:
 
         mock_pagination_req.side_effect = httpx.RequestError("mid-fetch boom")
 
+        client = Mock()
         with pytest.raises(httpx.RequestError):
-            fetch_and_process_media_items(Mock(), "http://example.com", "lib1")
+            fetch_and_process_media_items(client, "http://example.com", "lib1")
 
     @patch('emby_dedupe.api.pagination.make_http_request')
     def test_fetch_all_media_paths_paginates(self, mock_make_http_request):

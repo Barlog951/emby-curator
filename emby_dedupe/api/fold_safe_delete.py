@@ -234,7 +234,7 @@ def execute_fold_safe_deletes(
         try:
             rc, out, err = runner(ssh_host, script)
         except Exception as e:  # noqa: BLE001 — one bad host call must not abort the rest
-            logger.error("fold-safe delete: SSH call failed for %r: %s", plan["delete"], e)
+            logger.exception("fold-safe delete: SSH call failed for %r: %s", plan["delete"], e)
             results.append({**plan, "status": "failed", "detail": str(e)})
             continue
 
