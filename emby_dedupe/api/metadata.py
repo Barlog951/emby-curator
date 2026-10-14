@@ -262,10 +262,15 @@ def _extract_video_quality(video_stream: dict[str, Any] | None) -> dict[str, Any
             "dv_profile": "",
             "dv_profile_desc": "",
             "is_dovi_p5": False,
+            "width": 0,
+            "height": 0,
         }
     return {
         "codec": video_stream.get("Codec", "unknown"),
         "resolution": video_stream.get("DisplayTitle", "unknown"),
+        # the picture class of the merge-audio-first hold (deduplication._resolution_class) reads these
+        "width": video_stream.get("Width") or 0,
+        "height": video_stream.get("Height") or 0,
         "bitrate": video_stream.get("BitRate", "unknown"),
         "bitdepth": video_stream.get("BitDepth", "unknown"),
         "interlaced": video_stream.get("IsInterlaced", "unknown"),

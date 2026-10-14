@@ -95,3 +95,41 @@ def test_report_names_the_merge_reason():
     reason = dd.merge_audio_first_reason(_item("en", ["eng"], 1280, 720), _item("cz", ["cze"], 1920, 1080, PRIO))
     assert clusters._reason_code(reason) == "merge_audio"
     assert clusters._reason_text("merge_audio", [], reason) == "merge audio first"
+
+
+# --------------------------------------------------------------------------- #
+# Real item shape (2026-10-14 dry run): the picture hold must see the Emby stream's Width/Height.
+# The tests above build quality_description by hand; the dry run after the split-series merge still
+# chose to delete a 4K HDR A Perfect Planet S01E05 (1080p CZ kept) and a 1080p Regular Show S01E07
+# Remux, because metadata._extract_video_quality never carried the width/height.
+# --------------------------------------------------------------------------- #
+def _emby_item(item_id, langs, width, height, prio=None):
+    from emby_dedupe.api.metadata import _extract_video_quality
+
+    stream = {"Type": "Video", "Codec": "hevc", "Width": width, "Height": height, "DisplayTitle": f"{height}p"}
+    item = {"id": item_id, "quality_description": {"audio": {"languages": langs}, "video": _extract_video_quality(stream)}}
+    if prio is not None:
+        item["language_priority_list"] = prio
+    return item
+
+
+def test_video_quality_carries_width_and_height():
+    from emby_dedupe.api.metadata import _extract_video_quality
+
+    vq = _extract_video_quality({"Codec": "hevc", "Width": 3840, "Height": 2160})
+    assert (vq["width"], vq["height"]) == (3840, 2160)
+    assert (_extract_video_quality(None)["width"], _extract_video_quality(None)["height"]) == (0, 0)
+
+
+def test_a_perfect_planet_4k_copy_is_held_on_the_real_item_shape():
+    keep = _emby_item("1080p-cz", ["cze", "eng"], 1920, 1080, PRIO)
+    reason = dd.merge_audio_first_reason(_emby_item("4k-hdr-en", ["eng"], 3840, 2160), keep)
+    assert reason is not None
+    assert "better picture (4K vs 1080p)" in reason
+
+
+def test_regular_show_remux_is_held_on_the_real_item_shape():
+    keep = _emby_item("720p-cz", ["bul", "cze", "eng", "hun", "rum", "rus"], 1280, 720, PRIO)
+    reason = dd.merge_audio_first_reason(_emby_item("1080p-remux-en", ["eng"], 1920, 1080), keep)
+    assert reason is not None
+    assert "better picture (1080p vs 720p)" in reason

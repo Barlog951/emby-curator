@@ -18,6 +18,14 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
   one file with the original language + SK + CZ. Extra dubs outside `--lang-prio` and
   untagged tracks never hold a pair. The report names these rows "merge audio first".
 
+### Fixed
+
+- **The "better picture" half of the merge-audio-first hold works on real runs.** The item's
+  video quality never carried the stream's width and height, so the picture class was always
+  unknown and only the language half held pairs. A dry run would have deleted a 4K HDR
+  A Perfect Planet episode and a 1080p Regular Show Remux. The video quality now records
+  `width`/`height` from Emby, and a test builds the item from a real Emby stream.
+
 ## [3.4.2] — 2026-10-14
 
 ### Fixed
