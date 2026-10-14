@@ -7,6 +7,8 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.2] — 2026-10-14
+
 ### Fixed
 
 - **Log lines with arguments no longer fail.** The redaction filter put the arguments into
