@@ -1310,6 +1310,74 @@ def _apply_bluray_native_exception(
     return current_recommendation
 
 
+# A newcomer that differs from the owned copy only in bitrate must carry this much more of it.
+# Bitrate here is size ÷ runtime: an extra dub or a repack moves it by a few percent (the
+# Futurama DSNP packs, 2026-10-15: +3 %), which is noise, not a better picture.
+SAME_KIND_MIN_BITRATE_GAIN = 1.20
+
+
+def _normalized_languages(languages: list[str] | None) -> set[str]:
+    """Return the item's audio languages as normalized codes (``cze`` and ``cs`` match)."""
+    return {LANGUAGE_NORMALIZATION_MAP.get(lang.lower(), lang.lower()) for lang in languages or []}
+
+
+def _differs_only_in_bitrate(proposed: ExistingQuality, existing: ExistingQuality) -> bool:
+    """Tell whether the proposed copy offers nothing over the existing one but its bitrate.
+
+    Same frame, source tier, HDR credit, codec family, AI-upscale and DV-P5 status, no more
+    audio channels and no audio language the existing copy lacks. Any of these differing is a
+    real change the score already weighs, so the bitrate margin does not apply then.
+    """
+    p, e = proposed.score_breakdown(), existing.score_breakdown()
+    return (
+        (proposed.width, proposed.height) == (existing.width, existing.height)
+        and p["multipliers"] == e["multipliers"]
+        and p["hdr"] == e["hdr"]
+        and p["starved_demotion"] == e["starved_demotion"]
+        and p["audio"] <= e["audio"]
+        and _get_codec_efficiency_ratio(proposed.codec) == _get_codec_efficiency_ratio(existing.codec)
+        and _normalized_languages(proposed.audio_languages) <= _normalized_languages(existing.audio_languages)
+    )
+
+
+def _apply_same_kind_margin(
+    proposed_as_existing: ExistingQuality,
+    best_existing: ExistingQuality,
+    current_recommendation: Literal["download", "skip"],
+) -> Literal["download", "skip"]:
+    """Refuse an "upgrade" that is the same kind of copy with a slightly higher bitrate.
+
+    Regression (2026-10-15): a Futurama S02 DSNP pack was sent with one sample file's bitrate
+    for every episode, so each owned episode encoded a little below that sample "upgraded"
+    (S02E03: 4.157 vs 4.139 Mbps, score 25.91 vs 25.89), and the download overwrote the library
+    files. When the copies differ only in bitrate, the newcomer must carry
+    ``SAME_KIND_MIN_BITRATE_GAIN`` times the owned bitrate. With either bitrate unknown the
+    rule has no evidence and leaves the recommendation alone.
+
+    Args:
+        proposed_as_existing: Proposed item as ExistingQuality.
+        best_existing: Best existing item.
+        current_recommendation: Current recommendation ("download" or "skip").
+
+    Returns:
+        "skip" when the download rested on bitrate noise, else the current recommendation.
+    """
+    if current_recommendation != "download" or best_existing.id == "proposed":
+        return current_recommendation
+    if not (proposed_as_existing.bitrate and best_existing.bitrate):
+        return current_recommendation
+    if not _differs_only_in_bitrate(proposed_as_existing, best_existing):
+        return current_recommendation
+    gain = proposed_as_existing.bitrate / best_existing.bitrate
+    if gain >= SAME_KIND_MIN_BITRATE_GAIN:
+        return current_recommendation
+    logger.info(
+        f"Same-kind margin: proposed differs from {best_existing.id} only in bitrate "
+        f"({gain:.2f}x < {SAME_KIND_MIN_BITRATE_GAIN:.2f}x), not an upgrade"
+    )
+    return "skip"
+
+
 def compare_quality(
     proposed: ProposedQuality,
     existing_items: list[dict[str, Any]],
@@ -1374,7 +1442,8 @@ def compare_quality(
     recommendation = _apply_bluray_native_exception(
         proposed_as_existing, best_existing, recommendation
     )
-    reason = "better_quality" if recommendation == "download" else "same_or_worse"
+    recommendation = _apply_same_kind_margin(proposed_as_existing, best_existing, recommendation)
+    reason ="better_quality" if recommendation == "download" else "same_or_worse"
 
     # Resolution dominance is now handled by the unified normalised scoring model
     # (resolution-dominant, with a codec-adjusted starved-bitrate demotion and the

@@ -1143,3 +1143,87 @@ def test_only_the_same_width_class_lends_its_frame():
     assert (_adopt_existing_frame(proposed, [near_1080, dvd]).width, _adopt_existing_frame(proposed, [near_1080, dvd]).height) == (3840, 2160)
     hd = _create_proposed_as_existing(_voyeurs_torrent(resolution="1080p"))
     assert (_adopt_existing_frame(hd, [near_1080]).width, _adopt_existing_frame(hd, [near_1080]).height) == (1916, 800)
+
+
+# --- a same-kind newcomer must clearly beat the owned bitrate ------------------------------------
+
+FUTURAMA_S02E03 = {  # the real Emby item 21422102 before the 2026-10-15 overwrite
+    "Id": "futurama-s02e03",
+    "Name": "A Head in the Polls",
+    "Path": "/Movies/Serials/--- UKONCENE ---/Futurama/S02/Futurama S02E03 - 1080p WEB-DL CZ.mkv",
+    "Size": 700_398_372,
+    "Bitrate": 4_139_537,
+    "RunTimeTicks": 13_535_780_000,
+    "PremiereDate": "1999-11-06T23:00:00.0000000Z",
+    "DateCreated": "2025-12-23T15:12:37.0000000Z",
+    "ProductionYear": 1999,
+    "MediaStreams": [
+        {"Type": "Video", "Codec": "h264", "Width": 1920, "Height": 1080, "VideoRange": "SDR", "BitRate": 4_139_537},
+        {"Type": "Audio", "Codec": "aac", "Channels": 2, "Language": "cze", "BitRate": 192_000},
+        {"Type": "Audio", "Codec": "aac", "Channels": 2, "Language": "eng", "BitRate": 192_000},
+    ],
+}
+
+
+def _futurama_pack(**overrides):
+    fields = dict(name="Futurama", resolution="1080p", codec="x264", audio="AAC2.0", audio_languages=["cze", "eng"],
+                  size_mb=667, bitrate_kbps=4157, source_quality_tier="webdl",
+                  path="Futurama.S02.COMPLETE.1080p.DSNP.WEB-DL.AAC2.0.H264-TreZzoR")
+    return ProposedQuality(**{**fields, **overrides})
+
+
+def test_a_pack_sample_bitrate_a_hair_higher_is_not_an_upgrade():
+    """Regression (torrents gate, 2026-10-15): the S02 pack was sent with one sample file's bitrate
+    (4157 kb/s) for every episode. S02E03 owned at 4139 kb/s, same DSNP 1080p h264 cze+eng, outscored
+    by 0.02 and "upgraded"; the download overwrote the library file."""
+    result = compare_quality(_futurama_pack(), [FUTURAMA_S02E03])
+    assert result.proposed_score > result.existing_score  # the raw score still prefers it; the margin flips it
+    assert (result.recommendation, result.reason) == ("skip", "same_or_worse")
+
+
+def test_a_per_file_bitrate_three_percent_higher_is_not_an_upgrade():
+    """The replacement files are ~3 % larger (an extra dub); size ÷ runtime must not make them better."""
+    size = 700_398_372 + 21_700_000
+    kbps = round(size * 8 / 1353.578 / 1000)
+    assert compare_quality(_futurama_pack(size_mb=size // 2**20, bitrate_kbps=kbps), [FUTURAMA_S02E03]).recommendation == "skip"
+
+
+def test_a_same_kind_copy_with_double_the_bitrate_is_still_an_upgrade():
+    assert compare_quality(_futurama_pack(size_mb=1400, bitrate_kbps=8300), [FUTURAMA_S02E03]).recommendation == "download"
+
+
+def test_a_newcomer_adding_a_language_is_not_held_by_the_margin():
+    english_only = {**FUTURAMA_S02E03, "MediaStreams": [
+        s for s in FUTURAMA_S02E03["MediaStreams"] if s.get("Language") != "cze"]}
+    assert compare_quality(_futurama_pack(), [english_only], ["cze", "eng"]).recommendation == "download"
+
+
+def test_an_sdr_to_hdr_newcomer_is_not_held_by_the_margin():
+    """Marshals S02E01 (torrents log 2026-10-15 09:59): SDR 2160p owned, HDR10 at ~3 % more bitrate."""
+    owned = {
+        "Id": "marshals-s02e01", "Name": "All Hat No Cattle",
+        "Path": "/Movies/Serials/--- PREBIEHAJUCE ---/Marshals/S02/Marshals S02E01 - 2160p WEB-DL CZ.mkv",
+        "Size": 5_064_144_172, "Bitrate": 15_754_162, "RunTimeTicks": 25_715_840_000,
+        "MediaStreams": [
+            {"Type": "Video", "Codec": "hevc", "Width": 3840, "Height": 2160, "VideoRange": "SDR"},
+            {"Type": "Audio", "Codec": "eac3", "Channels": 6, "Language": "cze"},
+            {"Type": "Audio", "Codec": "eac3", "Channels": 6, "Language": "eng"},
+        ],
+    }
+    proposed = ProposedQuality(name="Marshals", resolution="2160p", codec="x265", hdr="HDR10", audio="DDP",
+                               audio_languages=["cze", "eng"], size_mb=4980, bitrate_kbps=16200, source_quality_tier="webdl",
+                               path="Marshals.S02E01.All.Hat.No.Cattle.2160p.SKST.WEB-DL.DDP5.1.H265-TreZzoR")
+    assert compare_quality(proposed, [owned]).recommendation == "download"
+
+
+def test_the_margin_leaves_unknown_bitrates_alone():
+    no_bitrate = {**FUTURAMA_S02E03, "Bitrate": 0, "MediaStreams": [
+        {**s, "BitRate": None} if s["Type"] == "Video" else s for s in FUTURAMA_S02E03["MediaStreams"]]}
+    from emby_dedupe.api.quality_compare import (
+        ExistingQuality,
+        _apply_same_kind_margin,
+        _create_proposed_as_existing,
+    )
+
+    owned = ExistingQuality.from_emby_item(no_bitrate)
+    assert _apply_same_kind_margin(_create_proposed_as_existing(_futurama_pack()), owned, "download") == "download"
