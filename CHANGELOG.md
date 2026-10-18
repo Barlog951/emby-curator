@@ -7,6 +7,8 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.3] — 2026-10-18
+
 ### Changed
 
 - **Dedupe keeps both copies when deleting one would lose a language or the better picture.**
@@ -25,6 +27,11 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
   unknown and only the language half held pairs. A dry run would have deleted a 4K HDR
   A Perfect Planet episode and a 1080p Regular Show Remux. The video quality now records
   `width`/`height` from Emby, and a test builds the item from a real Emby stream.
+- **`check` no longer calls a same-kind copy an upgrade on a hair more bitrate.** A Futurama S02
+  pack was judged with one sample file's bitrate for every episode, so owned episodes encoded just
+  below it scored as upgrades (S02E03: 25.91 vs 25.89) and the download overwrote the library
+  files. When frame, source tier, HDR, codec family, languages and channels are all the same, a
+  newcomer now needs 1.20× the owned bitrate (`SAME_KIND_MIN_BITRATE_GAIN`).
 
 ## [3.4.2] — 2026-10-14
 
