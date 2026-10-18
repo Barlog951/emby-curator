@@ -9,6 +9,7 @@ fetch-detect-update with an atomic full-object POST.
 from __future__ import annotations
 
 import copy
+import difflib
 import re
 
 import httpx
@@ -299,6 +300,31 @@ def resolve_tmdb_episode_numbers(
     if cache is not None:
         cache[cache_key] = make_entry(value)
     return (value["season"], value["episode"]) if value else None
+
+
+EPISODE_TITLE_MIN_SIMILARITY = 0.6  # below this an episode name and a TMDB title are not the same episode
+_TITLE_PARENS = re.compile(r"\([^)]*\)")
+_TITLE_NON_WORD = re.compile(r"[\W_]+", re.UNICODE)
+
+
+def episode_title_similarity(name: str, localized: dict | None) -> float:
+    """Best similarity (0..1) between an Emby episode name and TMDB's titles in any language.
+
+    Parenthesised parts ("(Widerøe Flight 839)") and punctuation are ignored, so
+    "Who's In Control?" matches "Who's in Control (Turkish Airlines Flight 1951)".
+    """
+    def norm(text: str) -> str:
+        text = _TITLE_PARENS.sub(" ", (text or "").lower()).replace("&", "and")
+        return " ".join(_TITLE_NON_WORD.sub(" ", text).split())
+
+    target = norm(name)
+    if not target:
+        return 0.0
+    return max(
+        (difflib.SequenceMatcher(None, target, norm(v.get("title", ""))).ratio()
+         for v in (localized or {}).values()),
+        default=0.0,
+    )
 
 
 def fetch_tmdb_localized(

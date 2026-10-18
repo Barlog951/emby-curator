@@ -15,9 +15,11 @@ from emby_dedupe.api.description_cache import (
     save_cache,
 )
 from emby_dedupe.api.descriptions import (
+    EPISODE_TITLE_MIN_SIMILARITY,
     LANG_CHAIN_DEFAULT,
     build_series_tmdb_map,
     collect_overview_candidates,
+    episode_title_similarity,
     fetch_tmdb_episode_localized,
     fetch_tmdb_localized,
     pick_overview_with_fallback,
@@ -164,19 +166,14 @@ def _fetch_localized_for_episode(
 ) -> dict | None:
     """Fetch localized text for an episode and track cache hits.
 
-    Emby's season/episode numbers follow TVDB; when the episode has a TVDB id,
-    TMDB's own numbers for it are looked up first (the orders can differ).
+    Emby's season/episode numbers follow TVDB, and TMDB may order a season
+    differently. When the episode has a TVDB id, TMDB's episode for that id is
+    used instead, but only when its title matches the Emby episode name better
+    than the episode at Emby's numbers: TMDB's TVDB links are themselves wrong
+    for some shows (Mayday S04/S26, DS9 S01; 2026-10-18).
     """
     season = item["ParentIndexNumber"]
     episode = item["IndexNumber"]
-    pids = {k.lower(): v for k, v in (item.get("ProviderIds") or {}).items()}
-    if tvdb_id := pids.get("tvdb"):
-        resolved = resolve_tmdb_episode_numbers(
-            tmdb_client, tmdb_limiter, series_tmdb_id, str(tvdb_id),
-            cache=cache, cache_ttl=cache_ttl_seconds,
-        )
-        if resolved:
-            season, episode = resolved
     pre_hit = cache is not None and f"ep:{series_tmdb_id}:s{season}e{episode}" in cache
     localized = fetch_tmdb_episode_localized(
         tmdb_client, tmdb_limiter, series_tmdb_id, season, episode,
@@ -184,6 +181,24 @@ def _fetch_localized_for_episode(
     )
     if pre_hit:
         stats["cache_hits"] += 1
+    pids = {k.lower(): v for k, v in (item.get("ProviderIds") or {}).items()}
+    tvdb_id = pids.get("tvdb")
+    if not tvdb_id:
+        return localized
+    resolved = resolve_tmdb_episode_numbers(
+        tmdb_client, tmdb_limiter, series_tmdb_id, str(tvdb_id),
+        cache=cache, cache_ttl=cache_ttl_seconds,
+    )
+    if not resolved or resolved == (season, episode):
+        return localized
+    alternative = fetch_tmdb_episode_localized(
+        tmdb_client, tmdb_limiter, series_tmdb_id, resolved[0], resolved[1],
+        cache=cache, cache_ttl=cache_ttl_seconds,
+    )
+    name = item.get("Name") or ""
+    alt_score = episode_title_similarity(name, alternative)
+    if alt_score >= EPISODE_TITLE_MIN_SIMILARITY and alt_score > episode_title_similarity(name, localized):
+        return alternative
     return localized
 
 

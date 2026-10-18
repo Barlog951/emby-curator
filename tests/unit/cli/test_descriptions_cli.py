@@ -1000,34 +1000,40 @@ class TestRunDescriptionsCommand:
 
 
 class TestEpisodeUsesTmdbOrder:
-    """The TMDB fetch uses TMDB's numbers for the episode's TVDB id, not Emby's (Mayday S26, 2026-10-18)."""
+    """TMDB's episode for the TVDB id is used only when its title matches the Emby name (2026-10-18:
+    TMDB order differs in Mayday S26, and TMDB's TVDB links are themselves crossed in DS9 S01)."""
+
+    TEXTS = {
+        (26, 1): {"en-US": {"title": "Deadly Charter (2001 Aspen Gulfstream III crash)", "overview": "Aspen"}},
+        (26, 2): {"en-US": {"title": "Norwegian Nightmare (Widerøe Flight 839)", "overview": "Widerøe"}},
+        (1, 3): {"en-US": {"title": "A Man Alone", "overview": "Odo"}},
+        (1, 2): {"en-US": {"title": "Past Prologue", "overview": "Tahna Los"}},
+    }
 
     def _run(self, monkeypatch, item, resolved):
-        calls = {}
-
-        def fake_fetch(client, limiter, series_id, season, episode, **kw):
-            calls["se"] = (season, episode)
-            return {"ok": 1}
-
-        monkeypatch.setattr(desc_cli, "fetch_tmdb_episode_localized", fake_fetch)
+        monkeypatch.setattr(desc_cli, "fetch_tmdb_episode_localized",
+                            lambda client, limiter, series, season, episode, **kw: self.TEXTS.get((season, episode)))
         monkeypatch.setattr(desc_cli, "resolve_tmdb_episode_numbers", lambda *a, **kw: resolved)
-        _fetch_localized_for_episode(item, "90", MagicMock(), MagicMock(), None, 100, _new_run_stats())
-        return calls["se"]
+        return _fetch_localized_for_episode(item, "90", MagicMock(), MagicMock(), None, 100, _new_run_stats())
 
-    def test_resolved_numbers_are_used(self, monkeypatch):
-        item = {"ParentIndexNumber": 26, "IndexNumber": 1, "ProviderIds": {"Tvdb": "11514177"}}
-        assert self._run(monkeypatch, item, (26, 2)) == (26, 2)
+    def test_tmdb_order_used_when_its_title_matches(self, monkeypatch):
+        item = {"ParentIndexNumber": 26, "IndexNumber": 1, "Name": "Norwegian Nightmare (Widerøe Flight 839)",
+                "ProviderIds": {"Tvdb": "11514177"}}
+        assert self._run(monkeypatch, item, (26, 2))["en-US"]["overview"] == "Widerøe"
 
-    def test_falls_back_to_emby_numbers_without_a_match(self, monkeypatch):
-        item = {"ParentIndexNumber": 26, "IndexNumber": 1, "ProviderIds": {"Tvdb": "1"}}
-        assert self._run(monkeypatch, item, None) == (26, 1)
+    def test_crossed_tvdb_link_is_ignored(self, monkeypatch):
+        item = {"ParentIndexNumber": 1, "IndexNumber": 3, "Name": "A Man Alone", "ProviderIds": {"Tvdb": "1"}}
+        assert self._run(monkeypatch, item, (1, 2))["en-US"]["overview"] == "Odo"
+
+    def test_no_tmdb_match_keeps_emby_numbers(self, monkeypatch):
+        item = {"ParentIndexNumber": 1, "IndexNumber": 3, "Name": "A Man Alone", "ProviderIds": {"Tvdb": "1"}}
+        assert self._run(monkeypatch, item, None)["en-US"]["overview"] == "Odo"
 
     def test_no_tvdb_id_skips_the_lookup(self, monkeypatch):
         monkeypatch.setattr(desc_cli, "resolve_tmdb_episode_numbers",
                             lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must not be called")))
-        calls = {}
         monkeypatch.setattr(desc_cli, "fetch_tmdb_episode_localized",
-                            lambda client, limiter, series, season, episode, **kw: calls.setdefault("se", (season, episode)))
-        _fetch_localized_for_episode({"ParentIndexNumber": 3, "IndexNumber": 4}, "90", MagicMock(), MagicMock(),
-                                     None, 100, _new_run_stats())
-        assert calls["se"] == (3, 4)
+                            lambda client, limiter, series, season, episode, **kw: self.TEXTS.get((season, episode)))
+        out = _fetch_localized_for_episode({"ParentIndexNumber": 1, "IndexNumber": 3, "Name": "A Man Alone"}, "90",
+                                           MagicMock(), MagicMock(), None, 100, _new_run_stats())
+        assert out["en-US"]["overview"] == "Odo"

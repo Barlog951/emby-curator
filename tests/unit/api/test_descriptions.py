@@ -924,3 +924,27 @@ class TestResolveTmdbEpisodeNumbers:
         cache: dict = {}
         assert resolve_tmdb_episode_numbers(client, MagicMock(), "90", "7", cache=cache) is None
         assert "find:tvdb:7" not in cache
+
+
+class TestEpisodeTitleSimilarity:
+    def test_ignores_parentheses_and_case(self):
+        from emby_dedupe.api.descriptions import episode_title_similarity
+        loc = {"en-US": {"title": "Who's in Control (Turkish Airlines Flight 1951)"}}
+        assert episode_title_similarity("Who's In Control?", loc) > 0.9
+
+    def test_any_language_counts(self):
+        from emby_dedupe.api.descriptions import episode_title_similarity
+        loc = {"en-US": {"title": "Duck to the Future"}, "sk-SK": {"title": "Držgros v budúcnosti"}}
+        assert episode_title_similarity("Držgros v budúcnosti", loc) == 1.0
+
+    def test_different_episode_scores_low(self):
+        from emby_dedupe.api.descriptions import (
+            EPISODE_TITLE_MIN_SIMILARITY,
+            episode_title_similarity,
+        )
+        assert episode_title_similarity("A Man Alone", {"en-US": {"title": "Past Prologue"}}) < EPISODE_TITLE_MIN_SIMILARITY
+
+    def test_empty_inputs(self):
+        from emby_dedupe.api.descriptions import episode_title_similarity
+        assert episode_title_similarity("", {"en-US": {"title": "x"}}) == 0.0
+        assert episode_title_similarity("x", None) == 0.0
