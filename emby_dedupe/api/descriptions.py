@@ -255,6 +255,52 @@ def fetch_tmdb_episode_localized(
     return result
 
 
+def resolve_tmdb_episode_numbers(
+    client: httpx.Client,
+    limiter: RateLimiter,
+    series_tmdb_id: str,
+    tvdb_episode_id: str,
+    cache: dict | None = None,
+    cache_ttl: int = DEFAULT_TTL_SECONDS,
+) -> tuple[int, int] | None:
+    """Map an episode's TVDB id to TMDB's own season/episode numbers.
+
+    Emby numbers episodes in TVDB order, but TMDB may order a season
+    differently: in Mayday S26, TVDB E01 (Widerøe 839) is TMDB E02, so
+    fetching TMDB by Emby's numbers wrote another episode's overview
+    (2026-10-18).  Uses TMDB ``/find`` with ``external_source=tvdb_id``.
+
+    Returns ``(season, episode)`` or None when TMDB has no match for this
+    series.  Matches and "no match" are cached; transport errors are not.
+    """
+    cache_key = f"find:tvdb:{tvdb_episode_id}"
+    hit, cached = _cache_lookup(cache, cache_key, cache_ttl)
+    if hit:
+        return (cached["season"], cached["episode"]) if cached else None
+
+    limiter.acquire()
+    try:
+        response = client.get(
+            f"{TMDB_BASE}/find/{tvdb_episode_id}", params={"external_source": "tvdb_id"},
+        )
+        response.raise_for_status()
+        results = response.json().get("tv_episode_results") or []
+    except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+        logger.warning(f"TMDB find failed for TVDB episode {tvdb_episode_id}: {e}")
+        return None
+
+    match = next(
+        (r for r in results
+         if str(r.get("show_id")) == str(series_tmdb_id)
+         and isinstance(r.get("season_number"), int) and isinstance(r.get("episode_number"), int)),
+        None,
+    )
+    value = {"season": match["season_number"], "episode": match["episode_number"]} if match else None
+    if cache is not None:
+        cache[cache_key] = make_entry(value)
+    return (value["season"], value["episode"]) if value else None
+
+
 def fetch_tmdb_localized(
     client: httpx.Client,
     limiter: RateLimiter,

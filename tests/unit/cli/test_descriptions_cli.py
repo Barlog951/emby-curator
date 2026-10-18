@@ -997,3 +997,37 @@ class TestRunDescriptionsCommand:
         )
         with pytest.raises(SystemExit):
             run_descriptions_command(args)
+
+
+class TestEpisodeUsesTmdbOrder:
+    """The TMDB fetch uses TMDB's numbers for the episode's TVDB id, not Emby's (Mayday S26, 2026-10-18)."""
+
+    def _run(self, monkeypatch, item, resolved):
+        calls = {}
+
+        def fake_fetch(client, limiter, series_id, season, episode, **kw):
+            calls["se"] = (season, episode)
+            return {"ok": 1}
+
+        monkeypatch.setattr(desc_cli, "fetch_tmdb_episode_localized", fake_fetch)
+        monkeypatch.setattr(desc_cli, "resolve_tmdb_episode_numbers", lambda *a, **kw: resolved)
+        _fetch_localized_for_episode(item, "90", MagicMock(), MagicMock(), None, 100, _new_run_stats())
+        return calls["se"]
+
+    def test_resolved_numbers_are_used(self, monkeypatch):
+        item = {"ParentIndexNumber": 26, "IndexNumber": 1, "ProviderIds": {"Tvdb": "11514177"}}
+        assert self._run(monkeypatch, item, (26, 2)) == (26, 2)
+
+    def test_falls_back_to_emby_numbers_without_a_match(self, monkeypatch):
+        item = {"ParentIndexNumber": 26, "IndexNumber": 1, "ProviderIds": {"Tvdb": "1"}}
+        assert self._run(monkeypatch, item, None) == (26, 1)
+
+    def test_no_tvdb_id_skips_the_lookup(self, monkeypatch):
+        monkeypatch.setattr(desc_cli, "resolve_tmdb_episode_numbers",
+                            lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must not be called")))
+        calls = {}
+        monkeypatch.setattr(desc_cli, "fetch_tmdb_episode_localized",
+                            lambda client, limiter, series, season, episode, **kw: calls.setdefault("se", (season, episode)))
+        _fetch_localized_for_episode({"ParentIndexNumber": 3, "IndexNumber": 4}, "90", MagicMock(), MagicMock(),
+                                     None, 100, _new_run_stats())
+        assert calls["se"] == (3, 4)

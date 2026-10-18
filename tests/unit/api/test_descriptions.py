@@ -876,3 +876,51 @@ class TestUpdateItemMetadataYear:
         assert sent["Overview"] == "new"
         assert sent["ProductionYear"] == 2022
         assert "Overview" in sent["LockedFields"]
+
+
+class TestResolveTmdbEpisodeNumbers:
+    """Emby numbers episodes in TVDB order; TMDB may differ (Mayday S26, 2026-10-18)."""
+
+    @staticmethod
+    def _client(results, exc=None):
+        client = MagicMock()
+        if exc is not None:
+            client.get.side_effect = exc
+            return client
+        response = MagicMock()
+        response.json.return_value = {"tv_episode_results": results}
+        response.raise_for_status = MagicMock()
+        client.get.return_value = response
+        return client
+
+    def test_maps_tvdb_episode_to_tmdb_numbers(self):
+        from emby_dedupe.api.descriptions import resolve_tmdb_episode_numbers
+        # TVDB S26E01 Widerøe 839 is TMDB S26E02
+        client = self._client([{"show_id": 90, "season_number": 26, "episode_number": 2}])
+        cache: dict = {}
+        assert resolve_tmdb_episode_numbers(client, MagicMock(), "90", "11514177", cache=cache) == (26, 2)
+        _, kwargs = client.get.call_args
+        assert kwargs["params"] == {"external_source": "tvdb_id"}
+        assert cache["find:tvdb:11514177"]["data"] == {"season": 26, "episode": 2}
+
+    def test_ignores_results_of_another_show(self):
+        from emby_dedupe.api.descriptions import resolve_tmdb_episode_numbers
+        client = self._client([{"show_id": 1234, "season_number": 1, "episode_number": 1}])
+        assert resolve_tmdb_episode_numbers(client, MagicMock(), "90", "1") is None
+
+    def test_no_match_is_cached_and_reused(self):
+        from emby_dedupe.api.descriptions import resolve_tmdb_episode_numbers
+        client = self._client([])
+        cache: dict = {}
+        assert resolve_tmdb_episode_numbers(client, MagicMock(), "90", "5", cache=cache) is None
+        assert resolve_tmdb_episode_numbers(client, MagicMock(), "90", "5", cache=cache) is None
+        assert client.get.call_count == 1
+
+    def test_transport_error_returns_none_and_is_not_cached(self):
+        import httpx
+
+        from emby_dedupe.api.descriptions import resolve_tmdb_episode_numbers
+        client = self._client(None, exc=httpx.ConnectError("down"))
+        cache: dict = {}
+        assert resolve_tmdb_episode_numbers(client, MagicMock(), "90", "7", cache=cache) is None
+        assert "find:tvdb:7" not in cache

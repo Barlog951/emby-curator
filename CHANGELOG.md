@@ -7,6 +7,14 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`descriptions` writes the right episode's text when TMDB and TVDB order a season differently.**
+  Emby numbers episodes in TVDB order, but the overview was fetched from TMDB by the same season
+  and episode numbers. In Mayday S26 that put another flight's overview on 7 of 10 episodes
+  (TVDB E01 Widerøe 839 is TMDB E02). Episodes with a TVDB id now look up TMDB's own numbers
+  first (`/find`, `external_source=tvdb_id`). Without a match the old numbers are used.
+
 ## [3.4.3] — 2026-10-18
 
 ### Changed

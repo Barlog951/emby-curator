@@ -24,6 +24,7 @@ from emby_dedupe.api.descriptions import (
     pick_tagline_with_fallback,
     pick_title_from_localized,
     pick_year_from_localized,
+    resolve_tmdb_episode_numbers,
     update_item_metadata,
 )
 from emby_dedupe.api.genre_providers import RateLimiter
@@ -161,9 +162,21 @@ def _fetch_localized_for_episode(
     cache_ttl_seconds: int,
     stats: dict,
 ) -> dict | None:
-    """Fetch localized text for an episode and track cache hits."""
+    """Fetch localized text for an episode and track cache hits.
+
+    Emby's season/episode numbers follow TVDB; when the episode has a TVDB id,
+    TMDB's own numbers for it are looked up first (the orders can differ).
+    """
     season = item["ParentIndexNumber"]
     episode = item["IndexNumber"]
+    pids = {k.lower(): v for k, v in (item.get("ProviderIds") or {}).items()}
+    if tvdb_id := pids.get("tvdb"):
+        resolved = resolve_tmdb_episode_numbers(
+            tmdb_client, tmdb_limiter, series_tmdb_id, str(tvdb_id),
+            cache=cache, cache_ttl=cache_ttl_seconds,
+        )
+        if resolved:
+            season, episode = resolved
     pre_hit = cache is not None and f"ep:{series_tmdb_id}:s{season}e{episode}" in cache
     localized = fetch_tmdb_episode_localized(
         tmdb_client, tmdb_limiter, series_tmdb_id, season, episode,
