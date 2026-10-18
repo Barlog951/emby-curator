@@ -7,6 +7,8 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.4] — 2026-10-18
+
 ### Fixed
 
 - **`descriptions` writes the right episode's text when TMDB and TVDB order a season differently.**
