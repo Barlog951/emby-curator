@@ -330,9 +330,12 @@ def get_quality_description(item: dict[str, Any]) -> dict[str, Any]:
 
     # Construct the quality description safely
     size_bytes = item.get("Size", 0)
+    audio_quality = _extract_audio_quality(audio_stream, languages)
+    # one entry per audio track (duplicates kept): a second CZ dub must count (deduplication.merge_audio_first_reason)
+    audio_quality["track_languages"] = [s.get("Language") or "unknown" for s in audio_streams]
     quality_description = {
         "video": _extract_video_quality(video_stream),
-        "audio": _extract_audio_quality(audio_stream, languages),
+        "audio": audio_quality,
         "size": size_bytes,  # Raw size for sorting
         "size_formatted": _format_file_size(size_bytes),  # Human-readable size
         "date_added": _resolve_date_added(item),

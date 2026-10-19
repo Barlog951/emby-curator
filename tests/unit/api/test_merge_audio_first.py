@@ -133,3 +133,70 @@ def test_regular_show_remux_is_held_on_the_real_item_shape():
     reason = dd.merge_audio_first_reason(_emby_item("1080p-remux-en", ["eng"], 1920, 1080), keep)
     assert reason is not None
     assert "better picture (1080p vs 720p)" in reason
+
+
+# --------------------------------------------------------------------------- #
+# A second dub of the same language (Fuki 2026-10-19). The 10:06 --doit deleted the Terminator (1984)
+# 4K pack copy (cze 1990 Zavřel + cze 2003 Soukup + eng) and kept the remux (cze 2003 + eng + eng):
+# both "had cs", so nothing held, and the 1990 dub was gone.
+# --------------------------------------------------------------------------- #
+def _tracks(item_id, tracks, width=3840, height=2160, prio=None):
+    item = _item(item_id, list(dict.fromkeys(t for t in tracks if t not in ("und", ""))), width, height, prio)
+    item["quality_description"]["audio"]["track_languages"] = tracks
+    return item
+
+
+def test_terminator_second_czech_dub_is_held():
+    keep = _tracks("remux", ["cze", "eng", "eng"], prio=PRIO)
+    reason = dd.merge_audio_first_reason(_tracks("pack", ["cze", "cze", "eng"], height=2080), keep)
+    assert reason is not None
+    assert reason.startswith(dd.MERGE_AUDIO_FIRST)
+    assert "cs 2 vs 1" in reason
+
+
+def test_slovak_second_dub_is_held_too():
+    keep = _tracks("k", ["slo", "eng"], prio=PRIO)
+    assert "sk 2 vs 1" in dd.merge_audio_first_reason(_tracks("d", ["slo", "slk", "eng"]), keep)
+
+
+def test_kept_copy_with_as_many_dubs_passes():
+    # Terminator 3: kept SK pack had cze x4 + slo; the deleted 4K had one cze
+    keep = _tracks("sk-pack", ["cze", "cze", "cze", "cze", "slo", "eng", "eng", "eng"], prio=PRIO)
+    assert dd.merge_audio_first_reason(_tracks("4k", ["cze", "eng"]), keep) is None
+
+
+def test_extra_english_tracks_never_hold():
+    # a second English track is a commentary or the same mix in another codec
+    keep = _tracks("k", ["cze", "eng"], prio=PRIO)
+    assert dd.merge_audio_first_reason(_tracks("d", ["cze", "eng", "eng", "eng"]), keep) is None
+
+
+def test_extra_dubs_outside_lang_prio_never_hold_by_count():
+    keep = _tracks("k", ["cze", "eng"], prio=PRIO)
+    assert dd.merge_audio_first_reason(_tracks("d", ["cze", "eng", "hun", "hun"]), keep) is None
+
+
+def test_untagged_extra_tracks_never_hold():
+    keep = _tracks("k", ["cze", "eng"], prio=PRIO)
+    assert dd.merge_audio_first_reason(_tracks("d", ["cze", "und", "", "unknown", "eng"]), keep) is None
+
+
+def test_items_without_track_list_fall_back_to_the_language_rule():
+    # cached items from before the field existed: no count rule, no crash
+    keep = _item("k", ["cze", "eng"], 3840, 2160, PRIO)
+    assert dd.merge_audio_first_reason(_tracks("d", ["cze", "cze", "eng"]), keep) is None
+    assert dd.merge_audio_first_reason(_item("d", ["cze", "eng"], 3840, 2160), _tracks("k", ["cze", "eng"], prio=PRIO)) is None
+
+
+def test_quality_description_lists_every_audio_track():
+    from emby_dedupe.api.metadata import get_quality_description
+
+    streams = [{"Type": "Video", "Codec": "hevc", "Width": 3840, "Height": 2080},
+               {"Type": "Audio", "Codec": "eac3", "Language": "cze"},
+               {"Type": "Audio", "Codec": "eac3", "Language": "cze"},
+               {"Type": "Audio", "Codec": "eac3", "Language": "eng"},
+               {"Type": "Audio", "Codec": "ac3"},
+               {"Type": "Subtitle", "Language": "cze"}]
+    audio = get_quality_description({"Id": "1", "MediaStreams": streams})["audio"]
+    assert audio["track_languages"] == ["cze", "cze", "eng", "unknown"]
+    assert audio["languages"] == ["cze", "eng"]

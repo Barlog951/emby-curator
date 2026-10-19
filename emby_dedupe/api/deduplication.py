@@ -5,6 +5,7 @@ Core deduplication logic for identifying and processing duplicate media items.
 import logging
 import os
 import re
+from collections import Counter
 from typing import Any
 
 import httpx
@@ -1416,6 +1417,20 @@ def _resolution_class(item: dict) -> tuple[int, str]:
                  if width >= min_w or height >= min_h), (0, ""))
 
 
+def _extra_dub_tracks(item: dict, keeper: dict, languages: set[str]) -> str:
+    """"cs 2 vs 1"-style text for each language in ``languages`` where ``item`` has more audio
+    tracks than ``keeper``; "" when none, or when either side lacks per-track languages."""
+    def counts(side: dict) -> Counter[str] | None:
+        tracks = ((side.get("quality_description") or {}).get("audio") or {}).get("track_languages")
+        if tracks is None:
+            return None
+        return Counter(_normalized_language(t) for t in tracks if t and str(t).lower() not in _UNKNOWN_LANGUAGES)
+    mine, kept = counts(item), counts(keeper)
+    if mine is None or kept is None:
+        return ""
+    return ", ".join(f"{lang} {mine[lang]} vs {kept[lang]}" for lang in sorted(languages) if mine[lang] > kept[lang] > 0)
+
+
 def merge_audio_first_reason(item: dict, keeper: dict) -> str | None:
     """Why deleting ``item`` would lose something that belongs in ONE merged file, or None.
 
@@ -1426,6 +1441,11 @@ def merge_audio_first_reason(item: dict, keeper: dict) -> str | None:
 
     - the copy to delete has an audio language from ``--lang-prio`` that the kept copy
       lacks (AHS S07: nine English 720p copies deleted, the Czech BluRay kept, 2026-10-14);
+    - the copy to delete has MORE audio tracks of a non-English ``--lang-prio`` language
+      than the kept copy, i.e. a second dub (Terminator 1984, 2026-10-19: the deleted 4K
+      pack copy carried the 1990 Zavřel CZ dub next to the 2003 one; the kept remux had
+      only the 2003 dub). English is left out: a second English track is usually the same
+      mix in another codec or a commentary;
     - the copy to delete has the better picture class and the kept copy won on language
       (Regular Show S01: five 1080p English copies deleted, 720p Czech kept, 2026-10-14).
 
@@ -1440,6 +1460,10 @@ def merge_audio_first_reason(item: dict, keeper: dict) -> str | None:
         if lost:
             return (f"{MERGE_AUDIO_FIRST}: the copy to delete has {', '.join(lost)} audio the kept copy lacks; "
                     "merge the tracks into one file first")
+        extra = _extra_dub_tracks(item, keeper, priorities - {"en"})
+        if extra:
+            return (f"{MERGE_AUDIO_FIRST}: the copy to delete has more {extra} audio tracks than the kept copy "
+                    "(another dub); merge the tracks into one file first")
     (item_rank, item_label), (keep_rank, keep_label) = _resolution_class(item), _resolution_class(keeper)
     if keep_rank and item_rank > keep_rank:
         return (f"{MERGE_AUDIO_FIRST}: the copy to delete has the better picture ({item_label} vs {keep_label}); "

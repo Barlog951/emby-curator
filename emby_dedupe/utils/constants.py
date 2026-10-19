@@ -21,6 +21,7 @@ ITEMS_TO_DELETE_HEADER = "Items to Delete"
 # Used for normalizing Slovak and Czech language codes across different formats
 LANGUAGE_NORMALIZATION_MAP = {
     "slo": "sk",  # Slovak ISO 639-2 -> ISO 639-1
+    "slk": "sk",  # Slovak ISO 639-2 alternate
     "slovak": "sk",  # Slovak full name
     "sk": "sk",   # Slovak ISO 639-1
     "cze": "cs",  # Czech ISO 639-2 -> ISO 639-1
