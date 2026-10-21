@@ -542,14 +542,27 @@ def _stats_tiles(stats: dict[str, Any], totals: dict[str, int], dry: bool, space
     return tiles
 
 
-def _build_run_summary(stats: dict[str, Any], clusters: dict[str, Any], template_data: dict[str, Any]) -> dict[str, Any]:
+def _is_dry_run(metadata: dict[str, Any], stats: dict[str, Any]) -> bool:
+    """True for a dry run.
+
+    The CLI's ``--doit`` flag (``metadata["run"]["doit"]``) decides when it is known. A real
+    run with nothing to delete has no deletion results, and guessing from them labelled it
+    "Dry run". Reports built without the flag still guess from the deletion results.
+    """
+    doit = (metadata.get("run") or {}).get("doit")
+    if doit is None:
+        return not stats["deletion_attempted"]
+    return not doit
+
+
+def _build_run_summary(stats: dict[str, Any], clusters: dict[str, Any], template_data: dict[str, Any],
+                       dry: bool) -> dict[str, Any]:
     """The one-sentence verdict, the outcome bar and the statistics at the top of the report.
 
     Counts are files (delete items), the same unit the sections use. A dry run is described
     as what --doit would do, including the deletes the safety guard will refuse.
     """
     totals = clusters["totals"]
-    dry = not stats["deletion_attempted"]
     space = _fmt_size(stats["space_saved"])
     excluded_groups = template_data.get("excluded_groups_count", 0)
     headline, subline, reconcile = _verdict(stats, clusters, dry, space, excluded_groups)
@@ -673,8 +686,9 @@ def build_report_context(base_url: str, decisions: list[dict[str, Any]],
     # Rows per title and outcome, after the posters: a row shows its keeper's poster class.
     from emby_dedupe.reports.clusters import build_clusters
     template_data["clusters"] = build_clusters(valid_decisions, base_url, metadata.get("history"))
-    template_data["run"] = _run_metadata(metadata, dry=not stats["deletion_attempted"])
-    template_data["run_summary"] = _build_run_summary(stats, template_data["clusters"], template_data)
+    dry = _is_dry_run(metadata, stats)
+    template_data["run"] = _run_metadata(metadata, dry=dry)
+    template_data["run_summary"] = _build_run_summary(stats, template_data["clusters"], template_data, dry)
     template_data["report_css"] = _read_report_css()
     _attach_json_twin(template_data, stats)
     return template_data

@@ -83,3 +83,36 @@ def test_dry_run_report_shows_the_blocked_pair_and_the_real_numbers():
     assert "2.00 GB would be freed." in html, "space to free must exclude the blocked delete"
     assert "GB freed.</h1>" not in html
     assert "Dry run · nothing deleted" in html
+
+
+def _context(decisions: list[dict], metadata: dict | None = None) -> dict:
+    from emby_dedupe.reports.html import build_report_context
+
+    with patch("emby_dedupe.reports.images.inline_poster_urls", side_effect=lambda urls, *a, **k: {}):
+        return build_report_context(BASE, decisions, metadata)
+
+
+def test_real_run_with_nothing_to_delete_is_not_labelled_dry_run():
+    """Regression 2026-10-21: a --doit run with nothing to delete was labelled "Dry run"."""
+    ctx = _context([], {"run": {"doit": True}})
+
+    assert ctx["run"]["dry"] is False
+    assert ctx["run"]["mode"] == "Real run (--doit)"
+    assert ctx["run_summary"]["dry"] is False
+
+
+def test_doit_flag_false_is_a_dry_run_even_with_results():
+    d = _dry_run_decisions()
+    d[0]["delete"][0]["deletion_result"]["status"] = "success"
+
+    ctx = _context(d, {"run": {"doit": False}})
+
+    assert ctx["run"]["dry"] is True
+    assert ctx["run_summary"]["dry"] is True
+
+
+def test_without_the_doit_flag_the_mode_is_guessed_from_the_results():
+    assert _context(_dry_run_decisions())["run"]["dry"] is True
+    d = _dry_run_decisions()
+    d[0]["delete"][0]["deletion_result"]["status"] = "success"
+    assert _context(d)["run"]["dry"] is False
