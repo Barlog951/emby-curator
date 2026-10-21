@@ -7,6 +7,20 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.5] — 2026-10-21
+
+### Fixed
+
+- **`dedupe` holds a delete that would lose a second CZ/SK dub.** On 2026-10-19 `--doit` deleted the
+  Terminator (1984) 4K pack copy (Czech 1990 + Czech 2003 + English) and kept the remux (Czech 2003 +
+  English). Both copies had Czech, so the merge-audio-first rule did not hold, and the 1990 dub was lost.
+  The audio summary now lists every track's language. A pair is held when the copy to delete has more
+  tracks of a non-English `--lang-prio` language than the kept copy. `slk` now maps to Slovak, like
+  `ces` does for Czech.
+- **The report no longer labels a `--doit` run "Dry run" when it had nothing to delete.** The mode
+  now comes from the command's `--doit` flag. Reports built without that flag still guess it from the
+  deletion results.
+
 ## [3.4.4] — 2026-10-18
 
 ### Fixed
