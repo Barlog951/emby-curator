@@ -20,7 +20,6 @@ from emby_dedupe.api.scoring import (
     duration_minutes_from_ticks,
     format_score_summary,
     hdr_bonus_from_string,
-    hdr_marker_in_text,
     is_neutral_multiplier,
 )
 from emby_dedupe.utils.formatting import format_file_size
@@ -415,25 +414,15 @@ def _video_bitrate_mbps(item: dict[str, Any], video_stream: dict[str, Any] | Non
         return 0.0
 
 
-def _hdr_bonus(
-    video_stream: dict[str, Any] | None,
-    item_name: str = "",
-    item_path: str | None = None,
-) -> float:
-    """1.0 for any real HDR (HDR10/HDR10+/Dolby Vision/HLG), 0.0 for SDR/unknown.
-    The Dolby Vision Profile-5 penalty is applied separately.
+def _hdr_bonus(video_stream: dict[str, Any] | None) -> float:
+    """1.0 for real HDR (HDR10/HDR10+/Dolby Vision/HLG), 0.0 for SDR/unknown.
 
-    Falls back to an explicit HDR marker in the filename/title when Emby exposes
-    no HDR metadata — some WEB-DL rips carry real HDR the server misses, and
-    without this an HDR copy ties with a genuinely SDR sibling and can lose the
-    tie-break (as happened to The Agency S02E07, 2026-07-22)."""
-    bonus = hdr_bonus_from_string((video_stream or {}).get("VideoRange"))
-    if not bonus and (
-        hdr_marker_in_text(os.path.basename(item_path or ""))
-        or hdr_marker_in_text(item_name)
-    ):
-        return 1.0
-    return bonus
+    Read from the video stream's ``VideoRange`` only, never from the file name:
+    release names lie. Chimp Empire S01E02–E04 "… 1080p WEB-DL HDR CZ.mkv" were
+    8-bit H264 SDR, earned a filename HDR bonus and beat their 5.1 siblings in the
+    2026-10-30 ``--doit`` run, which deleted the 5.1 copies. The Dolby Vision
+    Profile-5 penalty is applied separately."""
+    return hdr_bonus_from_string((video_stream or {}).get("VideoRange"))
 
 
 def _rating_breakdown(
@@ -465,7 +454,7 @@ def _rating_breakdown(
     return compute_quality_breakdown(
         res_megapixels=_resolution_megapixels(video_stream),
         height=height,
-        hdr_bonus=_hdr_bonus(video_stream, item_name, item_path),
+        hdr_bonus=_hdr_bonus(video_stream),
         video_bitrate_mbps=_video_bitrate_mbps(item, video_stream),
         audio_channels=channels,
         date_rating=date_rating,

@@ -101,14 +101,13 @@ def hdr_bonus_from_string(value: str | None) -> float:
     return 1.0
 
 
-# Explicit HDR markers as they appear in release filenames. Used ONLY as a
-# fallback when Emby exposes no HDR metadata (VideoRange missing/SDR): some
-# WEB-DL rips carry real HDR the server fails to detect, so an HDR-tagged
-# filename should still earn the HDR bonus instead of tying with a genuinely
-# SDR sibling and losing the tie-break (which cost a real HDR copy once —
-# The Agency S02E07, 2026-07-22). Word boundaries keep "HDR" from matching
-# inside other tokens; bare "DV" is deliberately excluded (it collides with
-# "DVDRip", which is SDR).
+# Explicit HDR markers as they appear in release filenames. NOT a scoring input:
+# the HDR bonus comes from the video stream's VideoRange only (metadata._hdr_bonus),
+# because release names lie — Chimp Empire S01E02–E04 "… WEB-DL HDR CZ.mkv" and the
+# surviving The Agency S02 "… HDR CZ.mkv" files are all 8-bit SDR (2026-10-30), and the
+# old filename fallback cost three 5.1 copies. Kept as a public helper (no caller in
+# this package since then). Word boundaries keep "HDR" from matching inside other
+# tokens; bare "DV" is deliberately excluded (it collides with "DVDRip", which is SDR).
 # (ranges are lower-case only — IGNORECASE already covers upper-case, and repeating
 # A-Z here would just duplicate the class)
 _HDR_FILENAME_RE = re.compile(
@@ -122,8 +121,8 @@ def hdr_marker_in_text(text: str | None) -> bool:
 
     Matches ``HDR``, ``HDR10``/``HDR10+``, ``Dolby Vision``/``DoVi``, and ``HLG``.
     Deliberately does NOT match a bare ``DV`` (false-positives on ``DVDRip``).
-    This is a metadata fallback only — the Dolby Vision Profile-5 penalty stays
-    strictly metadata-driven and is never inferred from a filename.
+    Never used for scoring: the HDR bonus and the Dolby Vision Profile-5 penalty
+    are both strictly stream-metadata-driven.
     """
     if not text:
         return False

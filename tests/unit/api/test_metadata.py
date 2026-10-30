@@ -3,12 +3,15 @@ Tests for metadata module with focus on quality assessment and date handling
 """
 from unittest.mock import patch
 
+import pytest
+
 from emby_dedupe.api.metadata import (
     _build_tv_metadata,
     _calculate_quality_rating,
     _extract_premiere_date,
     _format_file_size,
     _parse_iso_date,
+    _rating_breakdown,
     _resolve_date_added,
     _try_any_date_field,
     _try_fallback_date_fields,
@@ -18,6 +21,7 @@ from emby_dedupe.api.metadata import (
     get_quality_description,
     rate_media_items,
 )
+from emby_dedupe.api.scoring import HDR_WEIGHT
 
 
 class TestMetadata:
@@ -748,22 +752,66 @@ class TestQualityRatingRegression:
     def test_hdr_beats_sdr_same_resolution(self):
         assert _rate(2160, 3840, 12_000_000, hdr=True) > _rate(2160, 3840, 12_000_000, hdr=False)
 
-    def test_hdr_filename_breaks_tie_when_emby_misses_hdr(self):
-        # The Agency S02E07 regression (2026-07-22): Emby exposed NO HDR metadata on an
-        # HDR WEB-DL rip (VideoRange SDR), so it tied 101.7 == 101.7 with a genuinely-SDR
-        # sibling and the tie-break deleted the HDR copy. The HDR filename tag must now
-        # break the tie in the HDR file's favour so the SDR copy is the one dropped.
+    def test_hdr_filename_gets_no_bonus_on_an_sdr_stream(self):
+        # Reverses the 2026-07-24 filename fallback (The Agency S02E07): every surviving
+        # "… 2160p WEB-DL HDR CZ.mkv" of that release is 8-bit bt709 SDR in Emby, so the
+        # "HDR" in the name proved nothing. Only the stream's VideoRange may earn HDR.
         hdr_named = _rate(2160, 3840, 15_800_000, hdr=False,
                           path="/Movies/x/The Agency S02E07 - 2160p WEB-DL HDR CZ.mkv")
         sdr = _rate(2160, 3840, 15_800_000, hdr=False,
                     path="/Movies/x/The Agency S02E07 - 2160p WEB-DL CZ.mkv")
-        assert hdr_named > sdr
+        assert hdr_named == sdr
 
     def test_sdr_filename_gets_no_phantom_hdr_bonus(self):
         # Bare "DV" (SDR, e.g. DVDRip) must NOT be credited HDR by the filename fallback.
         # Same WEB-DL source in both so only the HDR component could differ — it must not.
         assert _rate(1080, 1920, 12_000_000, hdr=False, path="/m/Movie - 1080p WEB-DL DV.mkv") \
             == _rate(1080, 1920, 12_000_000, hdr=False, path="/m/Movie - 1080p WEB-DL.mkv")
+
+    def test_hdr_filename_gets_no_bonus_without_stream_data(self):
+        # No video stream / no VideoRange (unprobed item): the name must not stand in.
+        item = {"Name": "Movie HDR", "Path": "/m/Movie - 2160p WEB-DL HDR10 Dolby Vision.mkv",
+                "DateCreated": "2026-06-20T00:00:00Z", "Size": 4_000_000_000}
+        assert _rating_breakdown(item, None, None)["hdr"] == 0.0
+        assert _rating_breakdown(item, {"Type": "Video", "Height": 2160, "Width": 3840}, None)["hdr"] == 0.0
+
+    def test_real_hdr10_stream_still_earns_the_bonus(self):
+        # Chimp Empire S01E01: hevc, VideoRange "HDR 10", smpte2084 — the +5 is right.
+        item = {"Name": "Others", "Path": "/m/Chimp Empire (2023) S01E01 - 1080p WEB-DL HDR CZ.mkv",
+                "DateCreated": "2026-10-28T00:00:00Z", "Size": 2_943_004_107}
+        video = {"Type": "Video", "Codec": "hevc", "Height": 1080, "Width": 1920,
+                 "BitRate": 7_400_000, "VideoRange": "HDR 10", "ExtendedVideoType": "Hdr10"}
+        assert _rating_breakdown(item, video, None)["hdr"] == pytest.approx(HDR_WEIGHT)
+
+    def test_dolby_vision_non_p5_earns_the_bonus_without_penalty(self):
+        item = {"Name": "x", "Path": "/m/Movie - 2160p WEB-DL.mkv",
+                "DateCreated": "2026-06-20T00:00:00Z", "Size": 8_000_000_000}
+        video = {"Type": "Video", "Height": 2160, "Width": 3840, "BitRate": 20_000_000,
+                 "VideoRange": "DolbyVision", "ExtendedVideoSubType": "DoviProfile81"}
+        breakdown = _rating_breakdown(item, video, None)
+        assert breakdown["hdr"] == pytest.approx(HDR_WEIGHT)
+        assert breakdown["multipliers"]["dovi_p5"] == pytest.approx(1.0)
+
+    def test_chimp_empire_e02_sdr_named_hdr_does_not_beat_the_51_copy(self):
+        # 2026-10-30 --doit run: the "HDR"-named E02 is 8-bit H264 SDR with 4x eac3 2.0; it
+        # got +5 HDR from its name, scored 33.3 vs 31.3 and the eac3 5.1 copy was deleted.
+        # Real Emby values (the deleted copy's video bitrate is size*8/runtime ≈ 7.55 Mbps).
+        named_hdr = {"Name": "Others", "DateCreated": "2026-10-28T03:08:10.0000000Z",
+                     "Size": 2_137_086_852, "Bitrate": 6_587_732, "RunTimeTicks": 25_952_320_000,
+                     "Path": "/Movies/Dokumenty/Chimp Empire (2023)/S01/"
+                             "Chimp Empire (2023) S01E02 - 1080p WEB-DL HDR CZ.mkv"}
+        named_hdr_video = {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920,
+                           "BitRate": 6_587_732, "VideoRange": "SDR", "BitDepth": 8}
+        surround = {"Name": "Others", "DateCreated": "2023-04-25T00:00:00.0000000Z",
+                    "Size": 2_449_388_251, "Bitrate": 7_551_000, "RunTimeTicks": 25_950_000_000,
+                    "Path": "/Movies/Dokumenty/Chimp Empire (2023) - 1080p x264/S01/"
+                            "Chimp Empire S01E02 - 1080p WEB-DL CZ.mkv"}
+        surround_video = {"Type": "Video", "Codec": "h264", "Height": 1080, "Width": 1920,
+                          "BitRate": 7_551_000, "VideoRange": "SDR", "BitDepth": 8}
+        stereo = _rating_breakdown(named_hdr, named_hdr_video, {"Type": "Audio", "Channels": 2})
+        five_one = _rating_breakdown(surround, surround_video, {"Type": "Audio", "Channels": 6})
+        assert stereo["hdr"] == 0.0
+        assert five_one["total"] > stereo["total"]
 
     def test_starved_high_res_can_lose_to_good_lower_res(self):
         # Phase 2: a 4K far below its bitrate floor loses to a well-encoded 1080p.
