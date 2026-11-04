@@ -47,10 +47,36 @@ def test_removals_that_lose_nothing_still_pass():
     assert dd.merge_audio_first_reason(_item("720p", ["cze"], 1280, 720), _item("1080p", ["cze", "eng"], 1920, 1080, PRIO)) is None
 
 
-def test_untagged_audio_never_holds():
+def test_untagged_audio_is_held_while_the_keeper_lacks_a_prio_language():
+    # the language list of items cached before the per-track list: "und"/"" entries or nothing tagged
     keep = _item("cz", ["cze"], 1920, 1080, PRIO)
     for langs in (["und"], ["unknown"], [""], []):
-        assert dd.merge_audio_first_reason(_item("x", langs, 1280, 720), keep) is None
+        reason = dd.merge_audio_first_reason(_item("x", langs, 1280, 720), keep)
+        assert reason is not None
+        assert "untagged audio that may be the en/sk track" in reason
+
+
+def test_vidocq_untagged_hdtv_copy_is_held():
+    # 2026-11-04: HDTV x264 with one untagged stereo track deleted for the Remux CZ (cs, cs, fr); a SK dub may be lost
+    keep = _tracks("remux-cz", ["cze", "cze", "fre"], 1920, 1080, prio=PRIO)
+    reason = dd.merge_audio_first_reason(_tracks("hdtv", ["und"], 1920, 1080), keep)
+    assert reason is not None
+    assert reason.startswith(dd.MERGE_AUDIO_FIRST)
+    assert "may be the en/sk track" in reason
+    assert "Whisper" in reason
+
+
+def test_untagged_audio_passes_once_the_keeper_has_every_prio_language():
+    keep = _tracks("k", ["slo", "cze", "eng"], prio=PRIO)
+    assert dd.merge_audio_first_reason(_tracks("d", ["und"]), keep) is None
+
+
+def test_untagged_rule_needs_lang_prio_and_audio_info():
+    assert dd.merge_audio_first_reason(_tracks("d", ["und"]), _tracks("k", ["cze"], prio=None)) is None
+    no_audio_info = {"id": "d", "quality_description": {"video": {"width": 1920, "height": 1080}}}
+    assert dd.merge_audio_first_reason(no_audio_info, _tracks("k", ["cze"], 1920, 1080, prio=PRIO)) is None
+    no_audio_tracks = _tracks("d", [], 1920, 1080)
+    assert dd.merge_audio_first_reason(no_audio_tracks, _tracks("k", ["cze"], 1920, 1080, prio=PRIO)) is None
 
 
 def test_language_codes_are_normalised():
@@ -176,9 +202,23 @@ def test_extra_dubs_outside_lang_prio_never_hold_by_count():
     assert dd.merge_audio_first_reason(_tracks("d", ["cze", "eng", "hun", "hun"]), keep) is None
 
 
-def test_untagged_extra_tracks_never_hold():
-    keep = _tracks("k", ["cze", "eng"], prio=PRIO)
+def test_untagged_extra_tracks_never_count_as_a_second_dub():
+    keep = _tracks("k", ["cze", "slo", "eng"], prio=PRIO)
     assert dd.merge_audio_first_reason(_tracks("d", ["cze", "und", "", "unknown", "eng"]), keep) is None
+
+
+def test_untagged_extra_track_is_held_when_the_keeper_lacks_slovak():
+    keep = _tracks("k", ["cze", "eng"], prio=PRIO)
+    reason = dd.merge_audio_first_reason(_tracks("d", ["cze", "und", "eng"]), keep)
+    assert reason is not None
+    assert "may be the sk track" in reason
+
+
+def test_cropped_4k_scope_keeps_the_4k_class():
+    # 3832x1600 (MobLand S02E07, Tulsa King S04E01) is the same class as 3840x2160: no "better picture" hold
+    keep = _item("dovi", ["cze", "eng"], 3832, 1600, PRIO)
+    assert dd.merge_audio_first_reason(_item("full", ["cze", "eng"], 3840, 2160), keep) is None
+    assert dd._resolution_class(keep) == (4, "4K")
 
 
 def test_items_without_track_list_fall_back_to_the_language_rule():

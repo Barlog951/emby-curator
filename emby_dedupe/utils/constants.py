@@ -201,3 +201,27 @@ def should_quality_override_language(
         return True
 
     return False
+
+
+# Resolution classes by frame size: (min width, min height, label), best first. Width counts as much as height,
+# so cropped films keep their class: a 2.39:1 1080p film is 1920x800 (1916x800 after cropping), a 2.39:1 4K one
+# 3840x1600 (3832x1600). Shared by the dedupe merge-audio hold and the torrents quality check (MobLand S02E07
+# 3832x1600 was labelled "1080p" there, 2026-11-04).
+RESOLUTION_CLASSES = ((3400, 2000, "2160p"), (1800, 1000, "1080p"), (1200, 680, "720p"), (640, 440, "480p"))
+
+
+def resolution_class(width: int | None, height: int | None) -> tuple[int, str]:
+    """(rank, label) of a frame size: (4, "2160p") … (1, "480p"); (0, "") below 480p or unknown.
+
+    Args:
+        width: Video width in pixels (None or 0 when unknown).
+        height: Video height in pixels (None or 0 when unknown).
+
+    Returns:
+        The rank (higher is better) and the class label.
+    """
+    width, height = width or 0, height or 0
+    for rank, (min_width, min_height, label) in zip(range(len(RESOLUTION_CLASSES), 0, -1), RESOLUTION_CLASSES):
+        if width >= min_width or height >= min_height:
+            return rank, label
+    return 0, ""

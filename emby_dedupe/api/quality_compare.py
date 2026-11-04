@@ -30,7 +30,11 @@ from emby_dedupe.api.scoring import (
     duration_minutes_from_ticks,
     hdr_bonus_from_string,
 )
-from emby_dedupe.utils.constants import LANGUAGE_NORMALIZATION_MAP, should_quality_override_language
+from emby_dedupe.utils.constants import (
+    LANGUAGE_NORMALIZATION_MAP,
+    resolution_class,
+    should_quality_override_language,
+)
 from emby_dedupe.utils.logging import logger
 
 
@@ -627,9 +631,10 @@ class ProposedQuality(MediaQualityFields):
 def _detect_resolution_from_dimensions(width: int, height: int) -> str | None:
     """Detect resolution string from width/height dimensions.
 
-    Uses OR logic for aspect ratio compatibility - movies with non-standard
-    aspect ratios (1.85:1, 2.39:1) have height < 1080 even when they're
-    "1080p" content (e.g., 1920x1040, 1920x800).
+    Width counts as much as height, and both get a margin (``RESOLUTION_CLASSES``):
+    wide films are shorter than 16:9 (1920x800), and cropped releases are a few pixels
+    narrower too. A 3832x1600 4K MobLand episode came out as "1080p" here and the torrents
+    check reported a 2160p upgrade as a "bug" (2026-11-04).
 
     Args:
         width: Video width in pixels.
@@ -638,15 +643,7 @@ def _detect_resolution_from_dimensions(width: int, height: int) -> str | None:
     Returns:
         Resolution string (2160p, 1080p, 720p, 480p) or None.
     """
-    if width >= 3840 or height >= 2160:
-        return "2160p"
-    elif width >= 1920 or height >= 1080:
-        return "1080p"
-    elif width >= 1280 or height >= 720:
-        return "720p"
-    elif width >= 854 or height >= 480:
-        return "480p"
-    return None
+    return resolution_class(width, height)[1] or None
 
 
 def _calculate_date_rating_from_item(item: dict[str, Any]) -> int:

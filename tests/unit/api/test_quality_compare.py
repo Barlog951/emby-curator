@@ -239,6 +239,26 @@ class TestExistingQuality:
         assert existing.width == 3840
         assert existing.height == 2160
 
+    def test_from_emby_item_cropped_scope_keeps_its_class(self):
+        """MobLand S02E07 (2026-11-04): the 3832x1600 4K copy was labelled "1080p", and the torrents
+        check reported a 2160p release as "2160p marked as same_or_worse than 1080p" (EMBY-DEDUPE BUG DETECTED)."""
+        def label(width: int, height: int) -> str | None:
+            return ExistingQuality.from_emby_item(
+                {"Id": "x", "MediaStreams": [{"Type": "Video", "Width": width, "Height": height}]}).resolution
+
+        assert label(3832, 1600) == "2160p"
+        assert label(3840, 1608) == "2160p"
+        assert label(1916, 800) == "1080p"
+        assert label(1920, 800) == "1080p"
+        assert label(1440, 1080) == "1080p"
+        assert label(2560, 1440) == "1080p"
+        assert label(1280, 536) == "720p"
+        assert label(960, 720) == "720p"
+        assert label(720, 576) == "480p"
+        assert label(640, 360) == "480p"
+        assert label(480, 270) is None
+        assert label(0, 0) is None
+
     def test_from_emby_item_multiple_audio_languages(self):
         """Test extracting multiple audio languages."""
         item = {

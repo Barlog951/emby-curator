@@ -532,8 +532,16 @@ def test_swapped_episode_with_matching_length_is_kept():
     assert "frame-check different" in dd._different_content_reason(other, keeper, _Frames("different"))
 
 
-def test_frames_unavailable_falls_back_to_the_old_checks():
-    assert dd._different_content_reason(_ep("b", 2492, 25), _ep("a", 2461, 25), _Frames("unavailable")) is None
+def test_frames_unavailable_holds_a_same_length_episode():
+    # 2026-11-04: Wacky Races S01E02 "(2)" (the second race of that half-hour) went on an unavailable check
+    reason = dd._different_content_reason(_ep("b", 2492, 25), _ep("a", 2461, 25), _Frames("unavailable"))
+    assert reason is not None
+    assert reason.startswith("frame-check unavailable")
+    assert "not proven" in reason
+
+
+def test_without_a_frame_checker_same_length_episodes_still_pass():
+    assert dd._different_content_reason(_ep("b", 2492, 25), _ep("a", 2461, 25), None) is None
 
 
 def test_movies_skip_the_frame_check():

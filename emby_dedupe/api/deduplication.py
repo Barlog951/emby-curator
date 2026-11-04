@@ -24,7 +24,7 @@ from emby_dedupe.api.fold_safe_delete import duration_mismatch
 from emby_dedupe.api.metadata import get_image_url, rate_media_items
 from emby_dedupe.models.disjoint_set import DisjointSet
 from emby_dedupe.reports import markdown
-from emby_dedupe.utils.constants import LANGUAGE_NORMALIZATION_MAP
+from emby_dedupe.utils.constants import LANGUAGE_NORMALIZATION_MAP, resolution_class
 from emby_dedupe.utils.formatting import format_file_size
 from emby_dedupe.utils.logging import logger
 from emby_dedupe.utils.providers import (
@@ -1360,13 +1360,18 @@ def _speedup_exception(item: dict, keeper: dict, frames: FrameChecker, mismatch:
 
 
 def _frame_mismatch(item: dict, keeper: dict, frames: FrameChecker | None) -> str | None:
-    """The refusal when the frames show different (or unclear) pictures; None otherwise.
+    """The refusal when the frames do not prove the same picture; None when they do.
 
-    "unavailable" (no ffmpeg, stream unreadable) falls back to the checks above.
+    "unavailable" (no ffmpeg, stream unreadable) refuses too: two same-length episodes are
+    not proven to be one episode. On 2026-11-04 an unavailable check let Wacky Races S01E02
+    "(2)" go, the second race of that half-hour, not a copy. A missed duplicate only costs
+    disk space. Without a frame checker at all (``frames`` is None) the check is skipped.
     """
     if frames is None or not _frame_check_wanted(item, keeper):
         return None
     verdict = frames.compare(keeper, item)
+    if verdict.verdict == "unavailable":
+        return f"{verdict.describe()}: the same picture is not proven, so both copies stay"
     return verdict.describe() if verdict.verdict in ("different", "unsure") else None
 
 
@@ -1399,8 +1404,7 @@ def _unknown_runtime(item: dict, keeper: dict) -> str | None:
 
 MERGE_AUDIO_FIRST = "merge-audio-first"
 _ENGLISH_CODES = {"eng": "en", "english": "en"}
-# (min width, min height, class): a 2.39:1 1080p film is 1920x800, so width counts as much as height
-_RESOLUTION_CLASSES = ((3400, 2000, 4, "4K"), (1800, 1000, 3, "1080p"), (1200, 680, 2, "720p"), (640, 440, 1, "480p"))
+_CLASS_DISPLAY = {"2160p": "4K"}   # the report and log wording of the top class
 
 
 def _normalized_language(code: str) -> str:
@@ -1412,9 +1416,8 @@ def _normalized_language(code: str) -> str:
 def _resolution_class(item: dict) -> tuple[int, str]:
     """(0–4, label) for 480p…4K from the video width or height; (0, "") when unknown."""
     video = (item.get("quality_description") or {}).get("video") or {}
-    width, height = video.get("width") or 0, video.get("height") or 0
-    return next(((rank, label) for min_w, min_h, rank, label in _RESOLUTION_CLASSES
-                 if width >= min_w or height >= min_h), (0, ""))
+    rank, label = resolution_class(video.get("width"), video.get("height"))
+    return rank, _CLASS_DISPLAY.get(label, label)
 
 
 def _extra_dub_tracks(item: dict, keeper: dict, languages: set[str]) -> str:
@@ -1429,6 +1432,32 @@ def _extra_dub_tracks(item: dict, keeper: dict, languages: set[str]) -> str:
     if mine is None or kept is None:
         return ""
     return ", ".join(f"{lang} {mine[lang]} vs {kept[lang]}" for lang in sorted(languages) if mine[lang] > kept[lang] > 0)
+
+
+def _untagged_audio_reason(item: dict, keeper: dict, priorities: set[str]) -> str | None:
+    """The hold when ``item`` has an audio track without a language tag that may be a
+    ``--lang-prio`` language the kept copy lacks, else None.
+
+    An untagged track can be anything: the HDTV Vidocq (2001) deleted on 2026-11-04 had one
+    untagged stereo track next to a Czech + French keeper, so a Slovak TV dub may be gone, and
+    the Czech Count Duckula of 2026-09-27 was untagged too. Once the kept copy carries every
+    ``--lang-prio`` language, an untagged track cannot be one it lacks, and the pair passes.
+    Items without audio info pass; items cached before the per-track list use the language
+    list, where an empty list means no track was tagged.
+    """
+    audio = (item.get("quality_description") or {}).get("audio")
+    if not audio:
+        return None
+    tracks = audio.get("track_languages")
+    if tracks is None:
+        tracks = audio.get("languages") or ["unknown"]
+    if not any(not t or str(t).lower() in _UNKNOWN_LANGUAGES for t in tracks):
+        return None
+    missing = sorted(priorities - {_normalized_language(c) for c in _get_clean_languages(keeper)})
+    if not missing:
+        return None
+    return (f"{MERGE_AUDIO_FIRST}: the copy to delete has untagged audio that may be the {'/'.join(missing)} "
+            "track the kept copy lacks; check its language (Whisper) and tag it first, then re-run")
 
 
 def merge_audio_first_reason(item: dict, keeper: dict) -> str | None:
@@ -1446,11 +1475,13 @@ def merge_audio_first_reason(item: dict, keeper: dict) -> str | None:
       pack copy carried the 1990 Zavřel CZ dub next to the 2003 one; the kept remux had
       only the 2003 dub). English is left out: a second English track is usually the same
       mix in another codec or a commentary;
+    - the copy to delete has an untagged audio track while the kept copy lacks a
+      ``--lang-prio`` language (Vidocq 2001, 2026-11-04; see ``_untagged_audio_reason``);
     - the copy to delete has the better picture class and the kept copy won on language
       (Regular Show S01: five 1080p English copies deleted, 720p Czech kept, 2026-10-14).
 
-    Languages outside ``--lang-prio`` (the extra dubs of multi-language packs) and
-    untagged tracks never hold a pair.
+    Languages outside ``--lang-prio`` (the extra dubs of multi-language packs) never hold a
+    pair, and untagged tracks never count as a second dub.
     """
     priorities = {_normalized_language(c) for c in keeper.get("language_priority_list") or []}
     if priorities:
@@ -1464,6 +1495,9 @@ def merge_audio_first_reason(item: dict, keeper: dict) -> str | None:
         if extra:
             return (f"{MERGE_AUDIO_FIRST}: the copy to delete has more {extra} audio tracks than the kept copy "
                     "(another dub); merge the tracks into one file first")
+        untagged = _untagged_audio_reason(item, keeper, priorities)
+        if untagged:
+            return untagged
     (item_rank, item_label), (keep_rank, keep_label) = _resolution_class(item), _resolution_class(keeper)
     if keep_rank and item_rank > keep_rank:
         return (f"{MERGE_AUDIO_FIRST}: the copy to delete has the better picture ({item_label} vs {keep_label}); "
