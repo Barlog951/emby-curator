@@ -96,6 +96,55 @@ def test_parse_film_without_title_raises():
         parse_film("<div>nothing</div>", "https://www.csfd.sk/film/5-x/prehlad/")
 
 
+# The shape of a long ČSFD plot (Neandrtálci, csfd 1825024, 2026-11-04): the full text sits in a hidden div,
+# the preview after it ends in a "viac" link.
+LONG_PLOT_HTML = """
+<h1>Neandrtálci: Kdo má na svědomí naše příbuzné?</h1>
+<div class="plot-full hidden"> <p> Více než půldruhého století zůstává vyhynutí neandrtálců záhadou. Jak mohl
+ vymřít celý lidský druh? <em class="span-more-small"> (<a href="https://www.ceskatelevize.cz">Česká televize</a>) </em> </p> </div>
+<div class="plot-preview"> <p> Více než půldruhého století zůstává vyhynutí neandrtálců záhadou. Jak mohl
+ vymřít celý lidský druh? <em class="span-more-small"> (<a href="https://www.ceskatelevize.cz">Česká televize</a>) </em> </p>
+ <span class="span-more-small"><a href="#" class="plot-preview-more more" data-state="closed" data-text="menej">viac</a></span> </div>
+"""
+LONG_PLOT = "Více než půldruhého století zůstává vyhynutí neandrtálců záhadou. Jak mohl vymřít celý lidský druh?"
+
+
+def test_parse_film_reads_the_hidden_full_plot_without_the_more_link():
+    film = parse_film(LONG_PLOT_HTML, "https://www.csfd.sk/film/1825024-x/prehlad/")
+    assert film.plot == LONG_PLOT
+
+
+def test_parse_film_preview_only_plot_drops_the_more_link():
+    page = LONG_PLOT_HTML.split('<div class="plot-preview">')[0].split('<div class="plot-full')[0]
+    page += '<div class="plot-preview">' + LONG_PLOT_HTML.split('<div class="plot-preview">')[1]
+    assert parse_film(page, "https://www.csfd.sk/film/1825024-x/prehlad/").plot == LONG_PLOT
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("Text. ( Česká televize ) viac", "Text."),
+    ("Text. (TV Prima) více", "Text."),
+    ('"Nechceme." (oficiálny text distribútora) viac', '"Nechceme."'),
+    ("Text... viac", "Text..."),
+    ("Text. ( STVR )", "Text."),
+    ("Chce stále viac", "Chce stále viac"),   # a sentence that ends in the word stays whole
+    ("viac", "viac"),
+    ("", ""),
+])
+def test_clean_plot_drops_the_more_word_and_the_source_credit(text, expected):
+    assert csfd.clean_plot(text) == expected
+
+
+def test_client_cleans_plots_cached_before_the_fix():
+    url = "https://www.csfd.sk/film/1825024-x/prehlad/"
+    cache = {f"film:{url}": {"url": url, "csfd_id": "1825024", "title": "Neandrtálci", "year": 2023,
+                             "countries": [], "genres_sk": [], "plot": LONG_PLOT + " ( Česká televize ) viac",
+                             "rating_pct": 78, "poster_url": None, "names": [], "directors": [], "cast": []}}
+    calls: list[str] = []
+    client = CsfdClient(httpx.Client(transport=_flaresolverr_transport({}, calls)), "http://fs/v1", cache, 1000)
+    assert client.film(url).plot == LONG_PLOT
+    assert calls == []
+
+
 def test_normalize_title_folds_diacritics_case_and_punctuation():
     assert normalize_title("Tatranský durič") == "tatransky duric"
     assert normalize_title("Ako si vycvičiť draka: Návrat!") == normalize_title("ako si vycvicit draka navrat")

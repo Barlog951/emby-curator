@@ -314,7 +314,14 @@ def pick_creator(creators: list[CsfdCreator], name: str, need_photo: bool = True
 
 _ORIGIN_RE = re.compile(r'<div class="origin">(.*?)</div>', re.S)
 _GENRES_RE = re.compile(r'<div class="genres">(.*?)</div>', re.S)
-_PLOT_RE = re.compile(r'<div class="plot-(?:full|preview)">(.*?)</div>', re.S)
+# A long plot comes twice: the full text in a hidden `plot-full hidden` div, then a `plot-preview` that ends in
+# a "viac" (more) link. Prefer the full text; clean_plot drops the link word either way (2026-11-04: 113
+# overviews ended in "( Česká televize ) viac" because only an exact `class="plot-full"` matched).
+_PLOT_FULL_RE = re.compile(r'<div class="plot-full(?:\s[^"]*)?">(.*?)</div>', re.S)
+_PLOT_PREVIEW_RE = re.compile(r'<div class="plot-preview(?:\s[^"]*)?">(.*?)</div>', re.S)
+_PLOT_MORE_WORDS = ("viac", "více")
+_PLOT_MORE_AFTER = ').!?…"“”'  # the link follows the credit or a sentence end, never a bare word
+_PLOT_SOURCE_RE = re.compile(r"\([^()]*\)\s*$")
 _RATING_RE = re.compile(r'class="film-rating-average[^"]*"[^>]*>(.*?)</', re.S)
 _POSTERS_DIV = '<div class="film-posters">'
 _IMG_RE = re.compile(r"<img\b([^>]*)>")
@@ -343,12 +350,21 @@ def _parse_origin(fragment: str) -> tuple[list[str], int | None]:
     return countries, year
 
 
+def clean_plot(text: str) -> str:
+    """Drop what ČSFD appends to a plot: a "viac"/"více" expand link, then the "( STVR )" source credit."""
+    text = text.strip()
+    head, _, last = text.rpartition(" ")
+    head = head.rstrip()
+    if last in _PLOT_MORE_WORDS and head and head[-1] in _PLOT_MORE_AFTER:
+        text = head
+    return _PLOT_SOURCE_RE.sub("", text).strip()
+
+
 def _parse_plot(page: str) -> str:
-    match = _PLOT_RE.search(page)
+    match = _PLOT_FULL_RE.search(page) or _PLOT_PREVIEW_RE.search(page)
     if not match:
         return ""
-    plot = _strip_tags(match.group(1))
-    return re.sub(r"\([^()]*\)\s*$", "", plot).strip()  # drop trailing "( STVR )" source
+    return clean_plot(_strip_tags(match.group(1)))
 
 
 def _parse_genres(page: str) -> list[str]:
@@ -563,7 +579,8 @@ class CsfdClient:
         key = f"film:{url}"
         cached = self._cache.get(key) if self._cache is not None else None
         if cached is not None and "cast" in cached:  # entries from before cast was parsed refetch
-            return CsfdFilm(**cached)
+            # entries parsed before 2026-11-04 can still end in "( Česká televize ) viac"
+            return CsfdFilm(**{**cached, "plot": clean_plot(cached.get("plot") or "")})
         film = parse_film(self._get_page(url), url)
         if self._cache is not None:
             self._cache[key] = asdict(film)
