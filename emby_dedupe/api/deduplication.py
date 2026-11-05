@@ -24,7 +24,11 @@ from emby_dedupe.api.fold_safe_delete import duration_mismatch
 from emby_dedupe.api.metadata import get_image_url, rate_media_items
 from emby_dedupe.models.disjoint_set import DisjointSet
 from emby_dedupe.reports import markdown
-from emby_dedupe.utils.constants import LANGUAGE_NORMALIZATION_MAP, resolution_class
+from emby_dedupe.utils.constants import (
+    LANGUAGE_NORMALIZATION_MAP,
+    UNKNOWN_LANGUAGES,
+    resolution_class,
+)
 from emby_dedupe.utils.formatting import format_file_size
 from emby_dedupe.utils.logging import logger
 from emby_dedupe.utils.providers import (
@@ -629,11 +633,6 @@ def _deduplicate_by_path(items_details) -> list:
     return unique_items
 
 
-# Audio language tags that say nothing: Emby reports "und" for untagged tracks, our
-# extraction substitutes "unknown".
-_UNKNOWN_LANGUAGES = frozenset({"", "unknown", "und"})
-
-
 def _calculate_language_scores(rated_items, lang_priorities) -> None:
     """
     Calculate language priority scores for all items (mutates in-place).
@@ -651,7 +650,7 @@ def _calculate_language_scores(rated_items, lang_priorities) -> None:
 
     for item in rated_items:
         languages = item.get("quality_description", {}).get("audio", {}).get("languages", [])
-        languages = [lang.lower() for lang in languages if lang and lang.lower() not in _UNKNOWN_LANGUAGES]
+        languages = [lang.lower() for lang in languages if lang and lang.lower() not in UNKNOWN_LANGUAGES]
         normalized_languages = [lang_mapping.get(lang, lang) for lang in languages]
 
         lang_score = 9999
@@ -672,7 +671,7 @@ def _calculate_language_scores(rated_items, lang_priorities) -> None:
 def _get_clean_languages(item) -> list:
     """Extract and clean language list from item."""
     languages = item.get("quality_description", {}).get("audio", {}).get("languages", [])
-    return [lang for lang in languages if lang and lang.lower() not in _UNKNOWN_LANGUAGES]
+    return [lang for lang in languages if lang and lang.lower() not in UNKNOWN_LANGUAGES]
 
 
 def _log_override_decision(override: bool, is_single_lang: bool, best_quality_item: dict, best_quality_langs: list, best_lang_item: dict, best_lang_langs: list, quality_ratio: float) -> None:
@@ -1427,7 +1426,7 @@ def _extra_dub_tracks(item: dict, keeper: dict, languages: set[str]) -> str:
         tracks = ((side.get("quality_description") or {}).get("audio") or {}).get("track_languages")
         if tracks is None:
             return None
-        return Counter(_normalized_language(t) for t in tracks if t and str(t).lower() not in _UNKNOWN_LANGUAGES)
+        return Counter(_normalized_language(t) for t in tracks if t and str(t).lower() not in UNKNOWN_LANGUAGES)
     mine, kept = counts(item), counts(keeper)
     if mine is None or kept is None:
         return ""
@@ -1451,7 +1450,7 @@ def _untagged_audio_reason(item: dict, keeper: dict, priorities: set[str]) -> st
     tracks = audio.get("track_languages")
     if tracks is None:
         tracks = audio.get("languages") or ["unknown"]
-    if not any(not t or str(t).lower() in _UNKNOWN_LANGUAGES for t in tracks):
+    if not any(not t or str(t).lower() in UNKNOWN_LANGUAGES for t in tracks):
         return None
     missing = sorted(priorities - {_normalized_language(c) for c in _get_clean_languages(keeper)})
     if not missing:

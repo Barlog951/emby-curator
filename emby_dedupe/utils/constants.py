@@ -30,6 +30,10 @@ LANGUAGE_NORMALIZATION_MAP = {
     "cs": "cs"    # Czech ISO 639-1
 }
 
+# Audio language tags that say nothing (the track may be any language): Emby reports "und"
+# for untagged tracks, our extraction substitutes "unknown".
+UNKNOWN_LANGUAGES = frozenset({"", "unknown", "und"})
+
 # Environment variable names
 ENV_DEDUPE_LOGGING = "DEDUPE_LOGGING"
 ENV_DEDUPE_EMBY_HOST = "DEDUPE_EMBY_HOST"

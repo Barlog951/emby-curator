@@ -1247,3 +1247,86 @@ def test_the_margin_leaves_unknown_bitrates_alone():
 
     owned = ExistingQuality.from_emby_item(no_bitrate)
     assert _apply_same_kind_margin(_create_proposed_as_existing(_futurama_pack()), owned, "download") == "download"
+
+
+# --- an untagged owned copy cannot prove it lacks the newcomer's language -----------------------
+
+TORRENTS_LANG_PRIO = ["slo", "sk", "cze", "ces", "eng"]  # ~/.emby-dedupe/config.yaml, the torrents gate's list
+
+PECIE_S06E05 = {  # the real Emby item 21575528 (torrents log 2026-11-05 01:09)
+    "Id": "21575528",
+    "Name": "Pecie cele Slovensko S06E05 - 1080p WEB-DL CZ",
+    "Path": "/Movies/Serials/--- PREBIEHAJUCE ---/Pecie cele Slovensko/S06/Pecie cele Slovensko S06E05 - 1080p WEB-DL CZ.mp4",
+    "Size": 2_464_178_704,
+    "Bitrate": 4_492_004,
+    "RunTimeTicks": 43_885_600_000,
+    "PremiereDate": "2026-11-03T23:00:00.0000000Z",
+    "MediaStreams": [
+        {"Type": "Video", "Codec": "h264", "Width": 1920, "Height": 1080, "VideoRange": "SDR"},
+        {"Type": "Audio", "Codec": "aac", "Channels": 2, "Language": "und"},
+    ],
+}
+
+
+def _pecie_torrent(**overrides):
+    fields = dict(name="Pecie celé Slovensko", resolution="1080p", codec="x264", audio="AAC", audio_languages=["slk"],
+                  size_mb=2350, bitrate_kbps=4492, source_quality_tier="webdl",
+                  path="Pecie.cele.Slovensko.S06E05.1080p.WEB-DL.AAC2.0.H.264")
+    return ProposedQuality(**{**fields, **overrides})
+
+
+def _pecie_owned(*languages):
+    audio = [{"Type": "Audio", "Codec": "aac", "Channels": 2, "Language": lang} for lang in languages]
+    return {**PECIE_S06E05, "MediaStreams": [PECIE_S06E05["MediaStreams"][0], *audio]}
+
+
+def test_the_same_release_tagged_slk_is_not_an_upgrade_over_an_untagged_copy():
+    """Regression (torrents gate, 2026-11-05 01:09): the tracker name made the re-listed release "slk";
+    the library copy of the same release (2 bytes apart) has one "und" track. The language sort put the
+    torrent first and the same-kind margin never ran, so #4555 landed as a "(2)" duplicate."""
+    result = compare_quality(_pecie_torrent(), [PECIE_S06E05], TORRENTS_LANG_PRIO)
+    assert (result.recommendation, result.reason) == ("skip", "same_or_worse")
+
+
+def test_a_kbps_rounding_edge_does_not_make_it_an_upgrade():
+    result = compare_quality(_pecie_torrent(bitrate_kbps=4493), [PECIE_S06E05], TORRENTS_LANG_PRIO)
+    assert result.proposed_score > result.existing_score  # the raw score prefers it; the margin holds it
+    assert result.recommendation == "skip"
+
+
+def test_an_untagged_copy_without_any_language_field_is_held_too():
+    no_language = {**PECIE_S06E05, "MediaStreams": [
+        PECIE_S06E05["MediaStreams"][0], {"Type": "Audio", "Codec": "aac", "Channels": 2}]}
+    assert compare_quality(_pecie_torrent(), [no_language], TORRENTS_LANG_PRIO).recommendation == "skip"
+
+
+def test_a_clearly_higher_bitrate_still_upgrades_an_untagged_copy():
+    assert compare_quality(_pecie_torrent(size_mb=2900, bitrate_kbps=5500), [PECIE_S06E05],
+                           TORRENTS_LANG_PRIO).recommendation == "download"
+
+
+def test_a_better_picture_still_upgrades_an_untagged_copy():
+    uhd = _pecie_torrent(resolution="2160p", codec="x265", size_mb=7000, bitrate_kbps=13000,
+                         path="Pecie.cele.Slovensko.S06E05.2160p.WEB-DL.AAC2.0.H.265")
+    assert compare_quality(uhd, [PECIE_S06E05], TORRENTS_LANG_PRIO).recommendation == "download"
+
+
+def test_a_copy_tagged_in_another_language_still_gets_the_slovak_one():
+    assert compare_quality(_pecie_torrent(), [_pecie_owned("eng")], TORRENTS_LANG_PRIO).recommendation == "download"
+
+
+def test_a_tagged_track_beside_an_untagged_one_still_needs_slovak_tagged():
+    """Only an all-untagged copy is in doubt; "eng" + "und" proves it holds no tagged Slovak track."""
+    assert compare_quality(_pecie_torrent(), [_pecie_owned("eng", "und")], TORRENTS_LANG_PRIO).recommendation == "download"
+
+
+def test_untagged_tracks_on_both_sides_still_match():
+    """An untagged track on the newcomer is no new language either (cs + und vs cs + und)."""
+    result = compare_quality(_pecie_torrent(audio_languages=["cze", "und"]), [_pecie_owned("cze", "und")], TORRENTS_LANG_PRIO)
+    assert result.recommendation == "skip"
+
+
+def test_a_copy_without_audio_info_is_not_held_by_the_untagged_rule():
+    """No audio stream at all (item fetched without its tracks) is no evidence of the same release."""
+    video_only = {**PECIE_S06E05, "MediaStreams": [PECIE_S06E05["MediaStreams"][0]]}
+    assert compare_quality(_pecie_torrent(), [video_only], TORRENTS_LANG_PRIO).recommendation == "download"

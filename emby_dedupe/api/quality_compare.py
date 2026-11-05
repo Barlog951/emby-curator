@@ -32,6 +32,7 @@ from emby_dedupe.api.scoring import (
 )
 from emby_dedupe.utils.constants import (
     LANGUAGE_NORMALIZATION_MAP,
+    UNKNOWN_LANGUAGES,
     resolution_class,
     should_quality_override_language,
 )
@@ -1314,8 +1315,12 @@ SAME_KIND_MIN_BITRATE_GAIN = 1.20
 
 
 def _normalized_languages(languages: list[str] | None) -> set[str]:
-    """Return the item's audio languages as normalized codes (``cze`` and ``cs`` match)."""
-    return {LANGUAGE_NORMALIZATION_MAP.get(lang.lower(), lang.lower()) for lang in languages or []}
+    """Return the item's tagged audio languages as normalized codes (``cze`` and ``cs`` match).
+
+    Untagged entries (``und``, ``unknown``, empty) name no language and are left out.
+    """
+    normalized = {LANGUAGE_NORMALIZATION_MAP.get(lang.lower(), lang.lower()) for lang in languages or []}
+    return normalized - UNKNOWN_LANGUAGES
 
 
 def _differs_only_in_bitrate(proposed: ExistingQuality, existing: ExistingQuality) -> bool:
@@ -1324,8 +1329,16 @@ def _differs_only_in_bitrate(proposed: ExistingQuality, existing: ExistingQualit
     Same frame, source tier, HDR credit, codec family, AI-upscale and DV-P5 status, no more
     audio channels and no audio language the existing copy lacks. Any of these differing is a
     real change the score already weighs, so the bitrate margin does not apply then.
+
+    An existing copy with no tagged audio language cannot show that it lacks one, so the
+    language test passes for it. Regression (torrents gate, 2026-11-05): Pečie celé Slovensko
+    S06E05 was re-listed with "slk" taken from the tracker name, the library copy of the same
+    release had one "und" track, the language sort ranked the torrent first, and the margin
+    never ran, so the same release was downloaded again as a "(2)" duplicate. A copy with a
+    tagged track beside an untagged one still has to carry the newcomer's languages tagged.
     """
     p, e = proposed.score_breakdown(), existing.score_breakdown()
+    existing_languages = _normalized_languages(existing.audio_languages)
     return (
         (proposed.width, proposed.height) == (existing.width, existing.height)
         and p["multipliers"] == e["multipliers"]
@@ -1333,7 +1346,7 @@ def _differs_only_in_bitrate(proposed: ExistingQuality, existing: ExistingQualit
         and p["starved_demotion"] == e["starved_demotion"]
         and p["audio"] <= e["audio"]
         and _get_codec_efficiency_ratio(proposed.codec) == _get_codec_efficiency_ratio(existing.codec)
-        and _normalized_languages(proposed.audio_languages) <= _normalized_languages(existing.audio_languages)
+        and (not existing_languages or _normalized_languages(proposed.audio_languages) <= existing_languages)
     )
 
 
