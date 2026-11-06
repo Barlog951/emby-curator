@@ -1330,3 +1330,116 @@ def test_a_copy_without_audio_info_is_not_held_by_the_untagged_rule():
     """No audio stream at all (item fetched without its tracks) is no evidence of the same release."""
     video_only = {**PECIE_S06E05, "MediaStreams": [PECIE_S06E05["MediaStreams"][0]]}
     assert compare_quality(_pecie_torrent(), [video_only], TORRENTS_LANG_PRIO).recommendation == "download"
+
+
+# --- a film sped up to 25 fps (PAL) is not an upgrade over the owned original-speed copy ---------
+
+INHERITANCE_X265 = {  # the real Emby item 21406101 (torrents log 2026-11-06 02:36)
+    "Id": "21406101",
+    "Type": "Movie",
+    "Name": "Inheritance",
+    "Path": "/Movies/DiViX/Inheritance (2025) - 1080p x265/Inheritance (2025) - 1080p x265.mkv",
+    "Size": 2_450_459_251,
+    "Bitrate": 3_295_257,
+    "RunTimeTicks": 59_490_560_000,
+    "PremiereDate": "2025-01-23T23:00:00.0000000Z",
+    "DateCreated": "2025-07-30T09:50:20.0000000Z",
+    "ProductionYear": 2025,
+    "MediaStreams": [
+        {"Type": "Video", "Codec": "hevc", "Width": 1918, "Height": 1078, "VideoRange": "SDR", "BitRate": 3_295_257},
+        {"Type": "Audio", "Codec": "ac3", "Channels": 2, "Language": "cze", "BitRate": 224_000},
+        {"Type": "Audio", "Codec": "ac3", "Channels": 6, "Language": "eng", "BitRate": 384_000},
+        {"Type": "Subtitle", "Codec": "subrip", "Language": "fre"},
+        {"Type": "Subtitle", "Codec": "subrip", "Language": "eng"},
+    ],
+}
+
+
+def _inheritance_torrent(**overrides):
+    """The gate request for #4590, with the runtime the torrents side does not send yet."""
+    fields = dict(name="Inheritance", resolution="1080p", codec="x264", audio="AAC", audio_languages=["cze", "eng"],
+                  size_mb=4589, bitrate_kbps=6748, source_quality_tier="webdl", duration_minutes=95,
+                  path="Otcovo dedictvi / Inheritance.2025.1080p.CNLP.WEB-DL.AAC2.0.H264-TreZzoR")
+    return ProposedQuality(**{**fields, **overrides})
+
+
+def _inheritance_owned(**overrides):
+    return {**INHERITANCE_X265, **overrides}
+
+
+def test_a_pal_speedup_of_the_owned_film_is_not_an_upgrade():
+    """Regression (torrents gate, 2026-11-06 02:36): #4590 is Inheritance at 25 fps (95 min against
+    99 min) with the same CZ dub and stereo only; raw bitrate made it 28.44 against 24.99 and it was
+    downloaded, though the owned x265 already holds that dub merged at original speed plus EN 5.1."""
+    result = compare_quality(_inheritance_torrent(), [INHERITANCE_X265], TORRENTS_LANG_PRIO)
+    assert result.proposed_score > result.existing_score  # the raw score still prefers it; the rule flips it
+    assert (result.recommendation, result.reason) == ("skip", "same_or_worse")
+
+
+def test_the_pal_rule_needs_the_newcomer_runtime():
+    """The torrents gate sends no runtime today: without one there is no evidence of a speed-up."""
+    result = compare_quality(_inheritance_torrent(duration_minutes=None), [INHERITANCE_X265], TORRENTS_LANG_PRIO)
+    assert result.recommendation == "download"
+
+
+def test_an_original_speed_newcomer_is_not_held_by_the_pal_rule():
+    result = compare_quality(_inheritance_torrent(duration_minutes=99), [INHERITANCE_X265], TORRENTS_LANG_PRIO)
+    assert result.recommendation == "download"
+
+
+def test_a_much_shorter_cut_is_not_taken_for_a_pal_copy():
+    result = compare_quality(_inheritance_torrent(duration_minutes=90), [INHERITANCE_X265], TORRENTS_LANG_PRIO)
+    assert result.recommendation == "download"
+
+
+def test_a_pal_copy_bringing_a_new_dub_is_still_downloaded():
+    """A sped-up copy with a dub the library lacks is wanted: the dub gets merged into the owned copy."""
+    english_only = _inheritance_owned(MediaStreams=[s for s in INHERITANCE_X265["MediaStreams"] if s.get("Language") != "cze"])
+    assert compare_quality(_inheritance_torrent(), [english_only], TORRENTS_LANG_PRIO).recommendation == "download"
+
+
+def test_a_pal_copy_is_not_held_against_an_untagged_owned_copy():
+    """An untagged owned copy cannot show it holds the newcomer's CZ dub, so the rule stays out."""
+    untagged = _inheritance_owned(MediaStreams=[
+        {**s, "Language": "und"} if s["Type"] == "Audio" else s for s in INHERITANCE_X265["MediaStreams"]])
+    assert compare_quality(_inheritance_torrent(), [untagged], TORRENTS_LANG_PRIO).recommendation == "download"
+
+
+def test_a_pal_copy_with_unknown_languages_is_not_held():
+    """No language priority here: with one, the language sort already ranks the tagged owned copy first."""
+    assert compare_quality(_inheritance_torrent(audio_languages=None), [INHERITANCE_X265]).recommendation == "download"
+    assert compare_quality(_inheritance_torrent(), [INHERITANCE_X265]).recommendation == "skip"
+
+
+def test_a_pal_4k_is_still_a_picture_upgrade():
+    uhd = _inheritance_torrent(resolution="2160p", codec="x265", size_mb=14000, bitrate_kbps=20000,
+                               path="Inheritance.2025.2160p.WEB-DL.AAC2.0.H265")
+    assert compare_quality(uhd, [INHERITANCE_X265], TORRENTS_LANG_PRIO).recommendation == "download"
+
+
+def test_a_pal_copy_with_more_audio_channels_is_not_held():
+    """The owned first track is CZ 2.0; a CZ 5.1 mix is a better dub track worth having."""
+    surround = _inheritance_torrent(audio="DDP5.1", path="Inheritance.2025.1080p.WEB-DL.DDP5.1.H264")
+    assert compare_quality(surround, [INHERITANCE_X265], TORRENTS_LANG_PRIO).recommendation == "download"
+
+
+def test_the_pal_rule_leaves_episodes_alone():
+    """Pack runtimes are one sample for many episodes, so an episode runtime ratio is no evidence."""
+    episode = _inheritance_owned(Type="Episode")
+    assert compare_quality(_inheritance_torrent(), [episode], TORRENTS_LANG_PRIO).recommendation == "download"
+
+
+def test_the_pal_rule_needs_the_owned_runtime():
+    no_runtime = _inheritance_owned(RunTimeTicks=None)
+    assert compare_quality(_inheritance_torrent(), [no_runtime], TORRENTS_LANG_PRIO).recommendation == "download"
+
+
+def test_a_runtime_without_a_bitrate_lets_the_starvation_check_estimate_one():
+    """Sending a runtime has a side effect: with no bitrate the size ÷ runtime estimate feeds the
+    starved-bitrate demotion (600 MB over 95 min is ~0.8 Mb/s, under the 1080p floor)."""
+    from emby_dedupe.api.quality_compare import _create_proposed_as_existing
+
+    starved = _create_proposed_as_existing(_inheritance_torrent(bitrate_kbps=None, size_mb=600))
+    unknown = _create_proposed_as_existing(_inheritance_torrent(bitrate_kbps=None, size_mb=600, duration_minutes=None))
+    assert starved.score_breakdown()["starved_demotion"] is True
+    assert unknown.score_breakdown()["starved_demotion"] is False

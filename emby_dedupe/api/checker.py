@@ -675,7 +675,7 @@ class EmbyChecker:
             config: CheckConfig object with all parameters (preferred).
             **kwargs: Individual parameters (name, year, imdb, tmdb, tvdb, season,
                 episode, resolution, codec, hdr, audio, audio_languages, size_mb,
-                bitrate_kbps, path, source_quality_tier).
+                bitrate_kbps, path, source_quality_tier, duration_minutes).
 
         Returns:
             ComparisonResult with recommendation.

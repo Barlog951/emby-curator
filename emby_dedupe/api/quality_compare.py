@@ -504,9 +504,10 @@ class MediaQualityFields:
     bitrate_kbps: int | None = None
     path: str | None = None
     source_quality_tier: str | None = None
-    # Runtime in minutes — lets the shared scorer estimate bitrate from size when the
-    # bitrate is unknown. Defaults to None and is keyword-safe (the external torrents
-    # consumer never passes it); when unknown the bitrate-adequacy check stays neutral.
+    # Runtime in minutes. The shared scorer estimates bitrate from size with it when the
+    # bitrate is unknown, and the gate's PAL rule compares it with the owned film's runtime.
+    # Optional and keyword-safe: when unknown, both checks stay neutral. The torrents gate
+    # sends it for single films only (a pack's one-sample runtime would be noise).
     duration_minutes: float | None = None
 
 
@@ -1388,6 +1389,75 @@ def _apply_same_kind_margin(
     return "skip"
 
 
+# A PAL release plays a 24 fps (23.976) film at 25 fps: 4 % faster, so 4 % shorter
+# (23.976 / 25 = 0.959). The range leaves room for runtimes rounded to whole minutes.
+PAL_SPEEDUP_RUNTIME_RATIO = (0.95, 0.97)
+
+
+def _is_pal_speedup_of(proposed: ExistingQuality, existing: ExistingQuality) -> bool:
+    """Tell whether the proposed film is the owned film sped up to 25 fps with nothing else to offer.
+
+    True when the proposed runtime is a PAL ratio of the owned one, the frame class is the same,
+    and the newcomer brings no HDR, no more audio channels and no audio language the owned copy
+    lacks. Both language sets must be known and tagged: a copy that cannot show its languages
+    may be missing a dub worth merging. A 4 % shorter cut of another kind (theatrical against
+    an owned extended cut) also passes, which only means the gate skips it: nothing is lost.
+    """
+    if not (proposed.duration_minutes and existing.duration_minutes and existing.width):
+        return False
+    ratio = proposed.duration_minutes / existing.duration_minutes
+    if not PAL_SPEEDUP_RUNTIME_RATIO[0] <= ratio <= PAL_SPEEDUP_RUNTIME_RATIO[1]:
+        return False
+    p, e = proposed.score_breakdown(), existing.score_breakdown()
+    proposed_languages = _normalized_languages(proposed.audio_languages)
+    existing_languages = _normalized_languages(existing.audio_languages)
+    return (
+        abs(proposed.width - existing.width) <= existing.width * _SAME_WIDTH_TOLERANCE
+        and p["hdr"] <= e["hdr"]
+        and p["audio"] <= e["audio"]
+        and bool(proposed_languages)
+        and proposed_languages <= existing_languages
+    )
+
+
+def _apply_pal_speedup_rule(
+    proposed_as_existing: ExistingQuality,
+    best_existing: ExistingQuality,
+    existing_items: list[dict[str, Any]],
+    current_recommendation: Literal["download", "skip"],
+) -> Literal["download", "skip"]:
+    """Refuse a film "upgrade" that is the owned film sped up to 25 fps (PAL).
+
+    Regression (torrents gate, 2026-11-06 02:36): Inheritance (2025) #4590, a 25 fps 1080p x264
+    WEB-DL (6748 kb/s, 95 min, cze + eng AAC 2.0), outscored the owned 1080p x265 (3.3 Mb/s,
+    99 min, cze + eng 5.1, with the CZ dub of the same release already merged in at original
+    speed) on raw bitrate alone, 28.44 vs 24.99. The download brought the same dub sped up
+    and stereo only. Films only: pack runtimes are one sample for many episodes, so an episode
+    ratio says nothing. With either runtime unknown the rule has no evidence and stays out.
+
+    Args:
+        proposed_as_existing: Proposed item as ExistingQuality.
+        best_existing: Best existing item.
+        existing_items: The raw Emby items the existing copies were built from.
+        current_recommendation: Current recommendation ("download" or "skip").
+
+    Returns:
+        "skip" when the newcomer is a PAL speed-up of the owned film, else the current recommendation.
+    """
+    if current_recommendation != "download" or best_existing.id == "proposed":
+        return current_recommendation
+    owned = next((item for item in existing_items if item.get("Id", "") == best_existing.id), None)
+    if owned is None or owned.get("Type") != "Movie":
+        return current_recommendation
+    if not _is_pal_speedup_of(proposed_as_existing, best_existing):
+        return current_recommendation
+    logger.info(
+        f"PAL speed-up: proposed runs {proposed_as_existing.duration_minutes:.1f} min against "
+        f"{best_existing.duration_minutes:.1f} min of {best_existing.id} and adds nothing else, not an upgrade"
+    )
+    return "skip"
+
+
 def compare_quality(
     proposed: ProposedQuality,
     existing_items: list[dict[str, Any]],
@@ -1453,6 +1523,7 @@ def compare_quality(
         proposed_as_existing, best_existing, recommendation
     )
     recommendation = _apply_same_kind_margin(proposed_as_existing, best_existing, recommendation)
+    recommendation = _apply_pal_speedup_rule(proposed_as_existing, best_existing, existing_items, recommendation)
     reason ="better_quality" if recommendation == "download" else "same_or_worse"
 
     # Resolution dominance is now handled by the unified normalised scoring model
