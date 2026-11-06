@@ -28,6 +28,8 @@ from emby_dedupe.api.scoring import (
     codec_efficiency_ratio,
     compute_quality_breakdown,
     duration_minutes_from_ticks,
+    frame_height,
+    frame_megapixels,
     hdr_bonus_from_string,
 )
 from emby_dedupe.utils.constants import (
@@ -914,8 +916,8 @@ class ExistingQuality:
             source_multiplier = detect_source_quality_with_rtn(self.path, self.name)
 
         return {
-            "res_megapixels": (self.width * self.height) / 1_000_000.0,
-            "height": self.height,
+            "res_megapixels": frame_megapixels(self.width, self.height),
+            "height": frame_height(self.width, self.height),
             "hdr_bonus": hdr_bonus_from_string(self.video_range),
             "video_bitrate_mbps": self.bitrate / 1_000_000.0 if self.bitrate else 0.0,
             "audio_channels": self.audio_channels,

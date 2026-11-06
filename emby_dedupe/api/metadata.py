@@ -19,6 +19,8 @@ from emby_dedupe.api.scoring import (
     compute_quality_breakdown,
     duration_minutes_from_ticks,
     format_score_summary,
+    frame_height,
+    frame_megapixels,
     hdr_bonus_from_string,
     is_neutral_multiplier,
 )
@@ -400,9 +402,10 @@ def get_image_url(base_url: str, item_id: str, item_image_tags: dict, server_id:
 
 
 def _resolution_megapixels(video_stream: dict[str, Any] | None) -> float:
+    """Megapixels of the 16:9 frame around the picture (black bars earn nothing, see ``frame_size``)."""
     if not video_stream:
         return 0.0
-    return ((video_stream.get("Height", 0) or 0) * (video_stream.get("Width", 0) or 0)) / 1_000_000.0
+    return frame_megapixels(video_stream.get("Width"), video_stream.get("Height"))
 
 
 def _video_bitrate_mbps(item: dict[str, Any], video_stream: dict[str, Any] | None) -> float:
@@ -445,7 +448,7 @@ def _rating_breakdown(
         except (ValueError, TypeError) as e:
             logger.warning(f"Error parsing DateCreated for rating: {e}")
 
-    height = (video_stream.get("Height", 0) or 0) if video_stream else 0
+    height = frame_height(video_stream.get("Width"), video_stream.get("Height")) if video_stream else 0
     channels = (audio_stream.get("Channels", 0) or 0) if audio_stream else 0
 
     item_path = item.get("Path")

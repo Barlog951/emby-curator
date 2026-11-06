@@ -146,6 +146,44 @@ def codec_efficiency_ratio(codec: str | None) -> float:
     return 1.0
 
 
+def frame_size(width: int | None, height: int | None) -> tuple[float, float]:
+    """The 16:9 frame that encloses a ``width`` x ``height`` picture; (0, 0) when either is unknown.
+
+    Resolution is scored on this frame, not on the stored pixels, so black bars earn nothing: a 2.39:1
+    episode stored cropped (3832x1600) and the same episode stored letterboxed (3840x2160, picture
+    3840x1608) both count as a 3840x2160 frame. Scoring the stored pixels made four letterboxed SDR
+    MobLand S02 episodes outrank their Dolby Vision twins, and the 2026-11-06 ``--doit`` run deleted the
+    Dolby Vision copies. A 4:3 picture (1440x1080) likewise counts as its pillarboxed 1920x1080 frame.
+
+    Args:
+        width: Stored video width in pixels (None or 0 when unknown).
+        height: Stored video height in pixels (None or 0 when unknown).
+
+    Returns:
+        (frame width, frame height) in pixels.
+    """
+    width, height = width or 0, height or 0
+    if not (width and height):
+        return 0.0, 0.0
+    frame_width = max(float(width), height * 16 / 9)
+    return frame_width, frame_width * 9 / 16
+
+
+def frame_megapixels(width: int | None, height: int | None) -> float:
+    """Megapixels of the enclosing 16:9 frame (``frame_size``): the resolution factor of the score."""
+    frame_width, frame_height = frame_size(width, height)
+    return frame_width * frame_height / 1_000_000.0
+
+
+def frame_height(width: int | None, height: int | None) -> int:
+    """Height of the enclosing 16:9 frame (the stored height when the width is unknown).
+
+    Selects the bitrate-adequacy floor, so a cropped 4K film (3832x1600) is held to the 4K floor
+    like its letterboxed twin, not to the 1080p one.
+    """
+    return max(height or 0, round(frame_size(width, height)[1]))
+
+
 def bitrate_floor_mbps(height: int) -> float:
     """Bitrate (Mbps) below which a file is 'starved' for its resolution.
 
@@ -341,8 +379,8 @@ def compute_quality_score(
     """Compute the unified, normalised quality score.
 
     Args:
-        res_megapixels: width*height / 1e6.
-        height: video height in pixels (selects the bitrate-adequacy floor).
+        res_megapixels: megapixels of the enclosing 16:9 frame (``frame_megapixels``).
+        height: height of that frame in pixels (``frame_height``; selects the bitrate-adequacy floor).
         hdr_bonus: 1.0 for real HDR, 0.0 otherwise (see ``hdr_bonus_from_string``).
         video_bitrate_mbps: real video bitrate in Mbps, 0.0 if unknown. Used as the
             within-resolution tiebreaker term (real-only — an estimated bitrate is

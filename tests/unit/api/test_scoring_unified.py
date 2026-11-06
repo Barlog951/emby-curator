@@ -23,6 +23,9 @@ from emby_dedupe.api.scoring import (
     duration_minutes_from_ticks,
     estimate_bitrate_mbps_from_size,
     format_score_summary,
+    frame_height,
+    frame_megapixels,
+    frame_size,
     hdr_bonus_from_string,
     hdr_marker_in_text,
 )
@@ -395,3 +398,60 @@ class TestScoreBreakdown:
         rate_media_items([item])
         assert src.call_count == 1
         assert ai.call_count == 1
+
+
+# --- resolution is scored on the 16:9 frame: black bars earn nothing ------------------------------
+
+def _mobland_s02e02(*, cropped_dolby_vision):
+    """The two real copies of MobLand S02E02 (Emby 21542558 and 21577151, 2026-11-06).
+
+    The SDR copy stores its 2.39:1 picture letterboxed (3840x2160, cropdetect 3840x1608); the Dolby
+    Vision 8.1 copy stores it cropped (3832x1600) with 64 % more video bitrate."""
+    if cropped_dolby_vision:
+        video = {"Type": "Video", "Width": 3832, "Height": 1600, "Codec": "hevc", "BitRate": 25_900_000,
+                 "VideoRange": "DolbyVision", "ExtendedVideoSubType": "DoviProfile81"}
+        return {"Id": "21577151", "Name": "MobLand", "Size": 8_878_179_128, "Bitrate": 25_900_000,
+                "Path": "/Movies/Serials/MobLand/S02/MobLand S02E02 - 2160p WEB-DL DoVi CZ.mkv",
+                "MediaStreams": [video, {"Type": "Audio", "Channels": 6, "Language": "cze"}]}
+    video = {"Type": "Video", "Width": 3840, "Height": 2160, "Codec": "hevc", "BitRate": 15_800_000,
+             "VideoRange": "SDR"}
+    return {"Id": "21542558", "Name": "MobLand", "Size": 5_406_758_176, "Bitrate": 15_800_000,
+            "Path": "/Movies/Serials/MobLand/S02/MobLand S02E02 - 2160p WEB-DL CZ (2).mkv",
+            "MediaStreams": [video, {"Type": "Audio", "Channels": 6, "Language": "cze"}]}
+
+
+class TestFrameResolution:
+    def test_a_cropped_scope_picture_fills_the_same_frame_as_its_letterboxed_twin(self):
+        assert frame_size(3832, 1600) == (3832.0, 2155.5)
+        assert frame_size(3840, 2160) == (3840.0, 2160.0)
+        assert abs(frame_megapixels(3832, 1600) - frame_megapixels(3840, 2160)) < 0.05
+
+    def test_a_4_3_picture_counts_as_its_pillarboxed_frame(self):
+        assert frame_size(1440, 1080) == (1920.0, 1080.0)
+
+    def test_an_unknown_dimension_scores_nothing(self):
+        assert frame_size(0, 1080) == (0.0, 0.0)
+        assert frame_megapixels(None, 2160) == 0.0
+
+    def test_the_bitrate_floor_follows_the_frame(self):
+        assert frame_height(3832, 1600) == 2156
+        assert frame_height(1916, 800) == 1078
+        assert frame_height(0, 1080) == 1080  # width unknown: the stored height still picks the floor
+
+    def test_the_dolby_vision_crop_beats_the_letterboxed_sdr_copy_on_both_paths(self):
+        """Regression (2026-11-06 ``--doit``): the letterboxed SDR copies of MobLand S02E01/E03/E04/E05
+        scored 101.8 against 95.3, because the black bars counted as resolution (82.9 against 61.3),
+        and the Dolby Vision copies were deleted. On the frame both are 4K, so HDR and bitrate decide."""
+        dovi, sdr = _mobland_s02e02(cropped_dolby_vision=True), _mobland_s02e02(cropped_dolby_vision=False)
+        assert _dedupe_rating(dovi) > _dedupe_rating(sdr)
+        assert _check_score(dovi) > _check_score(sdr)
+
+    def test_a_starved_crop_is_demoted_like_its_letterboxed_twin(self):
+        """A cropped 4K encode is held to the 4K floor; it used to get the 1080p one (height 1600)."""
+        def starved(width, height):
+            item = {"Id": "x", "Name": "Film", "Path": "/movies/Film.2160p.WEB-DL.mkv", "Size": 0, "Bitrate": 3_000_000,
+                    "MediaStreams": [{"Type": "Video", "Width": width, "Height": height, "Codec": "h264",
+                                      "BitRate": 3_000_000, "VideoRange": "SDR"}]}
+            return ExistingQuality.from_emby_item(item).score_breakdown()["starved_demotion"]
+        assert starved(3840, 2160)
+        assert starved(3832, 1600)
