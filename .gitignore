@@ -235,3 +235,7 @@ redownload-list.json
 
 # marimo >= 0.24 session snapshots (hold live library/playback data)
 __marimo__/
+
+# Generated reports and local assistant config
+coverage.json
+.claude/
