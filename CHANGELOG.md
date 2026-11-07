@@ -7,6 +7,36 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.6] — 2026-11-07
+
+### Fixed
+
+- **Resolution is scored on the 16:9 frame that encloses the picture.** Letterboxed and cropped copies of
+  the same title score the same resolution, so a cropped Dolby Vision copy is no longer outscored by its
+  letterboxed SDR twin. The bitrate-adequacy floor follows that frame's height, so a cropped 4K film is
+  held to the 4K floor.
+- **The HDR bonus comes from the video stream only.** An "HDR" tag in the filename no longer awards it;
+  8-bit SDR files carrying the tag score as SDR.
+- **`check`: a film sped up to 25 fps is not an upgrade.** A candidate whose runtime is 95–97 % of the
+  owned film's, with the same width class, no HDR gain, no extra audio channels and no new tagged
+  language, is skipped. Episodes and unknown runtimes are left alone.
+- **`check`: an untagged library copy no longer counts as missing the newcomer's language.** Tracks
+  tagged `und`/unknown/empty name no language, so the same-kind bitrate margin decides instead of a
+  phantom language gap.
+- **`dedupe` holds more pairs instead of guessing.** An unavailable frame check on a same-length episode
+  pair keeps both copies; a copy to delete with an untagged audio track is held while the kept copy lacks
+  a `--lang-prio` language. Resolution classes are shared and tolerant of cropped frames (3832×1600 is
+  2160p, 1916×800 is 1080p).
+- **`csfd`: the full plot is read.** The hidden full-plot block is preferred over the preview, and the
+  "viac" expand link and source credit are stripped, also from entries cached before the fix.
+
+### Changed
+
+- Comments and docstrings rewritten to describe the code and its constraints; no behaviour change.
+- `dashboards/emby_missing.py` reads its export directory from `EMBY_MISSING_EXPORT_DIR`.
+- The SonarQube server comes from `SONAR_URL`; the repository no longer names a host.
+- Generated `coverage.json` and local developer files are no longer tracked.
+
 ## [3.4.5] — 2026-10-21
 
 ### Fixed
