@@ -59,6 +59,7 @@ Homepage = "https://github.com/Barlog951/emby-curator"
 Repository = "https://github.com/Barlog951/emby-curator"
 "Original Project" = "https://github.com/troykelly/emby-dedupe"
 Changelog = "https://github.com/Barlog951/emby-curator/blob/main/CHANGELOG.md"
+Discussion = "https://emby.media/community/topic/150615-emby-curator-%E2%80%93-safe-duplicate-cleanup-metadata-localization-and-library-audits-docker-python-cli/"
 
 [project.scripts]
 emby-curator = "emby_dedupe.cli.app:main"
