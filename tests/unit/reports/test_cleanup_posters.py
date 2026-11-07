@@ -66,7 +66,7 @@ def test_execute_cleanup_fetches_posters_before_deleting(monkeypatch):
                         lambda *a, **k: rendered.update(k) or calls.append("render") or "<html/>")
     monkeypatch.setattr(cli, "_save_cleanup_html_report", lambda *a, **k: "/tmp/r.html")
 
-    cli._execute_cleanup(None, "http://emby", SimpleNamespace(), API_KEY, ["LQ"], False,
+    cli._execute_cleanup(None, "http://emby", SimpleNamespace(protect_user=None), API_KEY, ["LQ"], False,
                          "user", "pass", "console", True, True, True, doit=True)
     assert calls == ["prefetch:1", "delete", "render"]
     assert rendered["prefetched_posters"] == {"u": DATA}
@@ -83,6 +83,6 @@ def test_dry_run_does_not_prefetch(monkeypatch):
     monkeypatch.setattr(cli, "prefetch_cleanup_posters", lambda *a: calls.append("prefetch") or {})
     monkeypatch.setattr(cli, "_generate_cleanup_html_report", lambda *a, **k: "<html/>")
     monkeypatch.setattr(cli, "_save_cleanup_html_report", lambda *a, **k: "/tmp/r.html")
-    cli._execute_cleanup(None, "http://emby", SimpleNamespace(), API_KEY, ["LQ"], False,
+    cli._execute_cleanup(None, "http://emby", SimpleNamespace(protect_user=None), API_KEY, ["LQ"], False,
                          None, None, "console", True, True, True, doit=False)
     assert calls == []  # nothing is deleted, so the report fetches normally

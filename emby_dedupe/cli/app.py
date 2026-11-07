@@ -495,14 +495,18 @@ def missing_episodes_cmd(
 
 @app.command("cleanup")
 def cleanup_cmd(
-    ctx: typer.Context,
+    ctx: typer.Context,  # NOSONAR — typer CLI requires one param per CLI option; cannot reduce
     username: str | None = typer.Option(
         None, "--username", envvar="DEDUPE_EMBY_USERNAME",
-        help="Emby username (recommended for accurate actor protection; required with --doit)."
+        help="Emby username for DELETE auth (required with --doit); also the protected user when --protect-user is not set."
     ),
     password: str | None = typer.Option(
         None, "--password", envvar="DEDUPE_EMBY_PASSWORD",
         help="Emby password (required with --doit)."
+    ),
+    protect_user: str | None = typer.Option(
+        None, "--protect-user", envvar="DEDUPE_PROTECT_USER",
+        help="Emby user whose favourite actors and watch history are protected (default: --username)."
     ),
     min_age_years: int = typer.Option(3, "--min-age-years", help="Minimum age in years to be eligible for cleanup."),
     protect_path: list[str] | None = typer.Option(
@@ -536,6 +540,7 @@ def cleanup_cmd(
         doit=config.doit,
         username=username,
         password=password,
+        protect_user=protect_user,
         min_age_years=min_age_years,
         protect_paths=protect_path or ["/Dokumenty/"],
         base_rating=base_rating,

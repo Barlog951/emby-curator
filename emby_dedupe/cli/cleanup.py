@@ -67,6 +67,7 @@ def _validate_cleanup_args(
     doit: bool,
     username: str | None,
     password: str | None,
+    protect_user: str | None = None,
 ) -> None:
     """Validate cleanup command arguments.
 
@@ -79,8 +80,9 @@ def _validate_cleanup_args(
         libraries: List of library names.
         all_libraries: If True, libraries list may be empty.
         doit: If True, deletions will be performed.
-        username: Emby username (required for --doit, recommended always).
+        username: Emby username for DELETE auth (required for --doit).
         password: Emby password (required for --doit).
+        protect_user: Emby user whose favourite actors are protected; None falls back to ``username``.
 
     Raises:
         SystemExit: If required arguments are missing.
@@ -104,10 +106,15 @@ def _validate_cleanup_args(
             logger.error(err)
         sys.exit(1)
 
-    if not doit and not username:
+    if not (protect_user or username):
         logger.warning(
-            "No --username provided; favorite-actor protection will use first Emby user. "
-            "Recommend: --username Barlog for accurate results."
+            "No --protect-user or --username provided; favorite-actor protection will use the first Emby user. "
+            "Pass --protect-user <name> for accurate results."
+        )
+    elif not protect_user:
+        logger.warning(
+            f"No --protect-user provided; favorite-actor protection follows the login user '{username}'. "
+            "Pass --protect-user <name> when deletions run under a dedicated account."
         )
 
 
@@ -388,7 +395,7 @@ def _execute_cleanup(
         api_key: Emby API key.
         libraries: Library names to scan.
         all_libraries: If True, scan all libraries.
-        username: Emby username.
+        username: Emby username for DELETE auth.
         password: Emby password.
         output_format: "json" or "console".
         html_report: Whether to generate HTML report.
@@ -398,7 +405,7 @@ def _execute_cleanup(
     """
     server_id = make_http_request(client, "GET", f"{base_url}/System/Info").json().get("Id", "")
 
-    primary_user_id = _resolve_primary_user_id(client, base_url, username)
+    primary_user_id = _resolve_primary_user_id(client, base_url, config.protect_user or username)
     if not primary_user_id:
         logger.error("Cannot resolve a valid Emby user ID; aborting cleanup.")
         return
@@ -470,13 +477,15 @@ def run_cleanup_command(args) -> None:
     doit = getattr(args, "doit", False)
     username = getattr(args, "username", None)
     password = getattr(args, "password", None)
+    explicit_protect_user = getattr(args, "protect_user", None)
+    protect_user = explicit_protect_user or username
 
     excluded_provider_ids = _parse_excluded_ids(getattr(args, "exclude_ids", "") or "")
     protect_paths = _normalize_protect_paths(
         getattr(args, "protect_paths", [_DEFAULT_PROTECT_PATH])
     )
 
-    _validate_cleanup_args(host, api_key, libraries, all_libraries, doit, username, password)
+    _validate_cleanup_args(host, api_key, libraries, all_libraries, doit, username, password, explicit_protect_user)
     # _validate_cleanup_args exits on missing host/api_key; narrow for type checking
     assert host is not None and api_key is not None
 
@@ -492,6 +501,7 @@ def run_cleanup_command(args) -> None:
         max_rating=getattr(args, "max_rating", 8.0),
         excluded_provider_ids=excluded_provider_ids,
         near_miss_count=getattr(args, "near_miss_count", 5),
+        protect_user=protect_user,
     )
 
     client = httpx.Client(headers={"X-Emby-Token": api_key}, timeout=120)

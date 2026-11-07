@@ -84,6 +84,19 @@ class TestValidateCleanupArgs:
             self._call(doit=False, username=None)  # must NOT raise
             mock_logger.warning.assert_called_once()
 
+    def test_an_explicit_protect_user_does_not_warn(self):
+        """Deleting as a dedicated account while protecting another user's favourites is the intended setup."""
+        with patch("emby_dedupe.cli.cleanup.logger") as mock_logger:
+            self._call(doit=True, username="emby-cleanup", password="pw", protect_user="Barlog")
+            mock_logger.warning.assert_not_called()
+
+    def test_protection_following_the_login_user_warns(self):
+        """Without --protect-user the login account's favourites are protected, which a dedicated account lacks."""
+        with patch("emby_dedupe.cli.cleanup.logger") as mock_logger:
+            self._call(doit=True, username="emby-cleanup", password="pw")
+            mock_logger.warning.assert_called_once()
+            assert "--protect-user" in mock_logger.warning.call_args[0][0]
+
 
 # ---------------------------------------------------------------------------
 # TestRunCleanupCommand  (Bug fix #2: empty primary_user_id abort)
@@ -272,3 +285,45 @@ class TestRunCleanupCommandWithSeries:
 
         mock_movie_pipeline.assert_called_once()
         mock_series_pipeline.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# TestProtectUser: the protected user is separate from the DELETE login
+# ---------------------------------------------------------------------------
+
+
+class TestProtectUser:
+    """--protect-user picks whose favourite actors are protected; --username stays the DELETE login."""
+
+    def _resolved_user(self, **overrides):
+        """Run the command until user resolution and return the name it resolved."""
+        from argparse import Namespace
+
+        from emby_dedupe.cli.cleanup import run_cleanup_command
+
+        args = dict(host="http://emby", port=None, api_key="key", library=["Movies"], all_libraries=False,
+                    doit=False, username="emby-cleanup", password=None, min_age_years=3,
+                    protect_paths=["/Dokumenty/"], base_rating=6.0, decay_step=0.5, max_rating=8.0,
+                    exclude_ids="", format="console", html_report=False, html_only=False, no_open=True)
+        args.update(overrides)
+        with patch("emby_dedupe.cli.cleanup.httpx.Client"), \
+                patch("emby_dedupe.cli.cleanup.check_emby_connection"), \
+                patch("emby_dedupe.cli.cleanup._resolve_primary_user_id", return_value="") as resolve:
+            run_cleanup_command(Namespace(**args))
+        return resolve.call_args[0][2]
+
+    def test_favourites_are_read_for_the_protect_user(self):
+        assert self._resolved_user(protect_user="Barlog") == "Barlog"
+
+    def test_without_protect_user_the_login_user_is_protected(self):
+        assert self._resolved_user() == "emby-cleanup"
+
+    def test_the_cleanup_command_offers_protect_user(self):
+        from typer.testing import CliRunner
+
+        from emby_dedupe.cli.app import app
+
+        result = CliRunner().invoke(app, ["cleanup", "--help"],
+                                    env={"COLUMNS": "200", "NO_COLOR": "1", "TERM": "dumb"})
+        assert result.exit_code == 0
+        assert "--protect-user" in result.output

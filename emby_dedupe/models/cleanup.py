@@ -34,6 +34,8 @@ class CleanupConfig:
         max_rating: Cap on required rating (reached after enough years).
         top_actors: Number of top actors from primary user's watch history to protect.
         excluded_provider_ids: Set of provider ID values (IMDB/TMDB/TVDB) to skip.
+        protect_user: Emby user whose favourite actors and library view drive the protections;
+            None means the DELETE login user (``--username``).
     """
 
     min_age_years: int = 3
@@ -46,6 +48,7 @@ class CleanupConfig:
     masterpiece_rating: float = 9.0
     excluded_provider_ids: set[str] = field(default_factory=set)
     near_miss_count: int = 5
+    protect_user: str | None = None
 
 
 @dataclass

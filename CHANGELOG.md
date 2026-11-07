@@ -7,6 +7,13 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+### Added
+
+- **`cleanup --protect-user NAME`** (env `DEDUPE_PROTECT_USER`): the Emby user whose favourite actors and
+  library view drive the protections, separate from the `--username`/`--password` DELETE login. Deletions
+  can run under a dedicated non-admin account while one person's favourites stay protected. Without it the
+  protected user is `--username`, as before, and a warning says so.
+
 ## [3.4.6] — 2026-11-07
 
 ### Fixed
