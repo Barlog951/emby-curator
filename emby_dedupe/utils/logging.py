@@ -51,8 +51,8 @@ class SensitiveDataFilter(logging.Filter):
         for pattern in self._patterns:
             # Replace occurrences of the pattern with 'REDACTED'
             original = pattern.sub("REDACTED", original)
-        # Set the modified message; its arguments are already in it, so drop them, or the
-        # formatter applies them a second time ("not all arguments converted", 2026-10-13).
+        # The arguments are already interpolated into the message; drop them so the
+        # formatter does not apply them a second time.
         record.msg = original
         record.args = ()
         return True

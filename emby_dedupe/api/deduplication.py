@@ -453,7 +453,7 @@ def _season_dir_key(path: str) -> str:
     """Grouping-key part for the file's season folder: ``DIR_S5`` or ``DIR_FLAT``.
 
     Episodes in different season folders are never duplicates of each other, whatever
-    their names say (Initial D, 2026-09-27: every stage's files were named S01Exx).
+    their names say (packs may name every season's files S01Exx).
     """
     season = folder_season(path)
     return "DIR_FLAT" if season is None else f"DIR_S{season}"
@@ -1163,10 +1163,9 @@ def determine_items_to_delete(duplicate_ids: list, all_items_details: list, lang
         rated_items[0]["selected_by_language_priority"] = False
         rated_items[0]["changed_by_language_priority"] = False
 
-    # Step 5: language priority must never delete the best-quality copy when that copy's
-    # audio language is unknown: it may BE the priority language, just untagged. Count
-    # Duckula, 2026-09-27: "S01E09 - 720p BluRay CZ" (no audio tag) was deleted to keep a
-    # tagged English 480p. Neither answer is knowable, so the group is left alone.
+    # Step 5: language priority must not delete the best-quality copy when that copy's
+    # audio language is unknown: it may be the priority language, just untagged. Neither
+    # answer is knowable, so the group is left alone.
     if (lang_priorities and default_top_item is not None
             and rated_items[0]["id"] != default_top_item["id"]
             and not _get_clean_languages(default_top_item)):
@@ -1293,12 +1292,11 @@ def process_duplicate_groups(
 def _different_content_reason(item: dict, keeper: dict, frames: FrameChecker | None = None) -> str | None:
     """Why ``item`` may not be a copy of ``keeper`` at all, or None.
 
-    Tells: the two copies carry different IMDb/TMDb ids (two films TVDB gave one id,
-    2026-10-13), the episode sits in a different season folder (Initial D, 2026-09-27), either
-    running time is unknown (a download still landing, NCIS S03 2026-10-12), the running
-    time differs well beyond tolerance (Rust filed as Runt, a "(2)" copy that is another
-    episode), or (episodes, when ``frames`` is given) the pictures do not match: a swapped
-    NCIS S19E07/E08 had lengths within 2 % and its Czech E08 was deleted (2026-10-12).
+    Tells: the two copies carry different IMDb/TMDb ids (two films under one TVDB id), the
+    episode sits in a different season folder, either running time is unknown (a download
+    still landing), the running time differs well beyond tolerance (a mis-identified
+    film, a "(2)" copy that is another episode), or, for episodes when ``frames`` is
+    given, the pictures do not match (two episodes of similar length).
 
     The exception to the running-time rule needs the frame check: for an episode, proof
     that the kept copy holds every part of the copy to delete (a PAL speed-up, or a kept
@@ -1324,10 +1322,9 @@ def _frame_check_wanted(item: dict, keeper: dict) -> bool:
 def _runtime_gap_exception(item: dict, keeper: dict, frames: FrameChecker | None, mismatch: str) -> str | None:
     """None when the frames prove the delete loses nothing, else the refusal.
 
-    Episodes (Fuki, 2026-10-12): the kept copy must hold every part of the copy to delete
-    (``FrameChecker.covers``). That removed 8 English-only Vampire Diaries copies 0.03 % off
-    the PAL ratio and a Czech NCIS S14E15 480p shorter than its kept copy; a copy to delete
-    with a 61 s TV lead-in (TVD S08E16) or a second episode inside (NCIS S05E18-19) stays.
+    Episodes: the kept copy must hold every part of the copy to delete
+    (``FrameChecker.covers``), which admits speed-ups slightly off the PAL ratio and a
+    shorter copy, and keeps a copy with a TV lead-in or a second episode inside.
     Movies keep the narrower PAL rule: two cuts of one film are both kept.
     """
     if frames is None:
@@ -1344,9 +1341,9 @@ def _runtime_gap_exception(item: dict, keeper: dict, frames: FrameChecker | None
 def _speedup_exception(item: dict, keeper: dict, frames: FrameChecker, mismatch: str) -> str | None:
     """None when the running-time gap is a PAL speed-up the frames confirm, else the refusal.
 
-    The frames must match AND line up at a steady offset: NCIS S05E15 (SD avi) matched
-    picture for picture but drifted ~23 s per sample point, so it is ~110 s longer at the
-    same speed, not sped up, and the extra minutes may be scenes the kept copy lacks.
+    The frames must match and line up at a steady offset: a copy that matches picture for
+    picture but drifts from point to point is longer at the same speed, not sped up, and
+    the extra minutes may be scenes the kept copy lacks.
     """
     if not is_speedup_pair(keeper, item):
         return mismatch
@@ -1362,9 +1359,9 @@ def _frame_mismatch(item: dict, keeper: dict, frames: FrameChecker | None) -> st
     """The refusal when the frames do not prove the same picture; None when they do.
 
     "unavailable" (no ffmpeg, stream unreadable) refuses too: two same-length episodes are
-    not proven to be one episode. On 2026-11-04 an unavailable check let Wacky Races S01E02
-    "(2)" go, the second race of that half-hour, not a copy. A missed duplicate only costs
-    disk space. Without a frame checker at all (``frames`` is None) the check is skipped.
+    not proven to be one episode (a "(2)" file may be the second half of a double bill).
+    A missed duplicate only costs disk space. Without a frame checker (``frames`` is
+    None) the check is skipped.
     """
     if frames is None or not _frame_check_wanted(item, keeper):
         return None
@@ -1437,10 +1434,9 @@ def _untagged_audio_reason(item: dict, keeper: dict, priorities: set[str]) -> st
     """The hold when ``item`` has an audio track without a language tag that may be a
     ``--lang-prio`` language the kept copy lacks, else None.
 
-    An untagged track can be anything: the HDTV Vidocq (2001) deleted on 2026-11-04 had one
-    untagged stereo track next to a Czech + French keeper, so a Slovak TV dub may be gone, and
-    the Czech Count Duckula of 2026-09-27 was untagged too. Once the kept copy carries every
-    ``--lang-prio`` language, an untagged track cannot be one it lacks, and the pair passes.
+    An untagged track can be any language, including a TV dub the kept copy lacks. Once
+    the kept copy carries every ``--lang-prio`` language, an untagged track cannot be one
+    it lacks, and the pair passes.
     Items without audio info pass; items cached before the per-track list use the language
     list, where an empty list means no track was tagged.
     """
@@ -1462,22 +1458,19 @@ def _untagged_audio_reason(item: dict, keeper: dict, priorities: set[str]) -> st
 def merge_audio_first_reason(item: dict, keeper: dict) -> str | None:
     """Why deleting ``item`` would lose something that belongs in ONE merged file, or None.
 
-    Fuki's ideal state (2026-10-13): one best file per title with the original language +
-    SK + CZ. A delete that throws away either half of that is held for an audio merge
-    (the box tools add a dub into the better picture, or the original track into the
-    dubbed file, with proven sync) instead:
+    Target state: one best file per title with the original language plus every
+    ``--lang-prio`` dub. A delete that throws away either half of that is held for an
+    audio merge (a dub into the better picture, or the original track into the dubbed
+    file) instead:
 
     - the copy to delete has an audio language from ``--lang-prio`` that the kept copy
-      lacks (AHS S07: nine English 720p copies deleted, the Czech BluRay kept, 2026-10-14);
-    - the copy to delete has MORE audio tracks of a non-English ``--lang-prio`` language
-      than the kept copy, i.e. a second dub (Terminator 1984, 2026-10-19: the deleted 4K
-      pack copy carried the 1990 Zavřel CZ dub next to the 2003 one; the kept remux had
-      only the 2003 dub). English is left out: a second English track is usually the same
-      mix in another codec or a commentary;
+      lacks;
+    - the copy to delete has more audio tracks of a non-English ``--lang-prio`` language
+      than the kept copy, i.e. a second dub. English is left out: a second English track
+      is usually the same mix in another codec or a commentary;
     - the copy to delete has an untagged audio track while the kept copy lacks a
-      ``--lang-prio`` language (Vidocq 2001, 2026-11-04; see ``_untagged_audio_reason``);
-    - the copy to delete has the better picture class and the kept copy won on language
-      (Regular Show S01: five 1080p English copies deleted, 720p Czech kept, 2026-10-14).
+      ``--lang-prio`` language (see ``_untagged_audio_reason``);
+    - the copy to delete has the better picture class and the kept copy won on language.
 
     Languages outside ``--lang-prio`` (the extra dubs of multi-language packs) never hold a
     pair, and untagged tracks never count as a second dub.
@@ -1583,8 +1576,7 @@ def _mark_items_as_not_attempted(decisions: list, progress_bar) -> None:
 
     An item the guard would refuse under --doit (``dry_run_refusal``, set by
     _warn_unsafe_deletions) is marked ``would_block`` with the reason, so the dry-run
-    report shows it instead of promising a deletion the real run will not make
-    (2026-10-11: a dry run promised 30 deletions / 42 GB; the real run blocked 24).
+    report shows it instead of promising a deletion the real run will not make.
 
     Args:
         decisions: List of decision groups
@@ -1688,11 +1680,11 @@ def _execute_one_deletion(
     except Exception as e:
         logger.warning(f"Error setting image URL for deleted item: {e}")
 
-    # SAFETY GUARD 1: never delete a "duplicate" that may be different content: another
-    # season folder (the Initial D loss, 2026-09-27) or a clearly different running time.
+    # Safety guard 1: never delete a "duplicate" that may be different content (another
+    # season folder, a clearly different running time, mismatched frames).
     conflict = _refuse_different_content(item, (decision or {}).get("keep") or {"path": keeper_path}, frames)
-    # SAFETY GUARD 2: never issue an Emby delete that would fold-delete a folder holding
-    # the keeper (the data-loss bug). Refuse and skip — keep both files.
+    # Safety guard 2: never issue an Emby delete that would fold-delete a folder holding
+    # the keeper. Refuse and skip.
     safe, reason = (True, "") if conflict else is_delete_safe(
         keeper_path, item.get("path"), known_paths, delete_paths
     )
@@ -1702,13 +1694,10 @@ def _execute_one_deletion(
             f"(delete={item.get('path')!r} keeper={keeper_path!r}). Both files kept."
         )
     elif not safe:
-        # Pre-format into ONE f-string with no positional args, so logging never runs
-        # ``msg % args`` (immune to stray % in paths or an arg-count mismatch — this line
-        # crashed twice before via stale bytecode).
-        # WARNING, not ERROR: refusing is the guard working as designed, and nothing has
-        # failed. Logging it at ERROR made correct, protective behaviour look like a fault.
-        # The wording must not promise "both files kept" either — with --fold-safe-delete
-        # the duplicate is removed file-only moments later, which made this line false.
+        # One pre-formatted f-string with no positional args, so logging never runs
+        # ``msg % args`` on paths that may contain %. WARNING, not ERROR: a refusal is the
+        # guard working as designed. The wording must not promise "both files kept":
+        # with --fold-safe-delete the duplicate is removed file-only moments later.
         logger.warning(
             f"SAFETY GUARD blocked the Emby delete of id={item['id']} — {reason} "
             f"(delete={item.get('path')!r} keeper={keeper_path!r}). "
@@ -1758,7 +1747,7 @@ def process_deletion_and_generate_report(
         library_paths (list, optional): Every media path in the library, used to give the
             deletion safety guard true folder visibility (so it tells a dedicated folder
             from a shared one). When omitted, the guard sees only the decision paths and
-            may over-refuse safe deletes (the Dutton/Proud false positives). Defaults to None.
+            may over-refuse safe deletes. Defaults to None.
         frames (FrameChecker, optional): compares the pictures of episode pairs before a
             delete (and confirms PAL speed-ups). None skips the frame check.
 
@@ -1769,21 +1758,17 @@ def process_deletion_and_generate_report(
     total_deletions = sum(len(decision.get("delete", [])) for decision in decisions)
 
     # Index every keep+delete path so the safety guard can tell a dedicated folder
-    # (Emby fold-deletes it) from a shared one (Emby deletes only the file). The decision
-    # paths alone miss non-duplicate neighbours (e.g. the other episodes in a season
-    # folder), making a single-duplicate folder look "dedicated" and over-refusing a safe
-    # file-only delete. Union in every library path to give the guard real folder
-    # visibility. Both sources are Emby's verbatim ``Path`` field, so identical items
-    # produce byte-identical strings that dedupe exactly (a mismatch could mask the
-    # keeper → an under-refusal, which is why the union must never normalise paths).
+    # (Emby fold-deletes it) from a shared one (Emby deletes only the file). Decision
+    # paths alone miss non-duplicate neighbours (the other episodes in a season folder),
+    # so every library path is unioned in. Both sources are Emby's verbatim ``Path``
+    # field; the union must not normalise paths, or a mismatch could mask the keeper.
     known_paths = collect_known_paths(decisions)
     if library_paths:
         known_paths = list(set(known_paths) | set(library_paths))
 
     # Every path being removed this run. A sibling that is itself being deleted must not
-    # vouch that a folder is "shared" (it won't survive) — this is what makes the guard
-    # refuse a delete co-located with the keeper when the only neighbours are also going
-    # away (the Marty Supreme multi-version-folder fold-delete).
+    # vouch that a folder is "shared": it does not survive, so a delete co-located with
+    # the keeper is refused when the only neighbours are also going away.
     delete_paths = collect_delete_paths(decisions)
 
     # The frame check streams from Emby; run all pairs up front, a few at a time.

@@ -1,10 +1,9 @@
-"""Fold-safe deletion — remove a duplicate the safety guard refused, without data loss.
+"""Fold-safe deletion: remove a duplicate the safety guard refused.
 
 The safety guard (:mod:`emby_dedupe.api.deletion_guard`) refuses any Emby
-``DELETE /Items/{id}`` that would fold-delete a folder holding the keeper. That is the
-right call for the Emby API — but it leaves the co-located duplicate on disk, needing
-manual cleanup (e.g. two quality versions of one title dropped into a single
-``/Movies/Dokumenty/<title>/`` folder).
+``DELETE /Items/{id}`` that would fold-delete a folder holding the keeper. That leaves
+the co-located duplicate on disk (e.g. two quality versions of one title in a single
+title folder).
 
 This module removes exactly those refused duplicates the ONLY way that cannot destroy the
 keeper: delete the single **file** on the media host over SSH (never the directory, never
@@ -12,9 +11,8 @@ via the Emby API). Emby drops the now-missing item on its next library scan. Eve
 re-verifies on the host itself — the delete path is a real file, the keeper is a real file,
 and they are different paths — so a stale plan can never rm the wrong thing.
 
-Runs from wherever the dedupe runs (Emby reports the host's canonical ``/Movies/...`` path,
-which is also the real path on the media host — no path mapping needed). The SSH runner is
-injectable so the planning/command logic is unit-testable without touching a real host.
+Emby reports the media host's own path, so no path mapping is needed. The SSH runner is
+injectable so the planning and command logic is unit-testable without a real host.
 """
 import logging
 import os
@@ -24,32 +22,28 @@ import subprocess
 logger = logging.getLogger(__name__)
 
 # Marker key set on a delete item by the deletion code when the guard refuses it (in both
-# --doit and dry-run). Reading it here reuses the guard's ACTUAL decision, so this module
-# never re-derives "was it refused?" and can never diverge from what the run did.
+# --doit and dry-run). Reusing it keeps this module in step with the run's decisions.
 GUARD_REFUSED_KEY = "fold_safe_candidate"
 
-# SSH target of the media host, as ``user@host``. Deliberately has NO default: this module
-# runs ``rm`` on whatever host it is pointed at, so the target must always be stated
-# explicitly (``--fold-safe-host`` / ``DEDUPE_FOLD_SAFE_HOST``) rather than inherited from
-# someone else's environment.
+# SSH target of the media host, as ``user@host``. No default: this module runs ``rm`` on
+# whatever host it is pointed at, so the target must be stated explicitly
+# (``--fold-safe-host`` / ``DEDUPE_FOLD_SAFE_HOST``).
 DEFAULT_SSH_HOST = os.environ.get("DEDUPE_FOLD_SAFE_HOST", "")
 
-# Same-content sanity gate (added after the 2026-07-09 incident: 19 DISTINCT episodes
-# mis-named "S01E01 (2)".."(20)" were grouped as duplicates of one episode and auto-rm'd —
-# guard-refusal says "co-located", it does NOT say "same content").
+# Same-content sanity gate. A guard refusal says "co-located", not "same content":
+# distinct episodes mis-named "S01E01 (2)".."(20)" group as duplicates of one episode.
 #
 # Two gates, each independently forcing a plan to ``needs_review`` (never auto-rm):
 #
-# 1. Member count: more than this many planned rm's in ONE decision group is not a
-#    duplicate cleanup, it is a mis-grouped set (a title legitimately has 2-4 quality
-#    versions; the incident had 19). The whole group goes to review.
+# 1. Member count: more than this many planned rm's in one decision group is a
+#    mis-grouped set, not a duplicate cleanup (a title has 2-4 quality versions).
+#    The whole group goes to review.
 FOLD_SAFE_MAX_GROUP_DELETES = 5
-# 2. Duration identity: the same content in a different encode has the SAME runtime to
-#    within seconds, while a wrongly-grouped different movie/cut does not. (File SIZE is
-#    deliberately NOT used: a 2160p keeper next to a 1080p delete differs 4-5x in size
-#    while being the same content, and the incident's distinct episodes had SIMILAR sizes
-#    — size separates neither class.) Unknown duration on either side also goes to
-#    review: rm-ing a file over SSH is unrecoverable, so "can't verify" means "don't".
+# 2. Duration identity: the same content in a different encode has the same runtime to
+#    within seconds; a wrongly grouped different movie or cut does not. File size is not
+#    used: a 2160p keeper next to a 1080p delete differs 4-5x in size while being the same
+#    content, and distinct episodes have similar sizes. Unknown duration on either side
+#    also goes to review: an rm over SSH is unrecoverable.
 FOLD_SAFE_DURATION_TOLERANCE = 0.02   # 2% relative divergence
 FOLD_SAFE_DURATION_FLOOR_SECONDS = 15  # ignore sub-15s absolute differences
 
@@ -59,8 +53,8 @@ _TICKS_PER_SECOND = 10_000_000  # Emby RunTimeTicks resolution
 def duration_mismatch(keeper_ticks, delete_ticks) -> str | None:
     """Reason when BOTH durations are known and diverge beyond tolerance, else None.
 
-    Also the dedupe Emby-delete gate: a large runtime gap means different content, e.g.
-    Rust (140 min) filed by Emby as Runt (92 min), or a "(2)" copy that is another episode.
+    Also the dedupe Emby-delete gate: a large runtime gap means different content (a
+    mis-identified film, or a "(2)" copy that is another episode).
     """
     if not keeper_ticks or not delete_ticks:
         return None
@@ -83,7 +77,7 @@ def _duration_review_reason(keeper_ticks, delete_ticks) -> str | None:
 def plan_fold_safe_deletes(decisions: list) -> list:
     """Collect the guard-refused duplicates that can be safely file-deleted.
 
-    Guard-refusal is necessary but NOT sufficient for an auto-rm: every plan also passes
+    Guard refusal is necessary but not sufficient for an auto-rm: every plan also passes
     a same-content sanity gate (duration identity + group-size cap, see the constants
     above). Plans failing the gate are still returned, marked ``status="needs_review"``
     with a ``review_reason`` — :func:`execute_fold_safe_deletes` refuses to rm them.
@@ -138,7 +132,7 @@ def _flag_oversized_group(group_plans: list[dict]) -> None:
     """Send an implausibly large group ENTIRELY to review, in place.
 
     A group with more than :data:`FOLD_SAFE_MAX_GROUP_DELETES` planned deletes is a
-    mis-grouping, not a duplicate cleanup — so every plan in it is held, including any
+    mis-grouping, not a duplicate cleanup, so every plan in it is held, including those
     that passed the duration gate.
     """
     if len(group_plans) <= FOLD_SAFE_MAX_GROUP_DELETES:
@@ -154,7 +148,7 @@ def _flag_oversized_group(group_plans: list[dict]) -> None:
 def _build_remote_script(keeper: str, delete: str, doit: bool) -> str:
     """Build the remote shell script that verifies then (optionally) removes one file.
 
-    Verification and removal live in ONE script so there is no gap between the check and
+    Verification and removal live in one script so there is no gap between the check and
     the ``rm`` (no TOCTOU). Refuses unless the delete path is a regular file, the keeper is
     a regular file, and the two resolve to different files. Same-stem sidecars (``.nfo`` and
     subtitle files, including language-infixed ones like ``name.en.srt``) are removed too
@@ -220,8 +214,7 @@ def execute_fold_safe_deletes(
     results = []
     for plan in plans:
         if plan.get("status") == "needs_review":
-            # Failed the same-content sanity gate in planning — never auto-rm; the user
-            # must resolve these manually.
+            # Failed the same-content sanity gate in planning; never auto-rm.
             logger.warning(
                 "fold-safe delete: NEEDS REVIEW (not removed) %r — %s",
                 plan["delete"], plan.get("review_reason", ""),

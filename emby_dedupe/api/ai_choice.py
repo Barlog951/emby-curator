@@ -6,11 +6,9 @@ item. Two backends answer that question with the same ``choose()`` call: TypeSaf
 asks both: Claude proposes, Jev checks, and the answer carries a ``note`` saying whether
 they agreed.
 
-Why this shape (measured 2026-10-08, logs/haiku-poc/EVALUATION.md): on 43 labelled titles
-Claude found 30 of 31 matches against Jev's 19, but made 2 confident wrong picks. Every
-pick both models agreed on was right (19/19); all of Claude's mistakes were picks Jev did
-not back. So agreement is the signal worth showing a reviewer, and the only one an
-automatic accept may rely on.
+On a 43-title labelled set Claude found 30 of 31 matches against Jev's 19 but made 2
+confident wrong picks, while every pick both models agreed on was right. Agreement is
+therefore the signal shown to a reviewer, and the only one an automatic accept relies on.
 """
 from __future__ import annotations
 

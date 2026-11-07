@@ -188,14 +188,8 @@ def _item_path(item: dict[str, Any]) -> str:
     """The item's filesystem path for display, preferring the authoritative field.
 
     ``quality_description`` is built per-item from the details fetch and can come back
-    empty (no codec, no size, no date, no path) when Emby returns a sparse record. Reading
-    the path only from there then printed "unknown" for an item whose real path was known
-    all along — the top-level ``path`` is the field the deletion guard actually uses.
-
-    That mismatch is not cosmetic: on 2026-08-20 a report showing "unknown" was read as
-    evidence that deletes had run with the guard bypassed, when the guard had in fact seen
-    a valid path and evaluated normally. The report is the audit artifact, so it must show
-    the same path the guard reasoned about.
+    empty when Emby returns a sparse record. The top-level ``path`` is the field the
+    deletion guard uses, and the report must show the same path the guard reasoned about.
     """
     return item.get("quality_description", {}).get("path") or item.get("path") or "unknown"
 
@@ -379,12 +373,7 @@ _CSS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 
 
 def _read_report_css() -> str:
-    """The stylesheet, embedded in the report so the file stands alone.
-
-    It used to be linked as ``report.css`` beside the report in the temp dir, a file every
-    run (dedupe and cleanup) overwrote: an old report silently took the newest styles, and
-    a moved or attached report lost its styling.
-    """
+    """The stylesheet, embedded so the report stands alone when moved or attached."""
     try:
         with open(_CSS_PATH, encoding="utf-8") as fh:
             return fh.read()

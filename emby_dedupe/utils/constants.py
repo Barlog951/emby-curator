@@ -52,13 +52,12 @@ ENV_DEDUPE_EXCLUDE_IDS = "DEDUPE_EXCLUDE_IDS"
 # Genre management constants
 GENRE_UPDATE_DELAY_SEC = 0.1  # Rate limit: seconds between Emby POST updates for genres
 
-# Genre normalization mapping
-# Maps variant/incorrect names to TMDB-standard canonical names (case-insensitive keys)
-# Based on real Emby audit (2026-02-23): 32 genres found across 2500+ items
-# NOTE: Musical≠Music, Children≠Family, Biography≠Documentary — intentionally NOT mapped
+# Genre normalization mapping: variant/incorrect names to TMDB canonical names
+# (case-insensitive keys). Musical, Children and Biography are distinct genres and
+# are deliberately not mapped to Music, Family or Documentary.
 _SCIENCE_FICTION = "Science Fiction"
 GENRE_NORMALIZATION_MAP = {
-    # Typos found in real Emby audit
+    # Typos
     "hisotry": "History",       # Typo, 1 item
     # Duplicates/standard variants
     "sci-fi": _SCIENCE_FICTION,
@@ -86,7 +85,7 @@ GENRE_NORMALIZATION_MAP = {
     "hudobný": "Music",             # Slovak (4 items)
     # Custom/junk — user confirmed "dada" means Comedy
     "dada": "Comedy",               # 1645 items!
-    # 2026-05-27 audit additions
+    # Verbose or compound variants
     "reality show": "Reality",      # verbose duplicate of Reality (3 items)
     "sci-fi & fantasy": _SCIENCE_FICTION,  # TMDB TV compound — pick distinct element (2 items)
     "detský": "Kids",               # Slovak for "children's" (2 items)
@@ -111,7 +110,7 @@ TMDB_CANONICAL_GENRES: frozenset[str] = frozenset({
     # Common extras that Emby / metadata agents use
     "Biography", "Children", "Mini-Series", "Musical",
     "Short", "Special Interest", "Sport", "Talk Show",
-    # 2026-05-27 audit additions — legitimate distinct Emby categories
+    # Distinct Emby categories without a TMDB equivalent
     "TV Movie", "Anime", "Travel", "Food", "Game Show",
     "Martial Arts", "Indie", "Home and Garden",
     # Our own: Czech/Slovak films, added by `genres origin`
@@ -209,8 +208,7 @@ def should_quality_override_language(
 
 # Resolution classes by frame size: (min width, min height, label), best first. Width counts as much as height,
 # so cropped films keep their class: a 2.39:1 1080p film is 1920x800 (1916x800 after cropping), a 2.39:1 4K one
-# 3840x1600 (3832x1600). Shared by the dedupe merge-audio hold and the torrents quality check (MobLand S02E07
-# 3832x1600 was labelled "1080p" there, 2026-11-04).
+# 3840x1600 (3832x1600). Shared by the merge-audio hold and the quality comparison.
 RESOLUTION_CLASSES = ((3400, 2000, "2160p"), (1800, 1000, "1080p"), (1200, 680, "720p"), (640, 440, "480p"))
 
 

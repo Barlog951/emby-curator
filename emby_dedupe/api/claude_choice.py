@@ -6,10 +6,9 @@ option that does not exist. Haiku gives no per-option probabilities, so the ques
 asked ``votes`` times in parallel and the confidence is the share of votes for the modal
 choice. A failed vote counts against the pick, and a tie goes to ``none``.
 
-Settings measured 2026-10-08 on the labelled ČSFD set (logs/haiku-poc/EVALUATION.md):
-effort ``medium`` beat ``low``, 5 votes, p50 1.6 s per call, ≈ $0.0002 per call.
-The vote share is NOT calibrated: both wrong picks in that test were unanimous. Never
-auto-accept on it alone (``CrossCheckClient`` exists for that).
+Settings chosen on the labelled ČSFD set: effort ``medium`` (better than ``low``),
+5 votes, about 1.6 s and $0.0002 per call. The vote share is not calibrated: wrong picks
+can be unanimous, so it is never auto-accepted alone (``CrossCheckClient`` exists for that).
 
 Needs the optional ``anthropic`` SDK: ``pip install 'emby-curator[claude]'``.
 """

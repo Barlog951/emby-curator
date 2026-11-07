@@ -1,27 +1,21 @@
 """Shared, normalised media-quality scoring model.
 
-This is the SINGLE quality-scoring model used by BOTH paths:
+The single quality-scoring model used by both paths:
 
 * the deduplication path (``metadata._calculate_quality_rating``), and
 * the check path (``quality_compare.ExistingQuality.calculate_score`` /
   ``ProposedQuality.calculate_score``).
 
-Historically the two paths ran divergent models — a normalised one for dedupe and
-a raw-magnitude one for check — which could rank the same pair of files in OPPOSITE
-order. This module unifies them.
-
-Factors are NORMALISED (megapixels, Mbps, channels) so the WEIGHTS express intent
+Factors are normalised (megapixels, Mbps, channels) so the weights express intent
 instead of raw magnitudes deciding the outcome. Resolution dominates; HDR is a real
-bonus; video bitrate is a within-resolution tiebreaker; the added-date only resolves
+bonus; video bitrate is a within-resolution tiebreaker; the added date only resolves
 otherwise-identical items. A file whose bitrate is below the codec-adjusted adequacy
-floor for its resolution has its resolution credit demoted proportionally (a badly
-under-bitrate high-res file can lose to a well-encoded lower-res one) — this is a
-DEMOTION, never a 0.0 auto-reject, so the language-override ratio math stays intact.
+floor for its resolution has its resolution credit demoted proportionally, so a badly
+under-bitrate high-res file can lose to a well-encoded lower-res one. This is a
+demotion, never a 0.0 auto-reject, so the language-override ratio math stays intact.
 
-Import note: this module is deliberately pure — it imports nothing from
-``quality_compare`` or ``metadata`` (both of which import each other's helpers). The
-callers compute their own ``source_multiplier`` / ``ai_multiplier`` and pass them in
-as floats, so there is no import cycle.
+This module imports nothing from ``quality_compare`` or ``metadata``; callers compute
+their own ``source_multiplier`` / ``ai_multiplier`` and pass them in as floats.
 """
 
 import math
@@ -54,11 +48,10 @@ _TICKS_PER_MINUTE = 600_000_000
 def _is_dovi_profile5(video_stream: dict[str, Any] | None) -> bool:
     """Return True if a video stream is Dolby Vision Profile 5 (green/pink risk).
 
-    Emby exposes the DV profile directly. Verified live on Emby 4.9.5.0, the P5
-    file reports ``ExtendedVideoSubType == "DoviProfile50"`` (description
-    ``"Profile 5.0"``, ``VideoRange == "DolbyVision"``). DV Profile 7/8 carry an
-    HDR10 base layer and do NOT show the tint, so they are deliberately NOT
-    flagged (their subtype is e.g. ``DoviProfile70``/``DoviProfile81``).
+    Emby exposes the DV profile directly: a P5 file reports
+    ``ExtendedVideoSubType == "DoviProfile50"`` (description ``"Profile 5.0"``,
+    ``VideoRange == "DolbyVision"``). DV Profile 7/8 carry an HDR10 base layer and do
+    not show the tint, so they are not flagged (subtype ``DoviProfile70``/``DoviProfile81``).
 
     Args:
         video_stream: An Emby video ``MediaStream`` dict, or None.
@@ -101,15 +94,11 @@ def hdr_bonus_from_string(value: str | None) -> float:
     return 1.0
 
 
-# Explicit HDR markers as they appear in release filenames. NOT a scoring input:
-# the HDR bonus comes from the video stream's VideoRange only (metadata._hdr_bonus),
-# because release names lie — Chimp Empire S01E02–E04 "… WEB-DL HDR CZ.mkv" and the
-# surviving The Agency S02 "… HDR CZ.mkv" files are all 8-bit SDR (2026-10-30), and the
-# old filename fallback cost three 5.1 copies. Kept as a public helper (no caller in
-# this package since then). Word boundaries keep "HDR" from matching inside other
-# tokens; bare "DV" is deliberately excluded (it collides with "DVDRip", which is SDR).
-# (ranges are lower-case only — IGNORECASE already covers upper-case, and repeating
-# A-Z here would just duplicate the class)
+# Explicit HDR markers as they appear in release filenames. Not a scoring input: the
+# HDR bonus comes from the video stream's VideoRange only (metadata._hdr_bonus), because
+# release names tagged "HDR" are regularly 8-bit SDR. Kept as a public helper. Word
+# boundaries keep "HDR" from matching inside other tokens; bare "DV" is excluded because
+# it collides with "DVDRip". Character ranges are lower-case only; IGNORECASE covers the rest.
 _HDR_FILENAME_RE = re.compile(
     r"(?<![a-z0-9])(?:hdr10\+?|hdr|dolby[ ._-]?vision|dovi|hlg)(?![a-z0-9])",
     re.IGNORECASE,
@@ -151,9 +140,8 @@ def frame_size(width: int | None, height: int | None) -> tuple[float, float]:
 
     Resolution is scored on this frame, not on the stored pixels, so black bars earn nothing: a 2.39:1
     episode stored cropped (3832x1600) and the same episode stored letterboxed (3840x2160, picture
-    3840x1608) both count as a 3840x2160 frame. Scoring the stored pixels made four letterboxed SDR
-    MobLand S02 episodes outrank their Dolby Vision twins, and the 2026-11-06 ``--doit`` run deleted the
-    Dolby Vision copies. A 4:3 picture (1440x1080) likewise counts as its pillarboxed 1920x1080 frame.
+    3840x1608) both count as a 3840x2160 frame; otherwise a letterboxed SDR copy outranks its cropped
+    HDR twin. A 4:3 picture (1440x1080) likewise counts as its pillarboxed 1920x1080 frame.
 
     Args:
         width: Stored video width in pixels (None or 0 when unknown).

@@ -170,7 +170,7 @@ def _fetch_localized_for_episode(
     differently. When the episode has a TVDB id, TMDB's episode for that id is
     used instead, but only when its title matches the Emby episode name better
     than the episode at Emby's numbers: TMDB's TVDB links are themselves wrong
-    for some shows (Mayday S04/S26, DS9 S01; 2026-10-18).
+    for some shows.
     """
     season = item["ParentIndexNumber"]
     episode = item["IndexNumber"]

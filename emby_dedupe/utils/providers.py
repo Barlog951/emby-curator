@@ -33,9 +33,8 @@ def provider_id_conflict(a: dict[str, Any] | None, b: dict[str, Any] | None) -> 
     """Why two items are certainly different titles (their IMDb or TMDb ids differ), or None.
 
     Grouping unions items that share ANY provider id, and TVDB gives some unrelated films
-    one id: Squared Love Everlasting and Squared Love All Over Again (2023) share TVDB
-    348427 but not their IMDb/TMDb ids, so dedupe paired them (2026-10-13). An id that
-    only one side has is no conflict.
+    one id, so differing IMDb/TMDb ids override a shared TVDB id. An id that only one
+    side has is no conflict.
     """
     left, right = normalize_provider_ids(a), normalize_provider_ids(b)
     for provider in IDENTITY_PROVIDERS:

@@ -1,13 +1,12 @@
 """
-Quality comparison module for comparing proposed media with existing items.
+Quality comparison of a proposed media item against existing library items.
 
-The quality scoring here is now UNIFIED with the deduplication path: both
-``ExistingQuality.calculate_score`` (this module) and
-``metadata._calculate_quality_rating`` delegate to the single normalised model in
-``emby_dedupe.api.scoring`` (megapixels + HDR + Mbps + channels, with a
-codec-adjusted starved-bitrate demotion and the Dolby Vision Profile-5 penalty). A
-``check`` recommendation and a dedupe keep/delete decision therefore agree on the
-ordering of the same pair of files.
+Scoring is shared with the deduplication path: both ``ExistingQuality.calculate_score``
+(this module) and ``metadata._calculate_quality_rating`` delegate to the single
+normalised model in ``emby_dedupe.api.scoring`` (megapixels + HDR + Mbps + channels,
+with a codec-adjusted starved-bitrate demotion and the Dolby Vision Profile-5 penalty),
+so a ``check`` recommendation and a dedupe keep/delete decision order the same pair of
+files identically.
 """
 
 from __future__ import annotations
@@ -94,16 +93,15 @@ AUDIO_CHANNEL_MAP = {
     "mono": 1,
 }
 
-# Quality factor weights (UPDATED: research-based comprehensive quality scoring)
-# NOTE: Bitrate weight increased from 0.2 to 0.8 based on industry research
-# NOTE: File size weight reduced from 0.3 to 0.1 to prevent dominance over resolution
-# NOTE: date_added weight at 0.00001 to prevent timestamp dominance
+# Quality factor weights. Resolution is the baseline; bitrate carries most of the
+# remaining weight, file size stays small so it cannot outweigh resolution, and the
+# added date only breaks ties.
 QUALITY_WEIGHTS = {
-    "resolution": 1.0,      # Baseline (pixels)
-    "audio_channels": 0.5,  # Audio quality
-    "bitrate": 0.8,         # INCREASED: Critical for quality assessment
-    "file_size": 0.1,       # REDUCED: Prevent dominance
-    "date_added": 0.00001,  # Minimal influence
+    "resolution": 1.0,
+    "audio_channels": 0.5,
+    "bitrate": 0.8,
+    "file_size": 0.1,
+    "date_added": 0.00001,
 }
 
 # Source quality tiers and multipliers (35% weight in final score)
@@ -159,9 +157,8 @@ CODEC_EFFICIENCY = {
     "h264": 1.0,    # H.264 variant
 }
 
-# AI upscale detection: "AI" + optional separator + UPSCALE/ENHANCED, any case, or plain "UPSCALED".
-# A separator list missed the space form ("4K AI Upscale [CZ]", 2026-10-11), which let an AI
-# upscale pass the gate as a real 1080p -> 2160p upgrade. "AI" must not follow a letter or digit.
+# AI upscale detection: "AI" + optional separator (space, dot, underscore, hyphen) +
+# UPSCALE/ENHANCED, any case, or plain "UPSCALED". "AI" must not follow a letter or digit.
 AI_UPSCALE_RE = re.compile(r"(?<![a-z0-9])AI[ ._-]?(?:UPSCAL|ENHANCED)|UPSCALED", re.IGNORECASE)
 
 
@@ -314,9 +311,8 @@ def get_bpp_multiplier(bpp: float, codec: str | None = None) -> float:
     effective_bpp = bpp / _get_codec_efficiency_ratio(codec)
 
     if effective_bpp >= BPP_QUALITY_BANDS["excellent"]:
-        return 1.1  # Excellent quality (tightened from 1.2 to prevent
-                     # 1080p files with naturally high BPP from dominating
-                     # 4K files with lower but codec-efficient BPP)
+        return 1.1  # Excellent; kept modest so a high-BPP 1080p file does not
+                     # outrank a codec-efficient 4K file with lower BPP
     elif effective_bpp >= BPP_QUALITY_BANDS["good"]:
         return 1.05  # Good quality
     elif effective_bpp >= BPP_QUALITY_BANDS["acceptable"]:
@@ -637,8 +633,7 @@ def _detect_resolution_from_dimensions(width: int, height: int) -> str | None:
 
     Width counts as much as height, and both get a margin (``RESOLUTION_CLASSES``):
     wide films are shorter than 16:9 (1920x800), and cropped releases are a few pixels
-    narrower too. A 3832x1600 4K MobLand episode came out as "1080p" here and the torrents
-    check reported a 2160p upgrade as a "bug" (2026-11-04).
+    narrower too, so a 3832x1600 picture is 2160p, not 1080p.
 
     Args:
         width: Video width in pixels.
@@ -1162,12 +1157,11 @@ def _adopt_existing_frame(proposed_item: ExistingQuality, existing: list[Existin
     """Give the proposed item the real frame size of a same-width existing copy.
 
     A proposed (torrent) item only knows its resolution class, so "2160p" becomes 3840x2160
-    (16:9). A film keeps its aspect ratio in every release, though: a scope film is 3840x1600
-    in the library AND in the torrent. Scoring the torrent as 16:9 handed it ~21 points of
-    resolution it doesn't have, enough to beat a copy with three times its bitrate (The
-    Voyeurs, 2026-10-05). Only the same width class is matched: an existing copy of another
-    resolution may be anamorphic (a 720x576 DVD holds a 16:9 picture), so its stored shape
-    says nothing reliable about the proposed one.
+    (16:9). A film keeps its aspect ratio in every release: a scope film is 3840x1600 in the
+    library and in the torrent, and scoring the torrent as 16:9 would credit it with
+    resolution it does not have. Only the same width class is matched: an existing copy of
+    another resolution may be anamorphic (a 720x576 DVD holds a 16:9 picture), so its stored
+    shape says nothing reliable about the proposed one.
 
     Args:
         proposed_item: The proposed item, scored as an ExistingQuality.
@@ -1312,8 +1306,8 @@ def _apply_bluray_native_exception(
 
 
 # A newcomer that differs from the owned copy only in bitrate must carry this much more of it.
-# Bitrate here is size ÷ runtime: an extra dub or a repack moves it by a few percent (the
-# Futurama DSNP packs, 2026-10-15: +3 %), which is noise, not a better picture.
+# Bitrate here is size ÷ runtime: an extra dub or a repack moves it by a few percent, which
+# is noise, not a better picture.
 SAME_KIND_MIN_BITRATE_GAIN = 1.20
 
 
@@ -1334,11 +1328,9 @@ def _differs_only_in_bitrate(proposed: ExistingQuality, existing: ExistingQualit
     real change the score already weighs, so the bitrate margin does not apply then.
 
     An existing copy with no tagged audio language cannot show that it lacks one, so the
-    language test passes for it. Regression (torrents gate, 2026-11-05): Pečie celé Slovensko
-    S06E05 was re-listed with "slk" taken from the tracker name, the library copy of the same
-    release had one "und" track, the language sort ranked the torrent first, and the margin
-    never ran, so the same release was downloaded again as a "(2)" duplicate. A copy with a
-    tagged track beside an untagged one still has to carry the newcomer's languages tagged.
+    language test passes for it; otherwise a re-listed release whose library copy has a
+    single ``und`` track would be downloaded again as a duplicate. A copy with a tagged
+    track beside an untagged one still has to carry the newcomer's languages tagged.
     """
     p, e = proposed.score_breakdown(), existing.score_breakdown()
     existing_languages = _normalized_languages(existing.audio_languages)
@@ -1360,12 +1352,11 @@ def _apply_same_kind_margin(
 ) -> Literal["download", "skip"]:
     """Refuse an "upgrade" that is the same kind of copy with a slightly higher bitrate.
 
-    Regression (2026-10-15): a Futurama S02 DSNP pack was sent with one sample file's bitrate
-    for every episode, so each owned episode encoded a little below that sample "upgraded"
-    (S02E03: 4.157 vs 4.139 Mbps, score 25.91 vs 25.89), and the download overwrote the library
-    files. When the copies differ only in bitrate, the newcomer must carry
-    ``SAME_KIND_MIN_BITRATE_GAIN`` times the owned bitrate. With either bitrate unknown the
-    rule has no evidence and leaves the recommendation alone.
+    A pack is reported with one sample file's bitrate for every episode, so an owned episode
+    encoded a little below that sample would otherwise count as an upgrade. When the copies
+    differ only in bitrate, the newcomer must carry ``SAME_KIND_MIN_BITRATE_GAIN`` times the
+    owned bitrate. With either bitrate unknown the rule has no evidence and leaves the
+    recommendation alone.
 
     Args:
         proposed_as_existing: Proposed item as ExistingQuality.
@@ -1430,12 +1421,10 @@ def _apply_pal_speedup_rule(
 ) -> Literal["download", "skip"]:
     """Refuse a film "upgrade" that is the owned film sped up to 25 fps (PAL).
 
-    Regression (torrents gate, 2026-11-06 02:36): Inheritance (2025) #4590, a 25 fps 1080p x264
-    WEB-DL (6748 kb/s, 95 min, cze + eng AAC 2.0), outscored the owned 1080p x265 (3.3 Mb/s,
-    99 min, cze + eng 5.1, with the CZ dub of the same release already merged in at original
-    speed) on raw bitrate alone, 28.44 vs 24.99. The download brought the same dub sped up
-    and stereo only. Films only: pack runtimes are one sample for many episodes, so an episode
-    ratio says nothing. With either runtime unknown the rule has no evidence and stays out.
+    A 25 fps re-encode of an owned 24 fps film can outscore it on raw bitrate while bringing
+    the same dub sped up and nothing else. Films only: pack runtimes are one sample for many
+    episodes, so an episode ratio says nothing. With either runtime unknown the rule has no
+    evidence and stays out.
 
     Args:
         proposed_as_existing: Proposed item as ExistingQuality.
@@ -1528,9 +1517,8 @@ def compare_quality(
     recommendation = _apply_pal_speedup_rule(proposed_as_existing, best_existing, existing_items, recommendation)
     reason ="better_quality" if recommendation == "download" else "same_or_worse"
 
-    # Resolution dominance is now handled by the unified normalised scoring model
-    # (resolution-dominant, with a codec-adjusted starved-bitrate demotion and the
-    # Dolby Vision Profile-5 penalty) — no manual override needed here.
+    # Resolution dominance comes from the scoring model itself (codec-adjusted
+    # starved-bitrate demotion, Dolby Vision Profile-5 penalty); no override here.
 
     # Calculate scores for reporting
     best_existing_score = best_existing.calculate_score()

@@ -177,7 +177,7 @@ def _first_int(text: str) -> int | None:
 # ---------------------------------------------------------------------------
 
 # Opening tags are matched whole ([^>]*>) and their attributes tested separately: a pattern like
-# '<section[^>]+data-…="x"[^>]*>' backtracks super-linearly (Sonar S8786, 2026-10-14).
+# '<section[^>]+data-…="x"[^>]*>' backtracks super-linearly.
 _SECTION_OPEN_RE = re.compile(r"<section\b([^>]*)>")
 _SEARCH_KIND_RE = re.compile(r'data-search-results="([a-z]+)"')
 _ARTICLE_RE = re.compile(r"<article\b.*?</article>", re.S)
@@ -315,8 +315,8 @@ def pick_creator(creators: list[CsfdCreator], name: str, need_photo: bool = True
 _ORIGIN_RE = re.compile(r'<div class="origin">(.*?)</div>', re.S)
 _GENRES_RE = re.compile(r'<div class="genres">(.*?)</div>', re.S)
 # A long plot comes twice: the full text in a hidden `plot-full hidden` div, then a `plot-preview` that ends in
-# a "viac" (more) link. Prefer the full text; clean_plot drops the link word either way (2026-11-04: 113
-# overviews ended in "( Česká televize ) viac" because only an exact `class="plot-full"` matched).
+# a "viac" (more) link. Prefer the full text (the class may carry extra tokens); clean_plot drops the link
+# word either way.
 _PLOT_FULL_RE = re.compile(r'<div class="plot-full(?:\s[^"]*)?">(.*?)</div>', re.S)
 _PLOT_PREVIEW_RE = re.compile(r'<div class="plot-preview(?:\s[^"]*)?">(.*?)</div>', re.S)
 _PLOT_MORE_WORDS = ("viac", "více")
@@ -579,7 +579,7 @@ class CsfdClient:
         key = f"film:{url}"
         cached = self._cache.get(key) if self._cache is not None else None
         if cached is not None and "cast" in cached:  # entries from before cast was parsed refetch
-            # entries parsed before 2026-11-04 can still end in "( Česká televize ) viac"
+            # older cache entries may still end in the source credit and the "viac" link word
             return CsfdFilm(**{**cached, "plot": clean_plot(cached.get("plot") or "")})
         film = parse_film(self._get_page(url), url)
         if self._cache is not None:

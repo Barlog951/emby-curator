@@ -4,7 +4,7 @@ A large run is hundreds of near-identical groups (149 Smallville episodes upgrad
 same way). The report summarises them as rows such as "Smallville · S03 · 22 files ·
 480p HDTV → 1080p WEB-DL", while keeping every file's evidence inside the row.
 
-Rules that keep the summary from hiding a wrong deletion (design reviews, 2026-10-11):
+Rules that keep the summary from hiding a wrong deletion:
 
 - **Per file, not per group.** Each delete item is classified on its own; a group with one
   deleted and one blocked file contributes to both sections.

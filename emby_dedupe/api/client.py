@@ -423,24 +423,22 @@ def fetch_all_media_paths(client: httpx.Client, base_url: str) -> list:
 
     The deletion safety guard tells a *dedicated* folder (Emby fold-deletes it when the
     file is removed) from a *shared* one (Emby deletes only the file) by checking which
-    other media files share the folder. The dedup *decision* paths only know about the
+    other media files share the folder. The dedup decision paths only know about the
     duplicated items, so a season/collection folder holding a single duplicated episode
-    looks "dedicated" and the guard over-refuses a perfectly safe file-only delete
-    (the Dutton/Proud false positives). Feeding it every library path restores that
-    folder visibility.
+    looks dedicated and the guard over-refuses a safe file-only delete. Feeding it every
+    library path restores that folder visibility.
 
     Both this and the decision paths read Emby's verbatim ``Path`` field, so identical
-    items produce byte-identical strings that dedupe exactly — a mismatch could hide the
-    keeper from the guard, which is why nothing here normalises the path.
+    items produce byte-identical strings that dedupe exactly; nothing here normalises the
+    path, because a mismatch could hide the keeper from the guard.
 
-    Restricted to ``Movie,Episode`` on purpose: only primary media may count as
-    same-folder evidence of a *shared* folder. Trailers/extras/samples/theme audio can
-    sit directly in a dedicated movie folder and, if counted, would make the guard think
-    the folder is shared → allow the delete → Emby fold-deletes the folder → the keeper is
-    destroyed (the exact catastrophic under-refusal this guard exists to prevent). The
-    keeper/delete items are themselves Movie/Episode and are added separately from the
-    decision paths, so this filter only ever removes spurious "shared" votes (→ over-refuse,
-    which is safe), never hides a keeper.
+    Restricted to ``Movie,Episode``: only primary media may count as same-folder evidence
+    of a shared folder. Trailers, extras, samples and theme audio can sit directly in a
+    dedicated movie folder; counting them would make the folder look shared, allow the
+    delete, and let Emby fold-delete the folder with the keeper in it. The keeper/delete
+    items are themselves Movie/Episode and are added separately from the decision paths,
+    so this filter only removes spurious "shared" votes (over-refusal, which is safe) and
+    never hides a keeper.
 
     Args:
         client: The httpx client configured for the Emby server.
@@ -629,9 +627,8 @@ def _index_by_series_episode(item: dict, library_name: str, provider_tables: dic
     This catches duplicates where one copy has no provider IDs at all. The series is
     identified by Emby's SeriesId, not just its name: two different shows can share a
     name (the 2005 cartoon and the 2024 live-action *Avatar: The Last Airbender*), and
-    keying on the name alone paired their episodes (refused by the runtime guard every
-    run, 2026-10-11). A show split across two folders is two Emby series; its copies
-    still pair through their episode provider ids.
+    keying on the name alone would pair their episodes. A show split across two folders
+    is two Emby series; its copies still pair through their episode provider ids.
     """
     series_name = item.get("SeriesName")
     season = item.get("ParentIndexNumber")

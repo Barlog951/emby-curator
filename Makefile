@@ -1,5 +1,5 @@
 -include .sonar-token
-export SONAR_TOKEN
+export SONAR_TOKEN SONAR_URL
 
 .PHONY: help clean test test-fast test-all test-parallel test-stats coverage lint lint-all lint-fix mypy deadcode quality install dev allfx all sonar sonar-quick sonar-reports sonar-issues sonar-bugs sonar-critical sonar-new sonar-all sonar-metrics sonar-gate-check sonar-gate-wait install-hooks
 
@@ -126,15 +126,15 @@ sonar-reports:
 # Full SonarQube analysis - FAILS with exit code 1 if quality gate fails
 sonar: sonar-reports
 	@echo "Running SonarQube analysis..."
-	@sonar-scanner
+	@sonar-scanner -Dsonar.host.url=$${SONAR_URL:-http://localhost:9000}
 	@echo ""
 	@echo "Waiting for SonarQube processing and checking quality gate..."
 	@python -m tools.sonar.quality_gate --wait
 
 # Quick SonarQube scan with verbose output
 sonar-quick: sonar-reports
-	sonar-scanner -X
-	@echo "View results: http://sonarqube.sonarcube.orb.local/dashboard?id=emby-dedupe"
+	sonar-scanner -X -Dsonar.host.url=$${SONAR_URL:-http://localhost:9000}
+	@echo "View results: $${SONAR_URL:-http://localhost:9000}/dashboard?id=emby-dedupe"
 
 # Fetch and display SonarQube issues
 sonar-issues:

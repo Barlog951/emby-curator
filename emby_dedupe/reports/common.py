@@ -30,8 +30,7 @@ def _safe_int_conversion(value: Any) -> int:
 
 
 # Statuses that mean the file is really gone: an Emby delete, or the file-only removal
-# --fold-safe-delete makes for a duplicate the guard refused. Counting only "success"
-# reported real fold-safe deletions as "skipped" and their space as unreclaimed.
+# --fold-safe-delete makes for a duplicate the guard refused. Both count as reclaimed space.
 DELETED_STATUSES = frozenset({"success", "fold_safe_removed"})
 
 # Statuses only a dry run produces: nothing was attempted. ``would_block`` is a delete

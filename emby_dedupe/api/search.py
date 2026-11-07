@@ -160,8 +160,8 @@ def search_by_provider_id(
     }
     provider_type = provider_type_map.get(provider_type.lower(), provider_type)
 
-    # ``AnyProviderIdEquals`` is the filter Emby honours; ``Any{Provider}Id`` was never
-    # one and made Emby return the whole library (see EmbyChecker._find_validated_series).
+    # ``AnyProviderIdEquals`` is the filter Emby honours; ``Any{Provider}Id`` is ignored
+    # and returns the whole library (see EmbyChecker._find_validated_series).
     params = {
         "api_key": api_key,
         "AnyProviderIdEquals": f"{provider_type.lower()}.{provider_id}",
@@ -234,8 +234,8 @@ def _is_title_variant(requested: str, candidate: str) -> bool:
     Only two shapes qualify: the shorter title is the START of the longer one (a subtitle:
     "Eden" → "Eden - Du bezahlst für jede Lüge"), or the titles differ only by a possessive
     brand ("Daredevil" → "Marvel's Daredevil"). A title buried inside another one is a
-    different show: "Eden" ⊂ "East of Eden" / "Welcome to Eden" (torrents gate, 2026-10-07),
-    "The Middle" ⊂ "Malcolm in the Middle".
+    different show: "Eden" ⊂ "East of Eden" / "Welcome to Eden", "The Middle" ⊂ "Malcolm in
+    the Middle".
     """
     a, b = _brandless(requested), _brandless(candidate)
     if a == b:
@@ -255,9 +255,8 @@ def select_series_candidate(
 ) -> dict[str, Any] | None:
     """Pick the Emby series that really is ``series_name`` from a SearchTerm result.
 
-    Emby's SearchTerm is a substring search and ``titles_match`` accepts containment,
-    so "Malcolm in the Middle" happily matched the unrelated show "The Middle" and
-    149 of 151 episodes of a season pack were dropped as "duplicates" (2026-08-29).
+    Emby's SearchTerm is a substring search and ``titles_match`` accepts containment, so
+    without these rules "Malcolm in the Middle" resolves to the unrelated show "The Middle".
 
     Rules (deterministic, cheapest first):
       1. A candidate whose provider id CONFLICTS with a supplied id is never a match.

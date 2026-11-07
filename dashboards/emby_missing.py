@@ -27,7 +27,10 @@ def imports():
 
     sys.path.insert(0, str(mo.notebook_dir()))
     import shared
-    return Path, ThreadPoolExecutor, datetime, go, httpx, jsonlib, mo, os, pd, shared, threading, time, timedelta
+
+    # Where the export cells write their JSON (EMBY_MISSING_EXPORT_DIR overrides).
+    EXPORT_DIR = Path(os.environ.get("EMBY_MISSING_EXPORT_DIR", Path.home() / "emby-missing"))
+    return EXPORT_DIR, Path, ThreadPoolExecutor, datetime, go, httpx, jsonlib, mo, os, pd, shared, threading, time, timedelta
 
 
 @app.cell
@@ -772,7 +775,7 @@ def tab_export_data(
 
 
 @app.cell
-def tab_export_preview(EMBY_HOST, EMBY_SERVER_ID, export_data_ready, export_max_shows, export_min_complete, export_missing_range, export_btn, mo):
+def tab_export_preview(EMBY_HOST, EMBY_SERVER_ID, EXPORT_DIR, export_data_ready, export_max_shows, export_min_complete, export_missing_range, export_btn, mo):
     """Show preview table and filters — always visible."""
     _preview_rows = []
     for _e in export_data_ready:
@@ -791,7 +794,7 @@ def tab_export_preview(EMBY_HOST, EMBY_SERVER_ID, export_data_ready, export_max_
         mo.md("## Export Missing Episodes for Czech Tracker"),
         mo.callout(
             "Filter shows, preview what will be exported, then click Export. "
-            "Output: `/Users/dodko/DEV/torrents/data/missing_episodes.json` (symlink to latest)",
+            f"Output: `{EXPORT_DIR / 'missing_episodes.json'}` (symlink to latest)",
             kind="info",
         ),
         mo.hstack([export_missing_range, export_min_complete, export_max_shows], gap="1rem"),
@@ -806,12 +809,12 @@ def tab_export_preview(EMBY_HOST, EMBY_SERVER_ID, export_data_ready, export_max_
 
 
 @app.cell
-def tab_export_do(Path, datetime, export_btn, export_data_ready, export_preview, jsonlib, mo, os):
+def tab_export_do(EXPORT_DIR, datetime, export_btn, export_data_ready, export_preview, jsonlib, mo, os):
     """Execute export when run_button is clicked."""
     if export_btn.value and export_data_ready:
         _now = datetime.now()
         _ts = int(_now.timestamp())
-        _export_dir = Path("/Users/dodko/DEV/torrents/data")
+        _export_dir = EXPORT_DIR
         _export_dir.mkdir(parents=True, exist_ok=True)
         _out_path = _export_dir / f"missing_episodes_{_ts}.json"
         _link_path = _export_dir / "missing_episodes.json"
@@ -878,7 +881,7 @@ def franchise_export_data_cell(datetime, franchise_export_raw, fran_export_min_p
 
 
 @app.cell
-def franchise_export_preview_cell(fran_export_data_ready, fran_export_min_pct, fran_export_missing_range, fran_export_btn, mo):
+def franchise_export_preview_cell(EXPORT_DIR, fran_export_data_ready, fran_export_min_pct, fran_export_missing_range, fran_export_btn, mo):
     """Show franchise export preview."""
     _preview_rows = []
     for _c in fran_export_data_ready:
@@ -898,7 +901,7 @@ def franchise_export_preview_cell(fran_export_data_ready, fran_export_min_pct, f
         mo.md("## Export Missing Franchise Movies"),
         mo.callout(
             "Export incomplete franchise/collection movies. "
-            "Output: `/Users/dodko/DEV/torrents/data/missing_franchise_movies.json`",
+            f"Output: `{EXPORT_DIR / 'missing_franchise_movies.json'}`",
             kind="info",
         ),
         mo.hstack([fran_export_missing_range, fran_export_min_pct], gap="1rem"),
@@ -913,12 +916,12 @@ def franchise_export_preview_cell(fran_export_data_ready, fran_export_min_pct, f
 
 
 @app.cell
-def franchise_export_do_cell(Path, datetime, fran_export_btn, fran_export_data_ready, franchise_export_preview, jsonlib, mo, os):
+def franchise_export_do_cell(EXPORT_DIR, datetime, fran_export_btn, fran_export_data_ready, franchise_export_preview, jsonlib, mo, os):
     """Execute franchise export."""
     if fran_export_btn.value and fran_export_data_ready:
         _now = datetime.now()
         _ts = int(_now.timestamp())
-        _export_dir = Path("/Users/dodko/DEV/torrents/data")
+        _export_dir = EXPORT_DIR
         _export_dir.mkdir(parents=True, exist_ok=True)
         _out_path = _export_dir / f"missing_franchise_movies_{_ts}.json"
         _link_path = _export_dir / "missing_franchise_movies.json"

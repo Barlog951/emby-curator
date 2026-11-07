@@ -70,8 +70,7 @@ PROVIDER_KEYS = ("Tmdb", "Imdb", "Tvdb")
 CSFD_PROVIDER_KEY = "Csfd"
 CACHE_SAVE_EVERY = 10
 # Emby omits these unless asked: People for the cast gap, OriginalTitle for the strict
-# matcher's second title, Path for the AI path's folder name (neither was requested before
-# 2026-09-23, so only the Name was ever looked up).
+# matcher's second title, Path for the AI matcher's folder name.
 ITEM_EXTRA_FIELDS = "People,Path,OriginalTitle"
 READ_ONLY_FIELDS = ("Path", "OriginalTitle")  # fetched for matching, never written back
 ROLE_ABBREVIATIONS = {"a.z.": "archívne zábery"}  # ČSFD's shorthand for archive footage
@@ -141,10 +140,9 @@ def folder_name(item: dict) -> str:
 def title_queries(item: dict, include_folder: bool = True) -> list[str]:
     """Distinct search strings for an item: its Name, folder title, original title.
 
-    The folder title is not Emby's metadata: it can name a different film than the item's
-    Name (folder ``Peninsula (2020)`` holding an item Emby calls "Buklog: The Ritual System",
-    2026-09-23). The strict matcher, whose matches are applied, therefore passes
-    ``include_folder=False``; the folder only feeds the reviewed AI path.
+    The folder title is not Emby's metadata and can name a different film than the item's
+    Name, so the strict matcher, whose matches are applied, passes ``include_folder=False``;
+    the folder only feeds the reviewed AI path.
     """
     queries: list[str] = []
     folder_match = _FOLDER_TITLE_RE.match(folder_name(item)) if include_folder else None
@@ -292,7 +290,7 @@ def ai_state(item: dict) -> dict[str, object]:
 
 def describe_candidate(hit: CsfdHit, film: CsfdFilm) -> str:
     """One option line: title, year and kind, plus the country and original titles that
-    tell same-title-same-year films apart (El Conde vs the Korean *Count*, 2026-09-23)."""
+    tell same-title-same-year films apart."""
     text = f"{film.title} ({film.year or hit.year or '?'}), {hit.kind}"
     if film.countries:
         text += f"; country: {', '.join(film.countries)}"
@@ -368,9 +366,9 @@ class AiMatcher:
 def auto_allowed(note: str) -> bool:
     """Whether ``--ai-auto`` may apply a pick with this cross-check ``note``.
 
-    A lone Jev answer has no note (the pre-Claude behaviour). With both backends asked,
-    only an agreed pick qualifies: every Claude mistake measured on 2026-10-08 was a pick
-    Jev did not back. Claude alone never reaches here (``_make_ai_matcher`` refuses it).
+    A lone Jev answer has no note. With both backends asked, only an agreed pick qualifies:
+    Claude's wrong picks are the ones Jev does not back. Claude alone never reaches here
+    (``_make_ai_matcher`` refuses it).
     """
     return note == "" or note.startswith(AGREE)
 
@@ -408,7 +406,7 @@ def build_payload(item: dict, plan: ItemPlan) -> dict:
     for key, value in plan.fields.items():
         payload[key] = value
         # No lock for People: Emby 4.9 has no "Cast" lock enum and silently drops the
-        # whole LockedFields list when one is present (verified 2026-09-18).
+        # whole LockedFields list when one is present.
         lock_name = {"Overview": "Overview", "Genres": "Genres"}.get(key)
         if lock_name and lock_name not in locked:
             locked.append(lock_name)
@@ -540,9 +538,8 @@ def _ai_provider(args: argparse.Namespace, jev_key: str | None, claude_key: str 
 def _make_ai_matcher(args: argparse.Namespace) -> AiMatcher | None:
     """The AI fallback for this run, or None when --ai-match is off. Exits if a key is missing.
 
-    Claude proposes and Jev checks when both keys are there (measured 2026-10-08:
-    logs/haiku-poc/EVALUATION.md). Claude alone may only suggest: its confidence is a
-    vote share, and both of its wrong picks in that test were unanimous.
+    Claude proposes and Jev checks when both keys are there. Claude alone may only
+    suggest: its confidence is a vote share and its wrong picks can be unanimous.
     """
     if not getattr(args, "ai_match", False):
         return None

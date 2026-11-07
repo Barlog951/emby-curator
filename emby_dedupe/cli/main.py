@@ -129,9 +129,8 @@ class ResolvedConfig:
 def _resolve_configuration(args) -> ResolvedConfig:
     """Finish resolving a dedupe run's configuration from parsed arguments.
 
-    Environment variables are resolved by typer's ``envvar=`` declarations BEFORE this
-    runs (single resolution layer — the old duplicate env re-read produced false
-    "CLI overrides env" warnings). This only performs the steps typer cannot:
+    Environment variables are resolved by typer's ``envvar=`` declarations before this
+    runs; they are not read again here. This only performs the steps typer cannot:
     DEDUPE_LOGGING log-level setup, language/exclude-id parsing, auth gating on
     ``doit``, and the html_report |= html_only derivation.
 

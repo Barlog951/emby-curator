@@ -63,11 +63,10 @@ def is_english_overview(text: str) -> bool:
 def _looks_slavic(text: str) -> bool:
     """Return True iff text is detected as Czech or Slovak by lingua.
 
-    Earlier versions used a diacritic-based heuristic, but it false-positived
-    on English texts containing single foreign accents (e.g. "Bogotá" in an
-    English Overview was incorrectly flagged as Slavic).  Using the lingua
-    detector — already loaded for the title policy — is both more accurate
-    and consistent across Overview / Tagline / Title language decisions.
+    Uses the lingua detector (already loaded for the title policy) rather than a
+    diacritics heuristic, which misclassifies English text containing a single
+    accented name such as "Bogotá". One detector keeps Overview, Tagline and Title
+    language decisions consistent.
     """
     if not text or not text.strip():
         return False
@@ -267,9 +266,8 @@ def resolve_tmdb_episode_numbers(
     """Map an episode's TVDB id to TMDB's own season/episode numbers.
 
     Emby numbers episodes in TVDB order, but TMDB may order a season
-    differently: in Mayday S26, TVDB E01 (Widerøe 839) is TMDB E02, so
-    fetching TMDB by Emby's numbers wrote another episode's overview
-    (2026-10-18).  Uses TMDB ``/find`` with ``external_source=tvdb_id``.
+    differently, so fetching TMDB by Emby's numbers can return another
+    episode's overview.  Uses TMDB ``/find`` with ``external_source=tvdb_id``.
 
     Returns ``(season, episode)`` or None when TMDB has no match for this
     series.  Matches and "no match" are cached; transport errors are not.
@@ -650,8 +648,7 @@ def update_item_metadata(
         _apply_field_update(payload, "Name", new_title, "Name", locked)
     if tagline_changes:
         # Emby's data field is "Taglines" (plural list) but the LockedFields
-        # enum uses "Tagline" (singular). Empirically verified — "Taglines"
-        # in LockedFields is silently rejected.
+        # enum uses "Tagline" (singular); "Taglines" in LockedFields is silently rejected.
         _apply_field_update(payload, "Taglines", [new_tagline], "Tagline", locked)
     if year_changes:
         payload["ProductionYear"] = new_year

@@ -409,9 +409,8 @@ def prefetch_cleanup_posters(
 ) -> dict[str, str]:
     """Fetch the posters of the items about to be deleted, while Emby still has them.
 
-    The report is rendered after the deletions; by then a deleted item's image is gone,
-    so the one poster that matters most in a cleanup report used to be the one missing
-    (V/H/S/99, 2026-09-23). Returns ``{poster_url: data URI}`` for the ones fetched.
+    The report is rendered after the deletions, when a deleted item's image is already
+    gone. Returns ``{poster_url: data URI}`` for the ones fetched.
     """
     urls = [u for u in (poster_url(base_url, c.item_id, api_key) for c in candidates) if u]
     fetched = inline_poster_urls(urls, api_key)

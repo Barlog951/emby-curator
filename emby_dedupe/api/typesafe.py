@@ -5,10 +5,9 @@ This module only needs its ``choice`` question type: given a state and a map of
 options, Jev returns the chosen option, per-option probabilities and a
 confidence (0-1). One endpoint, so plain httpx rather than the vendor SDK.
 
-Connection handling matters here: one of the API's DNS addresses has been seen
-to never answer (connects hung 50-75 s, 2026-09-23). A short connect timeout
-plus retry moves on to the working address instead of waiting for the OS
-timeout, and one persistent client keeps the working connection alive.
+Connection handling matters here: one of the API's DNS addresses can hang on
+connect. A short connect timeout plus retry moves on to a working address instead
+of waiting for the OS timeout, and one persistent client keeps that connection alive.
 """
 from __future__ import annotations
 

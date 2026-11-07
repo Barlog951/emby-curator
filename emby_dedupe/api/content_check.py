@@ -1,10 +1,9 @@
 """Frame check: do two Emby items show the same picture?
 
 Dedupe pairs copies by provider id, season/episode and running time, which cannot tell
-two different episodes of similar length apart: on 2026-10-12 a Slovak NCIS S19E08 that
-was really E07 (swapped at the source) paired with the Czech E08, the lengths agreed
-within 2 %, and the Czech E08 was deleted. It also cannot prove that a PAL speed-up
-(25 fps, ~4 % shorter) is the same episode, so 42 such pairs were blocked every run.
+two different episodes of similar length apart (an episode mislabelled at the source
+pairs with the real one when the lengths agree within 2 %). It also cannot prove that
+a PAL speed-up (25 fps, ~4 % shorter) is the same episode.
 
 The check takes the keyframes of the kept copy at five points of its running time and
 looks for each one's twin in the other copy around the matching position. Frames are read
@@ -24,7 +23,7 @@ When the two copies differ in length, ``covers`` asks the opposite question: is 
 part of the copy that would be deleted also in the kept copy? It samples the copy to
 delete from its first to its last minute, needs every point found in the kept copy on one
 straight line, at the speed the two frame rates predict, with almost nothing left over at
-the edges. Only then is nothing lost by the delete (Fuki, 2026-10-12).
+the edges. Only then is nothing lost by the delete.
 """
 
 from __future__ import annotations
@@ -73,7 +72,7 @@ MIN_KEYFRAMES = 2
 WINDOW_FPS = 4  # the other copy is sampled this densely, so every keyframe has a near twin
 FFMPEG_TIMEOUT_SECONDS = 120
 PARALLEL_PAIRS = 4  # streaming from Emby over the network
-PARALLEL_PAIRS_ON_HOST = 12  # ffmpeg on the media host, next to the files (24 cores on emby-gpu)
+PARALLEL_PAIRS_ON_HOST = 12  # ffmpeg on the media host, next to the files
 # Saved verdicts are keyed by this: bump it whenever the method or a threshold changes,
 # so every pair is checked again under the new rules.
 CHECK_VERSION = 5
@@ -159,9 +158,9 @@ _SNAP_TOLERANCE = 0.01
 def standard_frame_rate(fps: float) -> float:
     """The picture rate behind what Emby reports.
 
-    Emby reports interlaced video at its field rate (a 1080i TV recording of The Killing:
-    50 for 25 pictures a second) and some x265 encodes at 23.809525 for 23.976, so a rate
-    of 47 or more is halved and a rate within 1 % of a standard one is snapped to it.
+    Emby reports interlaced video at its field rate (50 for 25 pictures a second on a
+    1080i recording) and some x265 encodes at 23.809525 for 23.976, so a rate of 47 or
+    more is halved and a rate within 1 % of a standard one is snapped to it.
     """
     rate = fps / 2 if fps >= 47 else fps
     nearest = min(STANDARD_FRAME_RATES, key=lambda r: abs(rate / r - 1))
@@ -186,10 +185,10 @@ def coverage_verdict(points: list[tuple[float, float]], other_seconds: float, ke
     ``points`` are (time in the other copy, offset) of every sampled point, all of them
     found in the kept copy; offset = kept-copy time minus time * ``speed``. They must lie on
     one straight line (a cut or extra scene shows as a step), the line's speed must be what
-    the frame rates predict (NCIS S05E15: an avi ~110 s longer at the SAME speed had its
-    extra minutes spread so evenly that the line looked like a PAL speed-up, but both frame
-    rates said otherwise), and the line may leave at most ``COVER_EDGE_EXTRA_SECONDS`` of
-    the other copy outside the kept one (a TV lead-in or a cold open is content).
+    the frame rates predict (extra minutes spread evenly through a longer copy can mimic
+    a PAL speed-up while both frame rates say otherwise), and the line may leave at most
+    ``COVER_EDGE_EXTRA_SECONDS`` of the other copy outside the kept one (a TV lead-in or
+    a cold open is content).
     """
     if expected is None:
         return "unsure", "frame rate unknown"
@@ -274,8 +273,8 @@ def stream_base_url(base_url: str) -> str:
     """``base_url`` without a default port (``:443`` on https, ``:80`` on http).
 
     dedupe builds ``https://host:443``; httpx leaves the default port out of the Host
-    header, but ffmpeg sends ``Host: host:443`` and the reverse proxy in front of Emby
-    answers 5xx, so on 2026-10-12 every frame check of a real run came back "unavailable".
+    header, but ffmpeg sends ``Host: host:443``, which a reverse proxy in front of Emby
+    may answer with 5xx.
     """
     base_url = base_url.rstrip("/")
     parts = urlsplit(base_url)
@@ -369,8 +368,7 @@ class FrameChecker:
 
         Emby groups copies in one folder as versions of each other, and
         ``/Videos/{id}/stream`` without ``MediaSourceId`` serves the group's default copy
-        for every item id: on 2026-10-12 a 720p BluRay and an NCIS SD avi both streamed
-        their 1080p sibling, so the check compared a file with itself and said "same".
+        for every item id, so the check would compare a file with itself.
         """
         if item_id not in self._sources:
             try:
@@ -408,8 +406,8 @@ class FrameChecker:
         By default only keyframes are decoded (``-skip_frame nokey``), ~25x cheaper than
         every frame. ``dense`` decodes everything and keeps ``WINDOW_FPS`` frames a
         second: encoders that place a keyframe every few seconds regardless of the
-        picture (TVD S07/S08 WEB-DL, every 4 s) leave a scene-cut keyframe of the other
-        copy with no twin nearby, which made the same episode look "unsure".
+        picture leave a scene-cut keyframe of the other copy with no twin nearby, which
+        makes the same episode look "unsure".
         ``showinfo`` logs each frame's time (relative to ``start``) on stderr.
         """
         item_id = item.get("id")

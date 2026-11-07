@@ -273,9 +273,9 @@ class EmbyChecker:
 
         The single write path behind every cache setter — atomic (sibling ``.tmp`` +
         rename) via ``utils.json_cache.save_json_cache``. No-op when caching is disabled.
-        Written compact (``indent=None``) — these are machine-only caches and the
+        Written compact (``indent=None``): these are machine-only caches and the
         provider-ID tables for a large library are big enough that ``indent=2`` would
-        roughly double the file; this matches the pre-refactor compact writes.
+        roughly double the file.
         """
         if not self.use_cache:
             return
@@ -469,12 +469,10 @@ class EmbyChecker:
     def _lookup_items_of_kind(self, config: CheckConfig, is_episode: bool) -> list | None:
         """Provider-table lookup that only returns items of the kind being checked.
 
-        TMDb and TVDB number movies, series and episodes in separate namespaces, so an
-        episode check's series-level ``tmdb=4614`` (NCIS) matched the MOVIE *The Sum of
-        All Fears* (TMDb movie 4614) and blocked NCIS S20 as "same or worse"
-        (2026-10-11). For an episode the series-level TMDb/TVDB ids are left to the
-        series fallback; IMDb ids are unique across kinds and are still looked up.
-        Items of the other kind are dropped either way.
+        TMDb and TVDB number movies, series and episodes in separate namespaces, so a
+        series-level TMDb id can equal an unrelated movie's id. For an episode the
+        series-level TMDb/TVDB ids are left to the series fallback; IMDb ids are unique
+        across kinds and are still looked up. Items of the other kind are dropped either way.
 
         Returns:
             Matching items, or None when nothing of the right kind was found.
@@ -489,14 +487,10 @@ class EmbyChecker:
     ) -> dict | None:
         """Search Emby for a series matching the given provider ID.
 
-        ``AnyProviderIdEquals=<provider>.<id>`` is the filter Emby actually honours;
-        the former ``Any{Provider}Id`` param is not one, so Emby returned EVERY series
-        (2,527 of them) and the match relied on the validation loop alone. That loop
-        compared the ``ProviderIds`` key case-sensitively, and Emby writes it as
-        ``"Imdb"`` OR ``"IMDB"`` (877/2,527 series carry the upper-case form) — those
-        series were invisible to the gate, so *Bad Exorcist* (IMDB tt13624584, present
-        in full) was re-downloaded on 2026-09-13. The result is still validated, key
-        case-insensitively, in case a server ignores the filter.
+        ``AnyProviderIdEquals=<provider>.<id>`` is the filter Emby honours; an
+        ``Any{Provider}Id`` param is ignored and returns every series. The result is
+        validated against ``ProviderIds`` with a case-insensitive key compare, because
+        Emby writes the key as either ``"Imdb"`` or ``"IMDB"``.
 
         Returns:
             Matching series dict, or None if not found.
@@ -683,12 +677,10 @@ class EmbyChecker:
         Raises:
             EmbyConfigError: host/api_key are not configured. (Also a ValueError,
                 so existing ``except ValueError`` handlers keep working.)
-            TypeError: an unknown keyword argument was passed (previously such typos
-                were silently ignored; CheckConfig now rejects them).
+            TypeError: an unknown keyword argument was passed (CheckConfig rejects it).
         """
         # Single source of parameter values: build a CheckConfig from kwargs when one
-        # was not supplied. Unknown kwargs now raise TypeError instead of being
-        # silently dropped (the old hand-copied kwargs.get() footgun).
+        # was not supplied, so an unknown kwarg raises instead of being dropped.
         config = config if config is not None else CheckConfig(**kwargs)
 
         # Validate configuration
@@ -778,7 +770,7 @@ class EmbyChecker:
         it runs :meth:`check` for every ``(season, episode)`` and folds the results
         into one :class:`EpisodeSetResult` (found count, per-season download list,
         whether every existing episode is same-or-better). It owns the loop so
-        consumers no longer hand-roll it.
+        consumers do not hand-roll it.
 
         Args:
             episodes: Mapping of season number to the episode numbers to check,
@@ -860,9 +852,9 @@ class EmbyChecker:
     def test_connection(self) -> bool:
         """Verify the Emby server is reachable and the API key is valid.
 
-        A lightweight probe (``GET /System/Info``) — unlike a fabricated ``check()``
-        it performs a real network round-trip every call (no result cache), so it
-        cannot pass against a server that is actually down.
+        A lightweight probe (``GET /System/Info``) that performs a real network
+        round-trip every call (no result cache), so it cannot pass against a server
+        that is down.
 
         Returns:
             True if the server responds successfully.

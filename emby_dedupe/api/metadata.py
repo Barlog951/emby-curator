@@ -9,10 +9,9 @@ from typing import Any
 
 from emby_dedupe.api.quality_compare import detect_ai_upscale, detect_source_quality
 
-# ``DOVI_P5_QUALITY_PENALTY`` and ``_is_dovi_profile5`` now live in the shared
-# ``scoring`` module and are re-exported here for backward compatibility — the DV-P5
-# test suite imports ``_is_dovi_profile5`` from this module. (The redundant ``as``
-# alias marks the penalty constant as an intentional re-export, not dead import.)
+# ``DOVI_P5_QUALITY_PENALTY`` and ``_is_dovi_profile5`` live in the shared ``scoring``
+# module and are re-exported here for backward compatibility (the DV-P5 tests import
+# ``_is_dovi_profile5`` from this module). The ``as`` alias marks an intentional re-export.
 from emby_dedupe.api.scoring import DOVI_P5_QUALITY_PENALTY as DOVI_P5_QUALITY_PENALTY
 from emby_dedupe.api.scoring import (
     _is_dovi_profile5,
@@ -420,11 +419,9 @@ def _video_bitrate_mbps(item: dict[str, Any], video_stream: dict[str, Any] | Non
 def _hdr_bonus(video_stream: dict[str, Any] | None) -> float:
     """1.0 for real HDR (HDR10/HDR10+/Dolby Vision/HLG), 0.0 for SDR/unknown.
 
-    Read from the video stream's ``VideoRange`` only, never from the file name:
-    release names lie. Chimp Empire S01E02–E04 "… 1080p WEB-DL HDR CZ.mkv" were
-    8-bit H264 SDR, earned a filename HDR bonus and beat their 5.1 siblings in the
-    2026-10-30 ``--doit`` run, which deleted the 5.1 copies. The Dolby Vision
-    Profile-5 penalty is applied separately."""
+    Read from the video stream's ``VideoRange`` only, never from the file name: a
+    release tagged "HDR" in its name is regularly 8-bit SDR. The Dolby Vision Profile-5
+    penalty is applied separately."""
     return hdr_bonus_from_string((video_stream or {}).get("VideoRange"))
 
 
