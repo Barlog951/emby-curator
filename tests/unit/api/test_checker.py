@@ -1006,6 +1006,18 @@ class TestSeriesLookupHonoursEmbyKeyCasing:
         assert checker._lookup_episode_via_series("tt13624584", None, None, season=1, episode=1) is None
 
 
+_EMBY_ENV = ("DEDUPE_EMBY_HOST", "DEDUPE_EMBY_PORT", "DEDUPE_EMBY_API_KEY")
+
+
+@pytest.fixture
+def clean_emby_env(monkeypatch):
+    """No Emby connection variables (the CLI's .env autoload may have set them)."""
+    for name in _EMBY_ENV:
+        monkeypatch.delenv(name, raising=False)
+    return monkeypatch
+
+
+@pytest.mark.usefixtures("clean_emby_env")
 class TestFromConfigErrorContract:
     """Regression (code review 2026-07-10): from_config() must fail loudly, not build a
     checker with host=None that only errors on the first check()."""
@@ -1246,3 +1258,77 @@ class TestProviderIdKindCollision:
             result = checker.check(name="The Sum of All Fears", tmdb="4614")
         by_name.assert_not_called()
         assert result.status != "not_found"
+
+
+class TestFromConfigEnvironment:
+    """from_config() falls back to the CLI's environment variables for a missing host or key."""
+
+    def test_environment_alone_suffices_without_config_file(self, tmp_path, clean_emby_env):
+        clean_emby_env.setattr("emby_dedupe.utils.config.CONFIG_FILE", tmp_path / "nope.yaml")
+        clean_emby_env.setenv("DEDUPE_EMBY_HOST", "http://emby:8096")
+        clean_emby_env.setenv("DEDUPE_EMBY_API_KEY", "env-key")
+        checker = EmbyChecker.from_config()
+        assert checker.host == "http://emby:8096"
+        assert checker.api_key == "env-key"
+
+    def test_port_variable_applies_like_the_cli(self, tmp_path, clean_emby_env):
+        clean_emby_env.setattr("emby_dedupe.utils.config.CONFIG_FILE", tmp_path / "nope.yaml")
+        clean_emby_env.setenv("DEDUPE_EMBY_HOST", "http://emby")
+        clean_emby_env.setenv("DEDUPE_EMBY_PORT", "8096")
+        clean_emby_env.setenv("DEDUPE_EMBY_API_KEY", "env-key")
+        assert EmbyChecker.from_config().host == "http://emby:8096"
+
+    def test_https_host_without_port_gets_the_scheme_default(self, tmp_path, clean_emby_env):
+        clean_emby_env.setattr("emby_dedupe.utils.config.CONFIG_FILE", tmp_path / "nope.yaml")
+        clean_emby_env.setenv("DEDUPE_EMBY_HOST", "https://emby.example.org")
+        clean_emby_env.setenv("DEDUPE_EMBY_API_KEY", "env-key")
+        assert EmbyChecker.from_config().host == "https://emby.example.org:443"
+
+    def test_config_file_values_win_over_environment(self, tmp_path, clean_emby_env):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("host: http://file-host:8096\napi_key: file-key\n")
+        clean_emby_env.setattr("emby_dedupe.utils.config.CONFIG_FILE", cfg)
+        clean_emby_env.setenv("DEDUPE_EMBY_HOST", "http://env-host:8096")
+        clean_emby_env.setenv("DEDUPE_EMBY_API_KEY", "env-key")
+        checker = EmbyChecker.from_config()
+        assert checker.host == "http://file-host:8096"
+        assert checker.api_key == "file-key"
+
+    def test_overrides_win_over_environment(self, tmp_path, clean_emby_env):
+        clean_emby_env.setattr("emby_dedupe.utils.config.CONFIG_FILE", tmp_path / "nope.yaml")
+        clean_emby_env.setenv("DEDUPE_EMBY_HOST", "http://env-host:8096")
+        clean_emby_env.setenv("DEDUPE_EMBY_API_KEY", "env-key")
+        checker = EmbyChecker.from_config(host="http://override:8096", api_key="override-key")
+        assert checker.host == "http://override:8096"
+        assert checker.api_key == "override-key"
+
+    def test_environment_fills_only_the_missing_key(self, tmp_path, clean_emby_env):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("host: http://file-host:8096\n")
+        clean_emby_env.setattr("emby_dedupe.utils.config.CONFIG_FILE", cfg)
+        clean_emby_env.setenv("DEDUPE_EMBY_HOST", "http://env-host:8096")
+        clean_emby_env.setenv("DEDUPE_EMBY_API_KEY", "env-key")
+        checker = EmbyChecker.from_config()
+        assert checker.host == "http://file-host:8096"
+        assert checker.api_key == "env-key"
+
+    def test_missing_key_everywhere_still_raises_filenotfound(self, tmp_path, clean_emby_env):
+        from emby_dedupe.utils.exceptions import EmbyConfigMissingError
+
+        clean_emby_env.setattr("emby_dedupe.utils.config.CONFIG_FILE", tmp_path / "nope.yaml")
+        clean_emby_env.setenv("DEDUPE_EMBY_HOST", "http://emby:8096")
+        with pytest.raises(EmbyConfigMissingError) as exc:
+            EmbyChecker.from_config()
+        assert "DEDUPE_EMBY_API_KEY" in str(exc.value)
+
+    def test_bad_port_raises_config_error_without_the_value(self, tmp_path, clean_emby_env):
+        from emby_dedupe.utils.exceptions import EmbyConfigError
+
+        clean_emby_env.setattr("emby_dedupe.utils.config.CONFIG_FILE", tmp_path / "nope.yaml")
+        clean_emby_env.setenv("DEDUPE_EMBY_HOST", "http://emby")
+        clean_emby_env.setenv("DEDUPE_EMBY_PORT", "not-a-port")
+        clean_emby_env.setenv("DEDUPE_EMBY_API_KEY", "env-key")
+        with pytest.raises(EmbyConfigError) as exc:
+            EmbyChecker.from_config()
+        assert "DEDUPE_EMBY_PORT" in str(exc.value)
+        assert "not-a-port" not in str(exc.value)

@@ -13,6 +13,10 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
   library view drive the protections, separate from the `--username`/`--password` DELETE login. Deletions
   can run under a dedicated non-admin account while one person's favourites stay protected. Without it the
   protected user is `--username`, as before, and a warning says so.
+- **`EmbyChecker.from_config()` reads the environment.** A host or API key missing from overrides and
+  `~/.emby-dedupe/config.yaml` comes from `DEDUPE_EMBY_HOST` (with `DEDUPE_EMBY_PORT`) and
+  `DEDUPE_EMBY_API_KEY`, the variables the CLI already uses. Tools embedding the checker can run with
+  secrets injected as environment variables and no credentials file; existing config files win as before.
 
 ## [3.4.6] — 2026-11-07
 

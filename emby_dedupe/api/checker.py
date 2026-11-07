@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
@@ -41,6 +42,7 @@ from emby_dedupe.api.client import (
     fetch_and_process_media_items,
     fetch_items_details,
     get_library_id,
+    handle_host_and_port,
 )
 from emby_dedupe.api.quality_compare import (
     ComparisonResult,
@@ -51,6 +53,11 @@ from emby_dedupe.api.quality_compare import (
 )
 from emby_dedupe.api.search import SEARCH_FIELDS, search_media
 from emby_dedupe.utils.config import Config, ensure_cache_dir, get_config_path
+from emby_dedupe.utils.constants import (
+    ENV_DEDUPE_EMBY_API_KEY,
+    ENV_DEDUPE_EMBY_HOST,
+    ENV_DEDUPE_EMBY_PORT,
+)
 from emby_dedupe.utils.exceptions import EmbyConfigError, EmbyConfigMissingError
 from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.json_cache import load_json_cache, save_json_cache
@@ -134,6 +141,32 @@ def _episode_config(
     return replace(base, **overrides)
 
 
+def _fill_from_environment(config: Config) -> None:
+    """Fill a missing host or api_key from the CLI's environment variables (in place).
+
+    Values already set by overrides or the config file are kept. The host is
+    normalised the way the CLI does it, so ``DEDUPE_EMBY_HOST`` and
+    ``DEDUPE_EMBY_PORT`` mean the same thing to both.
+
+    Raises:
+        EmbyConfigError: ``DEDUPE_EMBY_PORT`` is set but is not a number.
+    """
+    env_host = os.environ.get(ENV_DEDUPE_EMBY_HOST)
+    if not config.host and env_host:
+        env_port = os.environ.get(ENV_DEDUPE_EMBY_PORT)
+        try:
+            port = int(env_port) if env_port else None
+        except ValueError:
+            raise EmbyConfigError(f"{ENV_DEDUPE_EMBY_PORT} must be a port number") from None
+        host, final_port = handle_host_and_port(env_host, port)
+        config.host = f"{host}:{final_port}"
+        logger.debug(f"Emby host taken from {ENV_DEDUPE_EMBY_HOST}")
+    env_key = os.environ.get(ENV_DEDUPE_EMBY_API_KEY)
+    if not config.api_key and env_key:
+        config.api_key = env_key
+        logger.debug(f"Emby API key taken from {ENV_DEDUPE_EMBY_API_KEY}")
+
+
 class EmbyChecker:
     """Main interface for checking if media should be downloaded."""
 
@@ -185,6 +218,11 @@ class EmbyChecker:
     def from_config(cls, **overrides) -> EmbyChecker:
         """Create EmbyChecker from config file.
 
+        Each of host and api_key comes from the first source that sets it: the
+        overrides, then ``~/.emby-dedupe/config.yaml``, then the environment
+        (``DEDUPE_EMBY_HOST`` with optional ``DEDUPE_EMBY_PORT``, and
+        ``DEDUPE_EMBY_API_KEY``, the same variables the CLI reads).
+
         Args:
             **overrides: Values to override from config file.
 
@@ -192,12 +230,15 @@ class EmbyChecker:
             EmbyChecker instance.
 
         Raises:
-            EmbyConfigMissingError: The config file does not exist and the overrides
-                did not supply host + api_key. (Also a FileNotFoundError.)
-            EmbyConfigError: The config file exists but is missing host or api_key.
-                (Also a ValueError.)
+            EmbyConfigMissingError: The config file does not exist and neither the
+                overrides nor the environment supplied host + api_key. (Also a
+                FileNotFoundError.)
+            EmbyConfigError: The config file exists but host or api_key is missing
+                from every source, or ``DEDUPE_EMBY_PORT`` is not a number. (Also a
+                ValueError.)
         """
         config = Config.from_config_file(**overrides)
+        _fill_from_environment(config)
         # Fail HERE, loudly, instead of building a checker that only errors on the
         # first check() with a message that never mentions the config file.
         if not config.host or not config.api_key:
@@ -206,7 +247,8 @@ class EmbyChecker:
             if not config_path.exists():
                 raise EmbyConfigMissingError(
                     f"Emby config file not found: {config_path}. Create it with 'host' "
-                    f"and 'api_key' keys, or pass them as overrides to from_config()."
+                    f"and 'api_key' keys, set {ENV_DEDUPE_EMBY_HOST} and "
+                    f"{ENV_DEDUPE_EMBY_API_KEY}, or pass them as overrides to from_config()."
                 )
             raise EmbyConfigError(
                 f"Emby config file {config_path} is incomplete: missing "

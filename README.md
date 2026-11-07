@@ -441,7 +441,9 @@ is good enough). Import the supported symbols from the top-level package:
 ```python
 from emby_dedupe import EmbyChecker, CheckConfig
 
-# Reads ~/.emby-dedupe/config.yaml (raises EmbyConfigMissingError if absent).
+# Reads ~/.emby-dedupe/config.yaml; host / api_key missing there fall back to
+# DEDUPE_EMBY_HOST (+ DEDUPE_EMBY_PORT) / DEDUPE_EMBY_API_KEY. Raises
+# EmbyConfigMissingError when no source supplies them.
 with EmbyChecker.from_config() as checker:
     # Fast connectivity/credential probe (real GET /System/Info, never cached).
     checker.test_connection()
