@@ -445,3 +445,51 @@ class TestTitleBuriedInsideAnotherTitle:
         assert _is_title_variant("Daredevil", "Marvel's Daredevil")
         assert _is_title_variant("Jack Ryan", "Tom Clancy’s Jack Ryan")
         assert not _is_title_variant("Eden", "East of Eden (2026)")
+
+
+class TestCredentialStaysOutOfUrls:
+    """The API key travels as the X-Emby-Token header: a key in the query string lands in request logs."""
+
+    KEY = "placeholder-test-key"
+
+    def _client(self, seen):
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            if request.url.path.endswith("/Library/VirtualFolders"):
+                return httpx.Response(200, json=[{"ItemId": "lib1", "Name": "Movies"}])
+            if request.url.params.get("IncludeItemTypes") == "Series":
+                return httpx.Response(200, json={"Items": [{"Name": "Breaking Bad", "Id": "s1", "ProviderIds": {}}]})
+            return httpx.Response(200, json={"Items": [{"Name": "Breaking Bad", "Id": "e1",
+                                                        "ParentIndexNumber": 1, "IndexNumber": 1}]})
+
+        return httpx.Client(transport=httpx.MockTransport(handler))
+
+    def _assert_header_only(self, seen):
+        assert seen, "no request was made"
+        for request in seen:
+            assert self.KEY not in str(request.url)
+            assert "api_key" not in request.url.params
+            assert request.headers.get("X-Emby-Token") == self.KEY
+
+    def test_search_by_name(self):
+        seen: list = []
+        search_by_name(self._client(seen), "http://emby.local", self.KEY, "Breaking Bad")
+        self._assert_header_only(seen)
+
+    def test_search_by_provider_id(self):
+        seen: list = []
+        search_by_provider_id(self._client(seen), "http://emby.local", self.KEY, "tt0903747", "imdb")
+        self._assert_header_only(seen)
+
+    def test_search_tv_episode_series_and_episode_requests(self):
+        seen: list = []
+        search_tv_episode(self._client(seen), "http://emby.local", self.KEY, "Breaking Bad", 1, 1)
+        assert len(seen) == 2
+        self._assert_header_only(seen)
+
+    def test_get_all_library_ids(self):
+        seen: list = []
+        get_all_library_ids(self._client(seen), "http://emby.local", self.KEY)
+        self._assert_header_only(seen)

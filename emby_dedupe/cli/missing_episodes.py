@@ -370,7 +370,7 @@ def run_missing_episodes_command(args) -> None:
 
     logger.debug(
         f"Using configurations for missing episodes search: "
-        f"Host: {validated_host}, Port: {validated_port}, API Key: {api_key}, "
+        f"Host: {validated_host}, Port: {validated_port}, "
         f"Libraries: {', '.join(library)}"
     )
 

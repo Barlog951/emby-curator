@@ -7,6 +7,14 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+### Security
+
+- **The Emby API key no longer travels in request URLs.** The title / provider-id / episode lookups behind
+  `check` and `EmbyChecker`, and the library list used by `cleanup` and `genres`, sent it as an `api_key`
+  query parameter. Request logs record URLs, including Emby's own debug log and any reverse proxy's.
+  These lookups now send the `X-Emby-Token` header, like the rest of the package. A `missing-episodes`
+  debug line that printed the key is gone.
+
 ### Added
 
 - **`cleanup --protect-user NAME`** (env `DEDUPE_PROTECT_USER`): the Emby user whose favourite actors and

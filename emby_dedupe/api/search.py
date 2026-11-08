@@ -20,6 +20,15 @@ from emby_dedupe.utils.providers import iter_provider_ids
 SEARCH_FIELDS = "ProviderIds,Path,MediaStreams,DateCreated,DateModified,PremiereDate,ProductionYear,Tags,Overview,ParentId,SeriesName,ParentIndexNumber,IndexNumber,RunTimeTicks"
 
 
+def _auth_headers(api_key: str) -> dict[str, str]:
+    """The Emby credential as a request header.
+
+    A key in the query string ends up in request logs (Emby's own and any proxy's),
+    so every request in this module sends it as ``X-Emby-Token`` instead.
+    """
+    return {"X-Emby-Token": api_key}
+
+
 def normalize_title(title: str) -> str:
     """Normalize a title for comparison.
 
@@ -92,7 +101,6 @@ def search_by_name(
     """
     # Build search query
     params = {
-        "api_key": api_key,
         "SearchTerm": name,
         "Recursive": "true",
         "Fields": SEARCH_FIELDS,
@@ -112,7 +120,7 @@ def search_by_name(
 
     url = f"{host}/Items"
     try:
-        response = make_http_request(client, "GET", url, params=params)
+        response = make_http_request(client, "GET", url, params=params, headers=_auth_headers(api_key))
         data = response.json()
         items = data.get("Items", [])
 
@@ -163,7 +171,6 @@ def search_by_provider_id(
     # ``AnyProviderIdEquals`` is the filter Emby honours; ``Any{Provider}Id`` is ignored
     # and returns the whole library (see EmbyChecker._find_validated_series).
     params = {
-        "api_key": api_key,
         "AnyProviderIdEquals": f"{provider_type.lower()}.{provider_id}",
         "Recursive": "true",
         "Fields": SEARCH_FIELDS,
@@ -177,7 +184,7 @@ def search_by_provider_id(
 
     url = f"{host}/Items"
     try:
-        response = make_http_request(client, "GET", url, params=params)
+        response = make_http_request(client, "GET", url, params=params, headers=_auth_headers(api_key))
         data = response.json()
         items = data.get("Items", [])
         logger.debug(f"Found {len(items)} items with {provider_type} ID '{provider_id}'")
@@ -349,7 +356,6 @@ def search_tv_episode(
     """
     # First, search for the series
     params = {
-        "api_key": api_key,
         "SearchTerm": series_name,
         "IncludeItemTypes": "Series",
         "Recursive": "true",
@@ -364,7 +370,7 @@ def search_tv_episode(
 
     url = f"{host}/Items"
     try:
-        response = make_http_request(client, "GET", url, params=params)
+        response = make_http_request(client, "GET", url, params=params, headers=_auth_headers(api_key))
         data = response.json()
         series_items = data.get("Items", [])
 
@@ -380,14 +386,13 @@ def search_tv_episode(
         # Search for the episode within the series
         series_id = matching_series["Id"]
         episode_params = {
-            "api_key": api_key,
-            "ParentId": series_id,
+                "ParentId": series_id,
             "IncludeItemTypes": "Episode",
             "Recursive": "true",
             "Fields": SEARCH_FIELDS,
         }
 
-        response = make_http_request(client, "GET", url, params=episode_params)
+        response = make_http_request(client, "GET", url, params=episode_params, headers=_auth_headers(api_key))
         data = response.json()
         episodes = data.get("Items", [])
 
@@ -426,10 +431,8 @@ def get_all_library_ids(
         List of dicts with 'id' and 'name' keys.
     """
     url = f"{host}/Library/VirtualFolders"
-    params = {"api_key": api_key}
-
     try:
-        response = make_http_request(client, "GET", url, params=params)
+        response = make_http_request(client, "GET", url, headers=_auth_headers(api_key))
         data = response.json()
 
         libraries = []
