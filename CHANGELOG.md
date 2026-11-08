@@ -7,6 +7,8 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.7] — 2026-11-08
+
 ### Security
 
 - **The Emby API key no longer travels in request URLs.** The title / provider-id / episode lookups behind
