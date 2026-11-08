@@ -113,22 +113,77 @@ def test_no_remote_call_without_a_host(tmp_path):
     assert calls == []
 
 
-def test_remote_append_sends_the_same_lines(tmp_path, monkeypatch):
+CMD = "sudo -n docker exec -i app sh -c 'cat >> /app/data/deletions.jsonl'"
+
+
+def _remote(monkeypatch) -> None:
     monkeypatch.setenv(journal.ENV_HOST, "user@media-host")
-    monkeypatch.setenv(journal.ENV_REMOTE_FILE, "/srv/emby journal/deletions.jsonl")
+    monkeypatch.setenv(journal.ENV_REMOTE_COMMAND, CMD)
+
+
+def test_remote_gets_the_same_lines(tmp_path, monkeypatch):
+    _remote(monkeypatch)
     calls = []
+    path = tmp_path / "d.jsonl"
+
+    journal.append_rows(journal.dedupe_rows([_decision("success")], RUN_AT), path,
+                        runner=lambda *a: calls.append(a) or (0, ""))
+
+    ((host, command, data),) = calls
+    assert (host, command) == ("user@media-host", CMD)
+    assert data == path.read_text(encoding="utf-8")
+
+
+def test_delivered_lines_are_not_sent_again(tmp_path, monkeypatch):
+    _remote(monkeypatch)
+    sent = []
+    path = tmp_path / "d.jsonl"
     rows = journal.dedupe_rows([_decision("success")], RUN_AT)
 
-    journal.append_rows(rows, tmp_path / "d.jsonl", runner=lambda *a: calls.append(a) or (0, ""))
+    journal.append_rows(rows, path, runner=lambda h, c, d: sent.append(d) or (0, ""))
+    journal.append_rows(rows, path, runner=lambda h, c, d: sent.append(d) or (0, ""))
 
-    ((host, remote, data),) = calls
-    assert (host, remote) == ("user@media-host", "/srv/emby journal/deletions.jsonl")
-    assert data == (tmp_path / "d.jsonl").read_text(encoding="utf-8")
+    assert [d.count("\n") for d in sent] == [1, 1]
 
 
-def test_remote_needs_an_absolute_path(tmp_path, monkeypatch):
+def test_failed_delivery_is_retried_on_the_next_run(tmp_path, monkeypatch):
+    _remote(monkeypatch)
+    path = tmp_path / "d.jsonl"
+    rows = journal.dedupe_rows([_decision("success")], RUN_AT)
+
+    assert journal.append_rows(rows, path, runner=lambda *a: (1, "container down")) == 1
+    sent = []
+    journal.append_rows([], path, runner=lambda h, c, d: sent.append(d) or (0, ""))
+
+    assert [d.count("\n") for d in sent] == [1]
+    assert journal.append_rows([], path, runner=lambda *a: (_ for _ in ()).throw(AssertionError("resent"))) == 0
+
+
+def test_a_torn_last_line_waits(tmp_path, monkeypatch):
+    _remote(monkeypatch)
+    path = tmp_path / "d.jsonl"
+    path.write_text('{"a": 1}\n{"b": ', encoding="utf-8")
+    sent = []
+
+    journal.append_rows([], path, runner=lambda h, c, d: sent.append(d) or (0, ""))
+
+    assert sent == ['{"a": 1}\n']
+
+
+def test_a_replaced_journal_is_delivered_from_the_start(tmp_path, monkeypatch):
+    _remote(monkeypatch)
+    path = tmp_path / "d.jsonl"
+    (tmp_path / "d.jsonl.sent").write_text("99999\n", encoding="utf-8")
+    path.write_text('{"a": 1}\n', encoding="utf-8")
+    sent = []
+
+    journal.append_rows([], path, runner=lambda h, c, d: sent.append(d) or (0, ""))
+
+    assert sent == ['{"a": 1}\n']
+
+
+def test_remote_needs_both_settings(tmp_path, monkeypatch):
     monkeypatch.setenv(journal.ENV_HOST, "user@media-host")
-    monkeypatch.setenv(journal.ENV_REMOTE_FILE, "~/deletions.jsonl")
     calls = []
 
     written = journal.append_rows(journal.dedupe_rows([_decision("success")], RUN_AT), tmp_path / "d.jsonl",
@@ -139,8 +194,7 @@ def test_remote_needs_an_absolute_path(tmp_path, monkeypatch):
 
 
 def test_remote_failure_keeps_the_local_lines(tmp_path, monkeypatch):
-    monkeypatch.setenv(journal.ENV_HOST, "user@media-host")
-    monkeypatch.setenv(journal.ENV_REMOTE_FILE, "/srv/j/deletions.jsonl")
+    _remote(monkeypatch)
 
     def broken(*_a):
         raise OSError("no route to host")
@@ -149,7 +203,7 @@ def test_remote_failure_keeps_the_local_lines(tmp_path, monkeypatch):
                                runner=broken) == 1
 
 
-def test_remote_script_keeps_the_file_world_readable(monkeypatch):
+def test_ssh_call_passes_the_command_and_stdin(monkeypatch):
     seen = {}
 
     def fake_run(cmd, **kwargs):
@@ -157,11 +211,9 @@ def test_remote_script_keeps_the_file_world_readable(monkeypatch):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(journal.subprocess, "run", fake_run)
-    journal._ssh_append("user@host", "/srv/emby journal/d.jsonl", "line\n")
+    journal._ssh_append("user@host", CMD, "line\n")
 
-    script = seen["cmd"][-1]
-    assert script.startswith("umask 022; ")
-    assert "'/srv/emby journal/d.jsonl'" in script
+    assert seen["cmd"][-2:] == ["user@host", CMD]
     assert seen["input"] == "line\n"
     assert "BatchMode=yes" in seen["cmd"]
 

@@ -5,8 +5,10 @@ Emby forgets a deleted item's provider ids, so the record keeps both copies' ids
 
 - Written only after a ``--doit`` run, for files that are really gone.
 - Local file: ``$DEDUPE_JOURNAL_FILE`` or ``~/.emby-dedupe/deletions.jsonl``.
-- With ``$DEDUPE_JOURNAL_HOST`` (``user@host``) and ``$DEDUPE_JOURNAL_REMOTE_FILE`` (an absolute
-  path on that host) the same lines are also appended there over SSH, world-readable.
+- With ``$DEDUPE_JOURNAL_HOST`` (``user@host``) and ``$DEDUPE_JOURNAL_REMOTE_COMMAND`` (a shell
+  command on that host that appends its stdin, e.g. ``cat >> /srv/journal/deletions.jsonl``) the
+  lines are also delivered there over SSH. ``<journal>.sent`` holds the byte offset delivered so
+  far, so lines a failed delivery missed are sent with the next run.
 - A journal failure is logged and never aborts the run: the deletions already happened.
 """
 from __future__ import annotations
@@ -14,7 +16,6 @@ from __future__ import annotations
 import datetime
 import json
 import os
-import shlex
 import subprocess
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -26,7 +27,7 @@ from emby_dedupe.utils.logging import logger
 SCHEMA = 1
 ENV_FILE = "DEDUPE_JOURNAL_FILE"
 ENV_HOST = "DEDUPE_JOURNAL_HOST"
-ENV_REMOTE_FILE = "DEDUPE_JOURNAL_REMOTE_FILE"
+ENV_REMOTE_COMMAND = "DEDUPE_JOURNAL_REMOTE_COMMAND"
 _DEFAULT = Path.home() / ".emby-dedupe" / "deletions.jsonl"
 
 Runner = Callable[[str, str, str], tuple[int, str]]
@@ -119,12 +120,10 @@ def cleanup_rows(candidates: Iterable[Any] | None, run_at: str, item_type: str) 
     return rows
 
 
-def _ssh_append(host: str, remote_file: str, data: str) -> tuple[int, str]:
-    """Append ``data`` to ``remote_file`` on ``host``; the file stays world-readable."""
-    directory = os.path.dirname(remote_file) or "."
-    script = f"umask 022; mkdir -p -- {shlex.quote(directory)} && cat >> {shlex.quote(remote_file)}"
+def _ssh_append(host: str, command: str, data: str) -> tuple[int, str]:
+    """Run ``command`` on ``host`` with ``data`` on its stdin."""
     proc = subprocess.run(
-        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, script],
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, command],
         input=data, capture_output=True, text=True, timeout=60,
     )
     return proc.returncode, (proc.stderr or proc.stdout).strip()
@@ -143,38 +142,78 @@ def _append_local(path: Path, data: str) -> bool:
         return False
 
 
-def _append_remote(data: str, count: int, runner: Runner) -> None:
-    host = os.environ.get(ENV_HOST)
-    if not host:
-        return
-    remote_file = os.environ.get(ENV_REMOTE_FILE)
-    if not remote_file or not remote_file.startswith("/"):
-        logger.error("Deletion journal: %s is set but %s is not an absolute path; lines kept locally only.",
-                     ENV_HOST, ENV_REMOTE_FILE)
-        return
+def _sent_path(path: Path) -> Path:
+    return path.with_name(path.name + ".sent")
+
+
+def _read_offset(path: Path) -> int:
     try:
-        rc, err = runner(host, remote_file, data)
-    except (OSError, subprocess.SubprocessError) as e:
+        return int(_sent_path(path).read_text(encoding="utf-8").strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _write_offset(path: Path, offset: int) -> None:
+    sent = _sent_path(path)
+    tmp = sent.with_name(sent.name + ".tmp")
+    tmp.write_text(f"{offset}\n", encoding="utf-8")
+    os.replace(tmp, sent)
+
+
+def _pending(path: Path) -> tuple[int, bytes]:
+    """The delivered offset and the complete lines after it (a torn last line waits)."""
+    try:
+        content = path.read_bytes()
+    except OSError:
+        return 0, b""
+    offset = _read_offset(path)
+    if offset > len(content):  # the journal was replaced: deliver it again from the start
+        offset = 0
+    chunk = content[offset:]
+    return offset, chunk[: chunk.rfind(b"\n") + 1]
+
+
+def _deliver(path: Path, runner: Runner) -> None:
+    """Send every local line not yet delivered to the remote command, when one is configured."""
+    host, command = os.environ.get(ENV_HOST), os.environ.get(ENV_REMOTE_COMMAND)
+    if not (host or command):
+        return
+    if not (host and command):
+        logger.error("Deletion journal: set both %s and %s to deliver lines; kept locally only.",
+                     ENV_HOST, ENV_REMOTE_COMMAND)
+        return
+    offset, chunk = _pending(path)
+    if not chunk:
+        return
+    lines = chunk.count(b"\n")
+    try:
+        rc, err = runner(host, command, chunk.decode("utf-8"))
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError) as e:
         rc, err = -1, str(e)
     if rc:
-        logger.error("Deletion journal: append to %s:%s failed (rc=%s, %s); lines kept locally only.",
-                     host, remote_file, rc, err[:200])
-    else:
-        logger.info("Deletion journal: %d line(s) appended to %s:%s.", count, host, remote_file)
+        logger.error("Deletion journal: delivery to %s failed (rc=%s, %s); %d line(s) wait for the next run.",
+                     host, rc, err[:200], lines)
+        return
+    try:
+        _write_offset(path, offset + len(chunk))
+    except OSError as e:
+        logger.warning("Deletion journal: delivered, but %s not updated (%s); lines may be sent twice.",
+                       _sent_path(path), e)
+    logger.info("Deletion journal: %d line(s) delivered to %s.", lines, host)
 
 
 def append_rows(rows: list[dict[str, Any]], path: Path | None = None, runner: Runner = _ssh_append) -> int:
-    """Append ``rows`` to the local journal (and the remote one when configured).
+    """Append ``rows`` to the local journal, then deliver any undelivered lines when configured.
 
     Returns:
         The number of lines written locally (0 when there was nothing to write or it failed).
     """
-    if not rows:
-        return 0
-    data = "".join(json.dumps(row, ensure_ascii=False, default=str) + "\n" for row in rows)
     path = path or journal_path()
-    written = len(rows) if _append_local(path, data) else 0
-    if written:
-        logger.info("Deletion journal: %d line(s) appended to %s.", written, path)
-    _append_remote(data, len(rows), runner)
+    written = 0
+    if rows:
+        data = "".join(json.dumps(row, ensure_ascii=False, default=str) + "\n" for row in rows)
+        if _append_local(path, data):
+            written = len(rows)
+            logger.info("Deletion journal: %d line(s) appended to %s.", written, path)
+    _deliver(path, runner)
     return written

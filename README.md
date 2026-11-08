@@ -157,7 +157,7 @@ The following environment variables can be used to configure the tool:
 - `DEDUPE_HTML_ONLY`: Set to 'true' to generate only the HTML report without terminal output.
 - `DEDUPE_REPORT_DIR`: Where HTML reports and their JSON twins are saved (default `~/.emby-dedupe/reports`; the system temp directory is used only when that folder cannot be written).
 - `DEDUPE_JOURNAL_FILE`: Deletion journal: after every `--doit` run of `dedupe` or `cleanup`, one JSON line per deleted copy (both copies' Emby and provider ids) is appended here (default `~/.emby-dedupe/deletions.jsonl`).
-- `DEDUPE_JOURNAL_HOST` / `DEDUPE_JOURNAL_REMOTE_FILE`: Optional `user@host` and absolute path; the same journal lines are also appended there over SSH, world-readable.
+- `DEDUPE_JOURNAL_HOST` / `DEDUPE_JOURNAL_REMOTE_COMMAND`: Optional `user@host` and a shell command on that host that appends its stdin (e.g. `cat >> /srv/journal/deletions.jsonl`). New journal lines are delivered there over SSH after each run; lines a failed delivery missed are sent with the next run (`deletions.jsonl.sent` holds the delivered offset).
 - `DEDUPE_LANG_PRIO`: Comma-separated list of language codes in priority order (e.g., 'slo,cze,eng'). Media items with higher priority languages will be kept.
 - `DEDUPE_EXCLUDE_IDS`: Comma-separated list of provider IDs to exclude from deduplication (e.g., 'tt1234567,123456'). Works with IMDB (tt prefix), TMDB, and TVDB IDs.
 - `DEDUPE_EXCLUDE`: Comma-separated list of terms to exclude from deduplication. If a movie title contains any of these terms, it will be skipped.
