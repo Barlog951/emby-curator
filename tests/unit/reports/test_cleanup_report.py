@@ -8,7 +8,6 @@ Covers the report-related DA fixes:
   #14 _save_cleanup_html_report saves HTML + CSS to temp dir
 """
 import os
-import tempfile
 from unittest.mock import patch
 
 import pytest
@@ -30,6 +29,7 @@ from emby_dedupe.reports.cleanup import (
     _save_cleanup_html_report,
     _series_candidate_to_dict,
 )
+from emby_dedupe.reports.common import report_dir
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -155,13 +155,13 @@ class TestFormatReports:
 class TestSaveCleanupHtmlReport:
     """Tests for _save_cleanup_html_report (DA fix #14)."""
 
-    def test_html_file_created_in_temp_dir(self):
-        """HTML file is saved to the system temp directory."""
+    def test_html_file_created_in_report_dir(self):
+        """HTML file is saved to the report directory (never the shared temp directory)."""
         with patch("emby_dedupe.reports.cleanup.shutil.copy2"), \
              patch("emby_dedupe.reports.cleanup.os.path.exists", return_value=True), \
              patch("emby_dedupe.reports.cleanup.webbrowser.open"):
             path = _save_cleanup_html_report("<html><body>test</body></html>", no_open=True)
-            assert path.startswith(tempfile.gettempdir())
+            assert path.startswith(report_dir())
             assert path.endswith(".html")
             assert "emby_cleanup_report_" in path
 
@@ -184,7 +184,7 @@ class TestSaveCleanupHtmlReport:
             path = _save_cleanup_html_report("<html/>", no_open=True)
             assert mock_copy.called
             copy_dst = mock_copy.call_args[0][1]
-            assert copy_dst == os.path.join(tempfile.gettempdir(), "report.css")
+            assert copy_dst == os.path.join(report_dir(), "report.css")
             os.unlink(path)  # cleanup
 
     def test_returns_file_path(self):
@@ -209,8 +209,7 @@ class TestSaveCleanupHtmlReport:
     def test_reports_in_same_second_do_not_overwrite(self, tmp_path):
         """Regression: the name had 1-second resolution, so two reports in the same second
         (e.g. parallel test workers) shared one file and overwrote each other."""
-        with patch("emby_dedupe.reports.cleanup.tempfile.gettempdir", return_value=str(tmp_path)), \
-             patch("emby_dedupe.reports.common.time.time", return_value=1234567890), \
+        with patch("emby_dedupe.reports.common.time.time", return_value=1234567890), \
              patch("emby_dedupe.reports.cleanup.shutil.copy2"), \
              patch("emby_dedupe.reports.cleanup.webbrowser.open"):
             first = _save_cleanup_html_report("<html>first</html>", no_open=True)

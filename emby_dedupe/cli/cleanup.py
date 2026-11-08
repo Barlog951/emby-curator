@@ -247,6 +247,19 @@ def _perform_deletions(
                 held[collection] = f"collection kept: deleting {candidate.name!r} failed, the other parts stay"
 
 
+
+def _journal_cleanup(candidates: list, series_candidates: list, doit: bool) -> None:
+    """Append every title a real cleanup run deleted to the deletion journal. Never raises."""
+    if not doit:
+        return
+    from emby_dedupe.reports.journal import append_rows, cleanup_rows, run_timestamp
+
+    try:
+        run_at = run_timestamp()
+        append_rows(cleanup_rows(candidates, run_at, "Movie") + cleanup_rows(series_candidates, run_at, "Series"))
+    except Exception as e:  # noqa: BLE001 — the deletions already happened; the run must finish
+        logger.error("Deletion journal: not written (%s).", e)
+
 def _guard_verdicts(
     candidates: list, known_paths, delete_is_container: bool,
 ) -> tuple[dict[str, tuple[bool, str]], dict[str, str]]:
@@ -446,6 +459,7 @@ def _execute_cleanup(
         _perform_deletions(client, base_url, candidates, username, password, api_key, "movies")
     if doit and series_candidates:
         _perform_deletions(client, base_url, series_candidates, username, password, api_key, "series")
+    _journal_cleanup(candidates, series_candidates, doit)
 
     if html_report or html_only:
         series_for_report = series_candidates if series_stats else None

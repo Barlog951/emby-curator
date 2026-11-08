@@ -219,6 +219,19 @@ def _run_fold_safe_delete(client, base_url, decisions, doit, ssh_host) -> None:
             )
 
 
+
+def _journal_deletions(decisions, doit: bool) -> None:
+    """Append every copy a real run deleted to the deletion journal. Never raises."""
+    if not doit:
+        return
+    from emby_dedupe.reports.journal import append_rows, dedupe_rows, run_timestamp
+    from emby_dedupe.utils.logging import logger
+
+    try:
+        append_rows(dedupe_rows(decisions, run_timestamp()))
+    except Exception as e:  # noqa: BLE001 — the deletions already happened; the run must finish
+        logger.error("Deletion journal: not written (%s).", e)
+
 @app.command("dedupe")
 def dedupe_cmd(
     ctx: typer.Context,
@@ -359,6 +372,9 @@ def dedupe_cmd(
         # re-renders it from the final decisions.)
         if fold_safe_delete:
             _run_fold_safe_delete(client, base_url, decisions, resolved.doit, fold_safe_host)
+
+        # Record what is gone before rendering reports, so a report failure cannot lose it.
+        _journal_deletions(decisions, resolved.doit)
 
         _generate_reports(
             base_url, decisions, exclusion_metadata, resolved.excluded_ids,

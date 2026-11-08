@@ -9,7 +9,7 @@ from typing import Any
 
 from tqdm import tqdm
 
-from emby_dedupe.reports.common import calculate_report_statistics
+from emby_dedupe.reports.common import calculate_report_statistics, report_dir
 from emby_dedupe.utils.logging import logger
 
 
@@ -744,7 +744,7 @@ def generate_html_report(base_url: str, decisions: list[dict[str, Any]], metadat
     metadata.setdefault("history", record_run(decisions))
 
     # Reserve the twin's name first so the page can print it: the HTML takes the same stem.
-    temp_dir = tempfile.gettempdir()
+    temp_dir = report_dir()
     fd, json_path = tempfile.mkstemp(prefix=f"emby_dedupe_report_{int(time.time())}_", suffix=".json", dir=temp_dir)
     os.close(fd)
     run = dict(metadata.get("run") or {})

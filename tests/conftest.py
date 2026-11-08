@@ -115,3 +115,9 @@ def _isolated_dedupe_history(tmp_path, monkeypatch):
     monkeypatch.setenv("DEDUPE_HISTORY_FILE", str(tmp_path / "dedupe-history.json"))
     # ...and the frame check saves its verdicts between runs; never into the user's file.
     monkeypatch.setenv("DEDUPE_FRAME_CHECK_CACHE", str(tmp_path / "frame-check-cache.json"))
+    # Reports and the deletion journal go to the test's own directory, and the journal is
+    # never shipped to a real host (a .env file may set one).
+    monkeypatch.setenv("DEDUPE_REPORT_DIR", str(tmp_path))
+    monkeypatch.setenv("DEDUPE_JOURNAL_FILE", str(tmp_path / "deletions.jsonl"))
+    monkeypatch.delenv("DEDUPE_JOURNAL_HOST", raising=False)
+    monkeypatch.delenv("DEDUPE_JOURNAL_REMOTE_FILE", raising=False)

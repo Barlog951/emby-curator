@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import tempfile
 import time
 import webbrowser
 from collections.abc import Iterable
@@ -25,7 +24,7 @@ from emby_dedupe.models.cleanup import (
     CleanupConfig,
     SeriesCleanupCandidate,
 )
-from emby_dedupe.reports.common import format_size, write_temp_report
+from emby_dedupe.reports.common import format_size, report_dir, write_temp_report
 from emby_dedupe.reports.images import inline_images_in_place, inline_poster_urls
 from emby_dedupe.utils.logging import logger
 
@@ -517,11 +516,10 @@ def _generate_cleanup_html_report(
 
 
 def _save_cleanup_html_report(html_content: str, no_open: bool = False) -> str:
-    """Save HTML report to a temp file and copy CSS alongside it.
+    """Save the HTML report to the report directory and copy its CSS alongside it.
 
-    Follows the same pattern as reports/html.py → generate_html_report()
-    (DA fix #14): saves to system temp dir, copies report.css from static/
-    so the browser can find it via relative path.
+    The report directory is :func:`reports.common.report_dir`. ``report.css`` is copied
+    beside the file so the page's relative stylesheet link resolves.
 
     Args:
         html_content: Rendered HTML string to save.
@@ -530,7 +528,7 @@ def _save_cleanup_html_report(html_content: str, no_open: bool = False) -> str:
     Returns:
         Absolute path of the saved HTML file.
     """
-    temp_dir = tempfile.gettempdir()
+    temp_dir = report_dir()
 
     # Copy CSS alongside HTML so the relative <link href="report.css"> resolves
     pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

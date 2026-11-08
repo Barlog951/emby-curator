@@ -7,6 +7,21 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+### Added
+
+- **Deletion journal.** After every `--doit` run, `dedupe` and `cleanup` append one JSON line per deleted copy to
+  `~/.emby-dedupe/deletions.jsonl` (`DEDUPE_JOURNAL_FILE`). A line holds the deleted and the kept copy's Emby id,
+  path and provider ids, plus series, season and episode for episodes. Emby forgets a deleted item's ids, so watch
+  history can still be matched to the kept copy. With `DEDUPE_JOURNAL_HOST` and `DEDUPE_JOURNAL_REMOTE_FILE` the
+  same lines are also appended to a file on another host over SSH. A journal failure is logged and never stops the
+  run. Lines are written once the deletion pass ends, so a run that crashes during it records nothing.
+
+### Changed
+
+- **Reports are saved to `~/.emby-dedupe/reports/`** (`DEDUPE_REPORT_DIR`) instead of the system temp directory,
+  which the OS may purge. The temp directory remains the fallback when that folder cannot be written.
+- The test suite no longer leaves report files in the user's temp directory.
+
 ### Security
 
 - **Poster URLs never carry the Emby API key.** The dedupe and cleanup scans used to build image URLs ending

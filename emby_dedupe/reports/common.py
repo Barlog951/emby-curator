@@ -5,9 +5,11 @@ Common reporting functions used by both markdown and HTML reports.
 import os
 import tempfile
 import time
+from pathlib import Path
 from typing import Any
 
 from emby_dedupe.utils.formatting import format_file_size
+from emby_dedupe.utils.logging import logger
 
 
 def _is_valid_decision(decision: dict[str, Any]) -> bool:
@@ -140,6 +142,28 @@ def format_size(size_bytes: int) -> str:
     Thin wrapper over the shared ``utils.formatting.format_file_size`` (zero/None → "0 B").
     """
     return format_file_size(size_bytes, zero_label="0 B")
+
+
+ENV_REPORT_DIR = "DEDUPE_REPORT_DIR"
+_DEFAULT_REPORT_DIR = Path.home() / ".emby-dedupe" / "reports"
+
+
+def report_dir() -> str:
+    """Directory for HTML reports and their JSON twins.
+
+    ``$DEDUPE_REPORT_DIR``, else ``~/.emby-dedupe/reports``. The system temp directory is only
+    a fallback (read-only home, containers): the OS may purge it, and the reports are the
+    run's record.
+    """
+    path = Path(os.environ.get(ENV_REPORT_DIR) or _DEFAULT_REPORT_DIR)
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        if os.access(path, os.W_OK):
+            return str(path)
+        logger.warning("Report directory %s is not writable; using the temp directory.", path)
+    except OSError as e:
+        logger.warning("Report directory %s cannot be created (%s); using the temp directory.", path, e)
+    return tempfile.gettempdir()
 
 
 def write_temp_report(html_content: str, prefix: str, temp_dir: str) -> str:
