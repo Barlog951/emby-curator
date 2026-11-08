@@ -155,6 +155,8 @@ def _process_delete_item(item: dict[str, Any], base_url: str, keep_serverid: str
     elif status == "fold_safe_removed":
         status_class = "status-success"
         status_text = "Deleted (file-only, fold-safe)"
+    elif status == "fold_safe_would_remove":
+        status_text = "Would be deleted (file-only, fold-safe)"
     elif status == "would_block":
         status_class = "status-blocked"
         status_text = "Would be blocked by safety guard (both files kept)"

@@ -196,3 +196,101 @@ def test_rendered_report_prefers_the_real_path_over_unknown():
 
     assert real in html
     assert "<strong>Path:</strong> unknown" not in html
+
+
+def _fold_safe_candidate(decisions: list[dict], status: str) -> list[dict]:
+    """Mark the delete item as a guard-refused duplicate fold-safe will pick up."""
+    item = decisions[0]["delete"][0]
+    item["deletion_result"] = {"id": item["id"], "status": status, "error": "co-located keeper"}
+    item["fold_safe_candidate"] = {
+        "keeper": decisions[0]["keep"]["quality_description"]["path"],
+        "delete": item["path"],
+        "reason": "co-located keeper",
+    }
+    item["quality_description"]["size"] = 4_000_000_000
+    decisions[0]["keep"]["runtime_ticks"] = item["runtime_ticks"] = 33_612_160_000
+    return decisions
+
+
+def test_dry_run_counts_a_fold_safe_delete_as_planned():
+    """A dry run must list what --fold-safe-delete will remove under --doit.
+
+    The preview's ``would_remove`` replaces the guard's "Would be blocked"; otherwise the
+    dry run reports fewer deletions than the real run makes.
+    """
+    from emby_dedupe.reports.common import calculate_report_statistics
+
+    decisions = _fold_safe_candidate(_decision("would_block"), "would_block")
+    results = [{"id": "del1", "delete": decisions[0]["delete"][0]["path"], "status": "would_remove"}]
+
+    _apply_fold_safe_results_to_decisions(decisions, results)
+
+    assert decisions[0]["delete"][0]["deletion_result"]["status"] == "fold_safe_would_remove"
+    stats = calculate_report_statistics(decisions)
+    assert stats["would_block"] == 0
+    assert stats["would_delete"] == 1
+    assert stats["space_saved"] == 4_000_000_000
+    assert stats["deletion_attempted"] is False
+    html = _render(decisions)
+    assert "Would be removed · 1 file" in html
+    assert "1 file only (SSH)" in html
+    assert 'pill-would_block">' not in html
+
+
+def test_dry_run_preview_that_fails_keeps_the_block():
+    """A preview that will not remove the file must keep reading as blocked."""
+    for status in ("needs_review", "skipped", "failed"):
+        decisions = _fold_safe_candidate(_decision("would_block"), "would_block")
+        results = [{"id": "del1", "delete": decisions[0]["delete"][0]["path"], "status": status}]
+
+        _apply_fold_safe_results_to_decisions(decisions, results)
+
+        assert decisions[0]["delete"][0]["deletion_result"]["status"] == "would_block", status
+
+
+def _outcome_after_fold_safe(doit: bool, runner) -> str:
+    """Run the CLI's fold-safe pass with a fake host and return the report outcome."""
+    import functools
+    from unittest.mock import Mock
+
+    from emby_dedupe.api import fold_safe_delete
+    from emby_dedupe.cli.app import _run_fold_safe_delete
+    from emby_dedupe.reports.clusters import OUTCOME_BY_STATUS
+
+    decisions = _fold_safe_candidate(_decision("skipped_unsafe" if doit else "would_block"),
+                                     "skipped_unsafe" if doit else "would_block")
+    real_execute = fold_safe_delete.execute_fold_safe_deletes
+    with patch.object(fold_safe_delete, "execute_fold_safe_deletes",
+                      functools.partial(real_execute, runner=runner)):
+        _run_fold_safe_delete(Mock(), BASE, decisions, doit, "user@media-host")
+    return OUTCOME_BY_STATUS[decisions[0]["delete"][0]["deletion_result"]["status"]]
+
+
+def test_dry_run_outcome_matches_the_real_run():
+    """For the same host answers, the dry run predicts exactly what --doit does."""
+    def host_ok(_host: str, script: str) -> tuple[int, str, str]:
+        return (0, "OK", "") if 'rm -- "$d"' in script else (0, "WOULD-RM x", "")
+
+    def keeper_missing(_host: str, _script: str) -> tuple[int, str, str]:
+        return 11, "SKIP keeper-missing", ""
+
+    assert _outcome_after_fold_safe(False, host_ok) == "would_remove"
+    assert _outcome_after_fold_safe(True, host_ok) == "removed"
+    assert _outcome_after_fold_safe(False, keeper_missing) == "would_block"
+    assert _outcome_after_fold_safe(True, keeper_missing) == "blocked"
+
+
+def test_fold_safe_preview_runs_in_dry_runs_after_the_pipeline_marks_items():
+    """The dry-run conversion needs the preview to run in dry runs too, and only after the
+    pipeline has marked guard refusals ``would_block``. Both live in ``dedupe_cmd``'s call
+    sequence, so this asserts the source directly."""
+    import inspect
+
+    from emby_dedupe.cli import app
+
+    lines = [line.strip() for line in inspect.getsource(app.dedupe_cmd).splitlines()]
+    call = next(i for i, line in enumerate(lines) if line.startswith("_run_fold_safe_delete("))
+    pipeline = next(i for i, line in enumerate(lines) if "_run_deduplication_pipeline(" in line)
+
+    assert lines[call - 1] == "if fold_safe_delete:", "fold-safe must not be gated on --doit"
+    assert pipeline < call, "fold-safe must run after the pipeline marks dry-run statuses"

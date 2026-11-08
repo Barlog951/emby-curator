@@ -37,7 +37,10 @@ OUTCOME_BY_STATUS = {
     "skipped_unsafe": "blocked",
     "would_block": "would_block",
     "not_attempted": "would_remove",
+    "fold_safe_would_remove": "would_remove",
 }
+# Statuses of a file-only removal over SSH, done or planned.
+FILE_ONLY_STATUSES = frozenset({"fold_safe_removed", "fold_safe_would_remove"})
 # "other" first: an unknown status is a bug signal, not a footnote.
 SECTION_ORDER = ("other", "failed", "removed", "would_remove", "blocked", "would_block")
 
@@ -52,6 +55,7 @@ STATUS_TEXT = {
     "skipped_unsafe": "Blocked by safety guard (both kept)",
     "would_block": "Would be blocked by safety guard",
     "not_attempted": "Would be deleted",
+    "fold_safe_would_remove": "Would be deleted (file only, over SSH)",
 }
 
 RISK_TEXT = {
@@ -426,7 +430,7 @@ def _file_record(keep: dict[str, Any], item: dict[str, Any], base_url: str) -> d
         "status": status,
         "status_text": STATUS_TEXT.get(status, status),
         "outcome": outcome,
-        "file_only": status == "fold_safe_removed",
+        "file_only": status in FILE_ONLY_STATUSES,
         "reason": result.get("error") or "",
         "reason_code": _reason_code(result.get("error")),
         "episode": _episode_label(keep),

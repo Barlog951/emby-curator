@@ -126,24 +126,33 @@ def _libraries_from_env() -> list[str]:
 def _apply_fold_safe_results_to_decisions(decisions, results) -> None:
     """Write each fold-safe outcome back onto its decision item's ``deletion_result``.
 
-    The guard sets ``skipped_unsafe`` when it refuses the Emby delete; fold-safe may then
-    remove the file over SSH. Only a real removal changes the verdict — ``needs_review``,
-    ``skipped`` and ``failed`` all leave the guard's refusal standing, which is accurate:
-    the file is still there. Matched by item id, falling back to the delete path for items
-    whose id is missing.
+    The guard sets ``skipped_unsafe`` (``would_block`` in a dry run) when it refuses the
+    Emby delete; fold-safe may then remove the file over SSH. A real removal becomes
+    ``fold_safe_removed``. A dry-run preview that passed the host-side checks
+    (``would_remove`` on a ``would_block`` item) becomes ``fold_safe_would_remove``, so the
+    dry-run report counts the file among the deletes the real run will make.
+    ``needs_review``, ``skipped`` and ``failed`` leave the guard's refusal standing, which
+    is accurate: the file stays on disk. Matched by item id, falling back to the delete
+    path for items whose id is missing.
     """
     by_id = {r.get("id"): r for r in results if r.get("id")}
     by_path = {r.get("delete"): r for r in results if r.get("delete")}
     for decision in decisions or []:
         for item in decision.get("delete", []) or []:
             result = by_id.get(item.get("id")) or by_path.get(item.get("path"))
-            if not result or result.get("status") != "removed":
-                continue
-            item["deletion_result"] = {
-                "id": item.get("id"),
-                "status": "fold_safe_removed",
-                "error": None,
-            }
+            status = _fold_safe_status(result, item.get("deletion_result"))
+            if status:
+                item["deletion_result"] = {"id": item.get("id"), "status": status, "error": None}
+
+
+def _fold_safe_status(result: dict | None, current: dict | None) -> str | None:
+    """The deletion status a fold-safe outcome sets, or None to keep the current one."""
+    outcome = (result or {}).get("status")
+    if outcome == "removed":
+        return "fold_safe_removed"
+    if outcome == "would_remove" and (current or {}).get("status") == "would_block":
+        return "fold_safe_would_remove"
+    return None
 
 
 def _run_fold_safe_delete(client, base_url, decisions, doit, ssh_host) -> None:

@@ -20,6 +20,11 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 - **Dedupe report: no false "language lost" flag for ISO 639-2 B/T code pairs.** A pair such as `fre`/`fra`
   or `ger`/`deu` names one language. The report now treats the 20 bibliographic/terminology pairs as equal,
   so a keeper tagged `fra` no longer looks like it loses the deleted copy's `fre` track.
+- **Dedupe dry run: `--fold-safe-delete` removals are listed as planned deletes.** A guard-refused duplicate
+  that fold-safe will remove file-only under `--doit` was still shown as "Would be blocked" in the dry-run
+  report, so the dry run promised fewer deletions than the real run made. Such a file now appears under
+  "Would be removed" with a "file only (SSH)" chip and counts toward the space to free. A preview that fails
+  the host checks (keeper missing, needs review) still reads as blocked.
 
 ## [3.4.7] — 2026-11-08
 

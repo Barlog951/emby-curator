@@ -35,7 +35,9 @@ DELETED_STATUSES = frozenset({"success", "fold_safe_removed"})
 
 # Statuses only a dry run produces: nothing was attempted. ``would_block`` is a delete
 # the safety guard will refuse under --doit; it is not counted as space to free.
-DRY_RUN_STATUSES = frozenset({"not_attempted", "would_block"})
+# ``fold_safe_would_remove`` is a guard-refused duplicate --fold-safe-delete will remove
+# file-only under --doit; it counts as a planned delete.
+DRY_RUN_STATUSES = frozenset({"not_attempted", "would_block", "fold_safe_would_remove"})
 
 
 def _process_deletion_status(item: dict[str, Any], stats: dict[str, Any]) -> bool:
