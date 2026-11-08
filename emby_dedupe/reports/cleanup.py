@@ -397,11 +397,11 @@ def _series_candidate_to_dict(c: SeriesCleanupCandidate, base_url: str, api_key:
 
 
 def poster_url(base_url: str, item_id: str, api_key: str) -> str:
-    """The report's poster URL for an item ('' without a key). Inlined before rendering,
-    so the key in it never reaches the report file."""
+    """The report's poster URL for an item ('' without a key). Carries no credential:
+    the poster is fetched with the key in a header and embedded before rendering."""
     if not api_key:
         return ""
-    return f"{base_url}/Items/{item_id}/Images/Primary?maxWidth=200&api_key={api_key}"
+    return f"{base_url}/Items/{item_id}/Images/Primary?maxWidth=200"
 
 
 def prefetch_cleanup_posters(
@@ -413,7 +413,7 @@ def prefetch_cleanup_posters(
     gone. Returns ``{poster_url: data URI}`` for the ones fetched.
     """
     urls = [u for u in (poster_url(base_url, c.item_id, api_key) for c in candidates) if u]
-    fetched = inline_poster_urls(urls, api_key)
+    fetched = inline_poster_urls(urls, api_key, emby_url=base_url)
     return {u: v for u, v in fetched.items() if v.startswith("data:")}
 
 
@@ -511,7 +511,7 @@ def _generate_cleanup_html_report(
     # Embed the posters so the API key never reaches the report file. This walks the
     # whole context rather than a list of sections, so adding a section to the template
     # cannot reintroduce the leak (see reports.images.inline_images_in_place).
-    inline_images_in_place(context, api_key, prefetched=prefetched_posters)
+    inline_images_in_place(context, api_key, prefetched=prefetched_posters, emby_url=base_url)
 
     return template.render(**context)
 

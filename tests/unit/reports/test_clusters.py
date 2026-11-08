@@ -112,6 +112,25 @@ def test_language_loss_is_flagged():
     assert row["files"][0]["delete"]["langs"] == "kor eng cs"
 
 
+def test_bibliographic_and_terminology_codes_are_the_same_language():
+    """"fra"/"deu" on one copy and "fre"/"ger" on the other name the same languages."""
+    keep = _item("k", "/M/4K/Film CZ/Film CZ.mkv", rating=100, langs=("eng", "fre", "ger", "cze"))
+    other = _item("d", "/M/4K/Film/Film.mp4", status="success", langs=("eng", "fra", "deu"))
+    row = _rows(build_clusters([{"keep": keep, "delete": [other]}], BASE), "removed")[0]
+
+    assert "language_loss" not in row["flags"]
+    assert row["files"][0]["lost_langs"] == []
+
+
+def test_a_language_missing_under_every_code_is_still_lost():
+    keep = _item("k", "/M/4K/Film CZ/Film CZ.mkv", rating=100, langs=("eng", "fre"))
+    other = _item("d", "/M/4K/Film/Film.mp4", status="success", langs=("eng", "fra", "deu"))
+    row = _rows(build_clusters([{"keep": keep, "delete": [other]}], BASE), "removed")[0]
+
+    assert "language_loss" in row["flags"]
+    assert row["files"][0]["lost_langs"] == ["deu"]
+
+
 def test_dup_suffix_is_flagged_only_when_the_runtimes_differ():
     """Initial D hid a different episode behind "(2)"; the same runtime means the same episode."""
     keep = _item("k", "/M/HD/Film (2020)/Film.mkv")

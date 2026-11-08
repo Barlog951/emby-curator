@@ -13,13 +13,15 @@ DATA = "data:image/jpeg;base64,AAAA"
 
 def test_poster_url_has_no_url_without_a_key():
     assert rep.poster_url("http://emby", "7", "") == ""
-    assert rep.poster_url("http://emby", "7", API_KEY).endswith("/Items/7/Images/Primary?maxWidth=200&api_key=your-api-key")
+    url = rep.poster_url("http://emby", "7", API_KEY)
+    assert url == "http://emby/Items/7/Images/Primary?maxWidth=200"
+    assert API_KEY not in url
 
 
 def test_prefetch_keeps_only_real_images(monkeypatch):
     seen: list[list[str]] = []
 
-    def fake_inline(urls, api_key=None, timeout=10.0):
+    def fake_inline(urls, api_key=None, timeout=10.0, emby_url=None):
         urls = list(urls)
         seen.append(urls)
         return {urls[0]: DATA, urls[1]: "http://emby/Items/2/Images/Primary?maxWidth=200"}  # 2nd failed
@@ -33,7 +35,7 @@ def test_prefetch_keeps_only_real_images(monkeypatch):
 def test_inline_uses_prefetched_posters_and_fetches_only_the_rest(monkeypatch):
     fetched: list[str] = []
 
-    def fake_inline(urls, api_key=None, timeout=10.0):
+    def fake_inline(urls, api_key=None, timeout=10.0, emby_url=None):
         fetched.extend(urls)
         return {u: "data:image/png;base64,BBBB" for u in urls}
 

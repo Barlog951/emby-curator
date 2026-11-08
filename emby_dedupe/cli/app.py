@@ -355,7 +355,7 @@ def dedupe_cmd(
             base_url, decisions, exclusion_metadata, resolved.excluded_ids,
             resolved.lang_priorities,
             resolved.html_report, resolved.html_only, resolved.no_open,
-            libraries=resolved.library, doit=resolved.doit,
+            libraries=resolved.library, doit=resolved.doit, api_key=resolved.api_key,
         )
 
     except EmbyServerConnectionError as e:

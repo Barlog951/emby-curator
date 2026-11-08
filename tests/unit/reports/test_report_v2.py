@@ -369,17 +369,17 @@ def test_enrich_keep_item_attaches_the_series_poster_as_an_image_holder():
     keep = {"id": "e1", "serverid": "s1"}
     details = [{"Id": "e1", "Name": "Pilot", "ImageTags": {"Primary": "still"}, "SeriesName": "Show",
                 "SeriesId": "series9", "SeriesPrimaryImageTag": "art7", "ParentIndexNumber": 1, "IndexNumber": 1}]
-    _enrich_keep_item(keep, details, "http://emby", "k")
+    _enrich_keep_item(keep, details, "http://emby")
 
-    assert keep["series_poster"]["image_url"] == "http://emby/Items/series9/Images/Primary?tag=art7&quality=80&maxHeight=300&api_key=k"
-    assert "api_key" in keep["image_url"]
+    assert keep["series_poster"]["image_url"] == "http://emby/Items/series9/Images/Primary?tag=art7&quality=80&maxHeight=300"
+    assert "api_key" not in keep["image_url"]
 
 
 def test_enrich_keep_item_without_series_art_has_no_series_poster():
     from emby_dedupe.api.deduplication import _enrich_keep_item
 
     keep = {"id": "m1", "serverid": "s1"}
-    _enrich_keep_item(keep, [{"Id": "m1", "Name": "Film", "ImageTags": {"Primary": "p"}}], "http://emby", "k")
+    _enrich_keep_item(keep, [{"Id": "m1", "Name": "Film", "ImageTags": {"Primary": "p"}}], "http://emby")
 
     assert "series_poster" not in keep
 

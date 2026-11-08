@@ -589,7 +589,7 @@ class TestCandidateToDictHelpers:
         assert d["age_years"] == 5.0
         assert d["size_human"] == "1.00 GB"
         assert d["image_url"] == (
-            "http://emby/Items/m1/Images/Primary?maxWidth=200&api_key=KEY"
+            "http://emby/Items/m1/Images/Primary?maxWidth=200"
         )
 
     def test_movie_dict_unrated_and_no_api_key(self):

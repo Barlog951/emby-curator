@@ -90,10 +90,28 @@ def _fetch_data_uri(client: httpx.Client, url: str, api_key: str | None) -> str:
         return clean
 
 
+def _origin(url: str) -> tuple[str, str, int | None]:
+    """Scheme, host and effective port of a URL."""
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    port = parts.port or {"http": 80, "https": 443}.get(scheme)
+    return scheme, (parts.hostname or "").lower(), port
+
+
+def _key_for(url: str, api_key: str | None, emby_url: str | None) -> str | None:
+    """The key to send with ``url``: none for a host other than the Emby server's."""
+    if not api_key:
+        return None
+    if emby_url is None or _origin(url) == _origin(emby_url):
+        return api_key
+    return None
+
+
 def inline_poster_urls(
     urls: Iterable[str],
     api_key: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT,
+    emby_url: str | None = None,
 ) -> dict[str, str]:
     """Map each Emby poster URL to a ``data:`` URI, fetched with header auth.
 
@@ -102,11 +120,13 @@ def inline_poster_urls(
         api_key: Token to authenticate with. When omitted, it is recovered from the
             first URL that carries one.
         timeout: Per-request timeout in seconds.
+        emby_url: The Emby server's base URL. When given, the key is sent only to URLs
+            on that origin; an image on any other host is fetched without it.
 
     Returns:
         ``{original_url: replacement}``. The replacement is a ``data:`` URI on success
         and the credential-stripped URL on failure — never a URL containing the key.
-        Non-Emby/static URLs (no credential, e.g. the placeholder asset) map to
+        Without any key, URLs that carry no credential are not fetched and map to
         themselves.
     """
     targets = [u for u in dict.fromkeys(urls) if u]
@@ -116,14 +136,15 @@ def inline_poster_urls(
     if api_key is None:
         api_key = next((k for k in (extract_api_key(u) for u in targets) if k), None)
 
-    # Anything without a credential is a static asset — leave it alone.
+    # With a key every target is fetched (the key goes only to the Emby origin, see
+    # _key_for). Without one, only URLs that still carry their own credential are.
     to_fetch = [u for u in targets if extract_api_key(u) or api_key]
     replacements: dict[str, str] = {u: u for u in targets if u not in to_fetch}
     if not to_fetch:
         return replacements
 
     with httpx.Client(timeout=timeout, follow_redirects=True) as client, ThreadPoolExecutor(max_workers=_MAX_WORKERS) as pool:
-        results = pool.map(lambda u: _fetch_data_uri(client, u, api_key), to_fetch)
+        results = pool.map(lambda u: _fetch_data_uri(client, u, _key_for(u, api_key, emby_url)), to_fetch)
         replacements.update(zip(to_fetch, results, strict=True))
 
     inlined = sum(1 for v in replacements.values() if v.startswith("data:"))
@@ -146,6 +167,7 @@ def inline_images_in_place(
     api_key: str | None = None,
     timeout: float = _DEFAULT_TIMEOUT,
     prefetched: dict[str, str] | None = None,
+    emby_url: str | None = None,
 ) -> None:
     """Inline every poster in a render context, in place, wherever it lives.
 
@@ -168,7 +190,7 @@ def inline_images_in_place(
 
     known = {u: v for u, v in (prefetched or {}).items() if v.startswith("data:")}
     to_fetch = [h["image_url"] for h in holders if h["image_url"] not in known]
-    replacements = {**inline_poster_urls(to_fetch, api_key, timeout), **known}
+    replacements = {**inline_poster_urls(to_fetch, api_key, timeout, emby_url=emby_url), **known}
     for holder in holders:
         url = holder["image_url"]
         holder["image_url"] = replacements.get(url) or strip_credentials(url)

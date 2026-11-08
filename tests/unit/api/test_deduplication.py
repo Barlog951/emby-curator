@@ -640,7 +640,7 @@ class TestGradeFSafetyNet:
         mock_fetch.return_value = []
 
         decisions, stats = process_duplicate_groups(
-            client, "http://emby.local", [], api_key="key"
+            client, "http://emby.local", []
         )
 
         assert decisions == []
@@ -666,7 +666,6 @@ class TestGradeFSafetyNet:
             client,
             "http://emby.local",
             [["item1"]],
-            api_key="key",
             excluded_ids=["tt1234567"]  # Exclude this IMDB ID
         )
 
@@ -696,7 +695,7 @@ class TestGradeFSafetyNet:
         groups = [["group1_item1"], ["group2_item1"]]
 
         decisions, stats = process_duplicate_groups(
-            client, "http://emby.local", groups, api_key="key"
+            client, "http://emby.local", groups
         )
 
         # Verify each group's decision is preserved correctly
@@ -1280,7 +1279,7 @@ class TestGradeFSafetyNet:
             "ProviderIds": {"Imdb": "tt123456"}
         }
 
-        result = _extract_excluded_item_info(item, "http://emby", "apikey123")
+        result = _extract_excluded_item_info(item, "http://emby")
 
         assert result["title"] == "Test Movie"
         assert result["year"] == 2024
@@ -1295,7 +1294,7 @@ class TestGradeFSafetyNet:
             {"Id": "keep123", "Name": "Test Show", "SeriesName": "Show", "ParentIndexNumber": 1, "IndexNumber": 5, "ImageTags": {"Primary": "tag123"}}
         ]
 
-        _enrich_keep_item(keep_item, items_details, "http://emby", "apikey")
+        _enrich_keep_item(keep_item, items_details, "http://emby")
 
         assert "image_url" in keep_item
         assert keep_item["name"] == "Test Show"
@@ -1311,7 +1310,7 @@ class TestGradeFSafetyNet:
             {"Id": "del123", "ImageTags": {"Primary": "tag123"}, "ProviderIds": {"Imdb": "tt123", "Tmdb": "456"}}
         ]
 
-        _enrich_delete_item(delete_item, items_details, "http://emby", "server1", "apikey")
+        _enrich_delete_item(delete_item, items_details, "http://emby", "server1")
 
         assert "image_url" in delete_item
         assert delete_item["provider_id"] == "tt123"  # IMDB priority
@@ -1399,31 +1398,24 @@ class TestExtractedHelperFunctions:
         result = _extract_audio_info([])
         assert result == {}
 
-    def test_build_image_url_with_api_key(self):
-        """Test image URL building with API key."""
-        url = _build_image_url("item123", {"Primary": "tag456"}, "http://emby", "apikey789")
+    def test_build_image_url(self):
+        """The poster URL names the item and size and never carries a credential."""
+        url = _build_image_url("item123", {"Primary": "tag456"}, "http://emby")
 
         assert "http://emby/Items/item123/Images/Primary" in url
         assert "tag=tag456" in url
         assert "quality=80" in url
         assert "maxHeight=300" in url
-        assert "api_key=apikey789" in url
-
-    def test_build_image_url_without_api_key(self):
-        """Test image URL building without API key."""
-        url = _build_image_url("item123", {"Primary": "tag456"}, "http://emby", "")
-
-        assert "http://emby/Items/item123/Images/Primary" in url
         assert "api_key" not in url
 
     def test_build_image_url_no_primary_tag(self):
         """Test image URL building with no primary tag."""
-        url = _build_image_url("item123", {}, "http://emby", "apikey")
+        url = _build_image_url("item123", {}, "http://emby")
         assert url == ""
 
     def test_build_image_url_no_item_id(self):
         """Test image URL building with no item ID."""
-        url = _build_image_url("", {"Primary": "tag"}, "http://emby", "apikey")
+        url = _build_image_url("", {"Primary": "tag"}, "http://emby")
         assert url == ""
 
     def test_format_title_movie_only(self):
@@ -1499,3 +1491,13 @@ class TestExtractedHelperFunctions:
         """Test media info extraction with no streams."""
         result = _extract_media_info([])
         assert result == {}
+
+
+def test_process_duplicate_groups_rejects_positional_options():
+    """lang_priorities / excluded_ids are keyword-only: the old positional api_key slot
+    must not silently shift a key string into lang_priorities."""
+    import pytest
+
+    client = Mock()
+    with pytest.raises(TypeError):
+        process_duplicate_groups(client, "http://emby.local", [], "a-key", ["cze"])  # type: ignore[misc]

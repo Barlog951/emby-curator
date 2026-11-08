@@ -311,7 +311,7 @@ def _run_deduplication_pipeline(client, base_url, all_provider_tables, excluded_
     ) else None
 
     decisions, exclusion_metadata = process_duplicate_groups(
-        client, base_url, duplicates, api_key, lang_priorities, excluded_ids
+        client, base_url, duplicates, lang_priorities=lang_priorities, excluded_ids=excluded_ids
     )
 
     dump_object_to_file(decisions, "testing/decisions") if logger.isEnabledFor(
@@ -355,7 +355,7 @@ def _run_deduplication_pipeline(client, base_url, all_provider_tables, excluded_
 
 def _generate_reports(base_url, decisions, exclusion_metadata, excluded_ids,
                      lang_priorities, html_report, html_only, no_open,
-                     libraries=None, doit=None):
+                     libraries=None, doit=None, api_key=None):
     """
     Generate and output reports (markdown and/or HTML).
 
@@ -386,7 +386,7 @@ def _generate_reports(base_url, decisions, exclusion_metadata, excluded_ids,
         try:
             logger.debug(f"Generating HTML report with {len(decisions)} decisions total")
 
-            html_report_path = generate_html_report(base_url, decisions, report_metadata)
+            html_report_path = generate_html_report(base_url, decisions, report_metadata, api_key=api_key)
 
             if not no_open:
                 try:

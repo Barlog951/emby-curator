@@ -127,9 +127,9 @@ class TestMetadata:
         url = get_image_url("http://example.com", "item123", {}, "server1")
         assert "http://example.com/web/assets/img/media.png" in url
 
-        # With API key
-        url = get_image_url("http://example.com", "item123", {"Primary": "tag123"}, "server1", "api_key123")
-        assert "api_key=api_key123" in url
+        # Never a credential in the URL: the report fetches posters with a header
+        url = get_image_url("http://example.com", "item123", {"Primary": "tag123"}, "server1")
+        assert "api_key" not in url
 
     def test_get_quality_description_with_date_fields(self):
         """Test quality description with various date formats."""

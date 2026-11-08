@@ -7,6 +7,20 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+### Security
+
+- **Poster URLs never carry the Emby API key.** The dedupe and cleanup scans used to build image URLs ending
+  in `api_key=<key>`, and the reports stripped it again before writing. The URLs are now built without it.
+  The reports receive the key as a separate argument and send it as an `X-Emby-Token` header, to the Emby
+  server's own address only. Decision dumps, debug logs and any future report section no longer see the
+  key. `process_duplicate_groups()` no longer takes an `api_key` argument.
+
+### Fixed
+
+- **Dedupe report: no false "language lost" flag for ISO 639-2 B/T code pairs.** A pair such as `fre`/`fra`
+  or `ger`/`deu` names one language. The report now treats the 20 bibliographic/terminology pairs as equal,
+  so a keeper tagged `fra` no longer looks like it loses the deleted copy's `fre` track.
+
 ## [3.4.7] — 2026-11-08
 
 ### Security

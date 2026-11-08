@@ -27,7 +27,7 @@ from typing import Any
 
 from emby_dedupe.api.deletion_guard import folder_season
 from emby_dedupe.reports.common import DELETED_STATUSES, format_size
-from emby_dedupe.utils.constants import LANGUAGE_NORMALIZATION_MAP
+from emby_dedupe.utils.constants import ISO_639_2_B_TO_T, LANGUAGE_NORMALIZATION_MAP
 
 # Report section per deletion status. Anything unknown goes to "other" so no file is dropped.
 OUTCOME_BY_STATUS = {
@@ -137,6 +137,17 @@ def _quality_label(item: dict[str, Any]) -> str:
     return " ".join(x for x in (res, hdr, src) if x) or "unknown quality"
 
 
+def _same_language(code: str) -> str:
+    """One key per language for comparisons: "fre" and "fra" (B and T codes) both give "fra"."""
+    return ISO_639_2_B_TO_T.get(code, code)
+
+
+def _lost_languages(delete_langs: list[str], keep_langs: list[str]) -> list[str]:
+    """The other copy's languages the kept copy has under no code, in the other copy's order."""
+    kept = {_same_language(lang) for lang in keep_langs}
+    return [lang for lang in delete_langs if _same_language(lang) not in kept]
+
+
 def _languages(item: dict[str, Any]) -> list[str]:
     langs = ((item.get("quality_description") or {}).get("audio") or {}).get("languages") or []
     out: list[str] = []
@@ -232,7 +243,7 @@ def _risk_flags(keep: dict[str, Any], item: dict[str, Any]) -> list[str]:
     keep_rating, item_rating = _rating(keep), _rating(item)
     if keep_rating is not None and item_rating is not None and keep_rating < item_rating:
         flags.append("score_inversion")
-    if set(_languages(item)) - set(_languages(keep)):
+    if _lost_languages(_languages(item), _languages(keep)):
         flags.append("language_loss")
     if _hdr_rank(item) > _hdr_rank(keep):
         flags.append("hdr_loss")
@@ -425,7 +436,7 @@ def _file_record(keep: dict[str, Any], item: dict[str, Any], base_url: str) -> d
         "keep": keep_side,
         "delete": delete_side,
         "folders_differ": keep_side["dir"] != delete_side["dir"],
-        "lost_langs": [lang for lang in delete_side["langs_list"] if lang not in keep_side["langs_list"]],
+        "lost_langs": _lost_languages(delete_side["langs_list"], keep_side["langs_list"]),
         "keep_note": _why_kept(keep),
         "exclude_ids": _shared_provider_ids(keep, item),
         "pair_key": f"{keep_side['path']}|{delete_side['path']}",

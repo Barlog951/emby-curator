@@ -352,7 +352,7 @@ def get_quality_description(item: dict[str, Any]) -> dict[str, Any]:
     return quality_description
 
 
-def get_image_url(base_url: str, item_id: str, item_image_tags: dict, server_id: str, api_key: str | None = None) -> str:
+def get_image_url(base_url: str, item_id: str, item_image_tags: dict, server_id: str) -> str:
     """
     Generates a URL for the primary image (poster/thumbnail) of a media item.
 
@@ -361,7 +361,6 @@ def get_image_url(base_url: str, item_id: str, item_image_tags: dict, server_id:
         item_id (str): ID of the media item.
         item_image_tags (dict): Dictionary containing image tag information.
         server_id (str): Server ID for the item.
-        api_key (Optional[str]): API key to include in the URL for authentication.
 
     Returns:
         str: URL to the primary image, or a placeholder if no image is available.
@@ -383,12 +382,7 @@ def get_image_url(base_url: str, item_id: str, item_image_tags: dict, server_id:
     # quality=80, like the dedupe report: posters are embedded, and 90 was 30-55% bigger
     image_url = f"{base_url}/Items/{item_id}/Images/Primary?tag={primary_tag}&quality=80&maxHeight=300&ts={int(time.time())}"
 
-    # Add API key if provided - this is needed for direct image access
-    if api_key:
-        image_url += f"&api_key={api_key}"
-    else:
-        # If no API key provided but we have X-Emby-Token in headers, add it to the URL
-        logger.warning(f"No API key provided for image URL {image_url}. Images may not display correctly.")
+    # No credential in the URL: the report fetches posters with the key in a header.
 
     logger.debug(f"Generated image URL: {image_url}")
     return image_url

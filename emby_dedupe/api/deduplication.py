@@ -200,19 +200,15 @@ def _extract_media_info(media_streams: list) -> dict:
     return media_info
 
 
-def _build_image_url(item_id: str, image_tags: dict, base_url: str, api_key: str) -> str:
-    """Build image URL for primary image."""
+def _build_image_url(item_id: str, image_tags: dict, base_url: str) -> str:
+    """Build the primary-image URL (no credential: the report fetches it with a header)."""
     if not (item_id and image_tags and "Primary" in image_tags):
         return ""
 
     primary_tag = image_tags["Primary"]
     # quality=80: measured 30-55% smaller than 90 at the same 300 px height, no visible loss
     # on a 150 px-wide report card. Every poster is embedded in the report file.
-    image_url = f"{base_url}/Items/{item_id}/Images/Primary?tag={primary_tag}&quality=80&maxHeight=300"
-    if api_key:
-        image_url += f"&api_key={api_key}"
-
-    return image_url
+    return f"{base_url}/Items/{item_id}/Images/Primary?tag={primary_tag}&quality=80&maxHeight=300"
 
 
 def _format_title(item: dict) -> str:
@@ -224,21 +220,20 @@ def _format_title(item: dict) -> str:
     return title
 
 
-def _extract_excluded_item_info(item, base_url, api_key) -> dict:
+def _extract_excluded_item_info(item, base_url) -> dict:
     """
     Extract comprehensive metadata for an excluded item (for reporting).
 
     Args:
         item: Excluded item dictionary
         base_url: Emby server base URL
-        api_key: API key for image URLs
 
     Returns:
         Dictionary with complete item metadata
     """
     title = _format_title(item)
     item_id = item.get("Id")
-    image_url = _build_image_url(item_id, item.get("ImageTags", {}), base_url, api_key)
+    image_url = _build_image_url(item_id, item.get("ImageTags", {}), base_url)
 
     size_bytes = item.get("Size", 0)
     size_formatted = _format_file_size(size_bytes)
@@ -259,7 +254,7 @@ def _extract_excluded_item_info(item, base_url, api_key) -> dict:
     }
 
 
-def _enrich_keep_item(keep_item, items_details, base_url, api_key) -> None:
+def _enrich_keep_item(keep_item, items_details, base_url) -> None:
     """
     Add image URL, group name, and episode metadata to keep item (in-place).
 
@@ -267,7 +262,6 @@ def _enrich_keep_item(keep_item, items_details, base_url, api_key) -> None:
         keep_item: The item to keep (mutated in-place)
         items_details: List of all item details
         base_url: Emby server base URL
-        api_key: API key for image URLs
     """
     keep_details = next((item for item in items_details if item.get("Id") == keep_item["id"]), None)
     if keep_details:
@@ -276,8 +270,7 @@ def _enrich_keep_item(keep_item, items_details, base_url, api_key) -> None:
             base_url,
             keep_details.get("Id", ""),
             keep_details.get("ImageTags", {}),
-            keep_item.get("serverid", ""),
-            api_key
+            keep_item.get("serverid", "")
         )
         keep_item["image_url"] = image_url
         keep_item["name"] = keep_details.get("Name", "Unknown Group")
@@ -288,7 +281,7 @@ def _enrich_keep_item(keep_item, items_details, base_url, api_key) -> None:
         # The report row for a season shows the series poster, not one episode's still.
         # Kept as a nested holder so the poster inliner (reports/images) finds and embeds it.
         series_url = _build_image_url(keep_details.get("SeriesId", ""),
-                                      {"Primary": keep_details.get("SeriesPrimaryImageTag", "")}, base_url, api_key)
+                                      {"Primary": keep_details.get("SeriesPrimaryImageTag", "")}, base_url)
         if series_url:
             keep_item["series_poster"] = {"image_url": series_url}
 
@@ -330,7 +323,7 @@ def _extract_primary_provider_id(provider_ids: dict) -> str | None:
     return None
 
 
-def _enrich_delete_item(delete_item, items_details, base_url, keep_serverid, api_key) -> None:
+def _enrich_delete_item(delete_item, items_details, base_url, keep_serverid) -> None:
     """
     Add image URL, provider IDs, and episode metadata to delete item (in-place).
 
@@ -339,7 +332,6 @@ def _enrich_delete_item(delete_item, items_details, base_url, keep_serverid, api
         items_details: List of all item details
         base_url: Emby server base URL
         keep_serverid: Server ID of the kept item
-        api_key: API key for image URLs
     """
     delete_details = next((item for item in items_details if item.get("Id") == delete_item["id"]), None)
     if delete_details:
@@ -348,8 +340,7 @@ def _enrich_delete_item(delete_item, items_details, base_url, keep_serverid, api
             base_url,
             delete_details.get("Id", ""),
             delete_details.get("ImageTags", {}),
-            keep_serverid,
-            api_key
+            keep_serverid
         )
         delete_item["image_url"] = image_url
 
@@ -1184,7 +1175,7 @@ def determine_items_to_delete(duplicate_ids: list, all_items_details: list, lang
 
 
 
-def _enrich_and_add_decision(decision: dict, items_details: list, base_url: str, api_key: str, decisions: list) -> None:
+def _enrich_and_add_decision(decision: dict, items_details: list, base_url: str, decisions: list) -> None:
     """
     Enrich decision with metadata and add to decisions list.
 
@@ -1192,7 +1183,6 @@ def _enrich_and_add_decision(decision: dict, items_details: list, base_url: str,
         decision: Decision dictionary with keep/delete items.
         items_details: List of all item details.
         base_url: Emby server base URL.
-        api_key: API key for image URLs.
         decisions: List to append decision to.
     """
     if not decision.get("keep") or not decision.get("delete"):
@@ -1201,7 +1191,7 @@ def _enrich_and_add_decision(decision: dict, items_details: list, base_url: str,
     keep_item = decision["keep"]
 
     # Enrich keep item with image and metadata
-    _enrich_keep_item(keep_item, items_details, base_url, api_key)
+    _enrich_keep_item(keep_item, items_details, base_url)
 
     # Set group name from keep item
     decision["name"] = keep_item.get("name", "Unknown Group")
@@ -1213,14 +1203,14 @@ def _enrich_and_add_decision(decision: dict, items_details: list, base_url: str,
 
     # Enrich each delete item with image and provider metadata
     for item_to_delete in decision["delete"]:
-        _enrich_delete_item(item_to_delete, items_details, base_url, keep_item.get("serverid", ""), api_key)
+        _enrich_delete_item(item_to_delete, items_details, base_url, keep_item.get("serverid", ""))
 
     decisions.append(decision)
 
 
 def process_duplicate_groups(
-    client: httpx.Client, base_url: str, duplicate_groups: list, api_key: str = None,
-    lang_priorities: list = None, excluded_ids: list = None
+    client: httpx.Client, base_url: str, duplicate_groups: list,
+    *, lang_priorities: list = None, excluded_ids: list = None
 ) -> tuple[list, dict]:
     """
     Processes each group of duplicate items to identify the item to keep and the ones to delete.
@@ -1229,7 +1219,6 @@ def process_duplicate_groups(
         client (httpx.Client): The httpx client configured for the Emby server communication.
         base_url (str): Base URL of the Emby server.
         duplicate_groups (list): A list of lists, where each inner list contains IDs of potentially duplicate items.
-        api_key (str, optional): API key for authentication with image URLs.
         lang_priorities (list, optional): List of language codes in order of priority.
         excluded_ids (list, optional): List of provider IDs to exclude from deduplication.
 
@@ -1259,7 +1248,7 @@ def process_duplicate_groups(
             if should_exclude and excluded_item:
                 # Extract and store excluded item info for reporting
                 excluded_groups_count += 1
-                excluded_info = _extract_excluded_item_info(excluded_item, base_url, api_key)
+                excluded_info = _extract_excluded_item_info(excluded_item, base_url)
                 excluded_titles[excluded_provider_id] = excluded_info
 
                 logger.debug(f"Skipping group with excluded provider ID {excluded_provider_id}: {excluded_info['title']}. Items: {[i.get('Id') for i in items_details]}")
@@ -1270,7 +1259,7 @@ def process_duplicate_groups(
             try:
                 decision = determine_items_to_delete(group, items_details, lang_priorities)
                 if decision:
-                    _enrich_and_add_decision(decision, items_details, base_url, api_key or "", decisions)
+                    _enrich_and_add_decision(decision, items_details, base_url, decisions)
             except Exception as e:
                 logger.error(f"Error processing group: {e}")
                 logger.debug(f"Group details: {group}")

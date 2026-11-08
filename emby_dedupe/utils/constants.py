@@ -30,6 +30,15 @@ LANGUAGE_NORMALIZATION_MAP = {
     "cs": "cs"    # Czech ISO 639-1
 }
 
+# ISO 639-2 languages with two alpha-3 codes: bibliographic (B) -> terminology (T).
+# Media files use either form ("fre" and "fra" are both French), so comparisons map B to T.
+ISO_639_2_B_TO_T = {
+    "alb": "sqi", "arm": "hye", "baq": "eus", "bur": "mya", "chi": "zho",
+    "cze": "ces", "dut": "nld", "fre": "fra", "geo": "kat", "ger": "deu",
+    "gre": "ell", "ice": "isl", "mac": "mkd", "mao": "mri", "may": "msa",
+    "per": "fas", "rum": "ron", "slo": "slk", "tib": "bod", "wel": "cym",
+}
+
 # Audio language tags that say nothing (the track may be any language): Emby reports "und"
 # for untagged tracks, our extraction substitutes "unknown".
 UNKNOWN_LANGUAGES = frozenset({"", "unknown", "und"})

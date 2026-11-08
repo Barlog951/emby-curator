@@ -195,3 +195,110 @@ def test_rendered_report_has_no_key_even_when_posters_fail_to_load():
 
     assert KEY not in html
     assert "api_key=" not in html
+
+
+def _per_url_client(seen):
+    """httpx.Client stand-in that records the headers sent with each URL."""
+    class _Resp:
+        content = PNG
+        headers = {"content-type": "image/jpeg"}
+
+        def raise_for_status(self):
+            return None
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, url, headers=None):
+            seen[url] = dict(headers or {})
+            return _Resp()
+
+    return _Client
+
+
+def _keyless_decisions():
+    poster = "http://emby.example.com/Items/1/Images/Primary?tag=t&quality=80&maxHeight=300"
+    return [{
+        "keep": {
+            "id": "1", "name": "Keeper", "serverid": "s1", "image_url": poster,
+            "quality_description": {
+                "video": {"codec": "h265", "resolution": "4K"},
+                "audio": {"codec": "dts", "channels": 6, "languages": ["eng"]},
+                "date_added": "2026-01-15", "path": "/Movies/a/keep.mkv",
+            },
+        },
+        "delete": [{
+            "id": "2", "name": "Dup", "image_url": poster.replace("Items/1", "Items/2"),
+            "deletion_result": {"status": "success", "error": None},
+            "quality_description": {
+                "video": {"codec": "h264", "resolution": "1080p"},
+                "audio": {"codec": "aac", "channels": 2, "languages": ["eng"]},
+                "date_added": "2026-01-01", "path": "/Movies/a/dup.mkv",
+            },
+        }],
+    }]
+
+
+def test_keyless_poster_urls_are_embedded_when_the_key_is_passed():
+    """Poster URLs carry no credential; the report gets the key separately and embeds them."""
+    from emby_dedupe.reports.html import format_html_report
+
+    seen: dict = {}
+    with mock.patch("httpx.Client", _per_url_client(seen)):
+        html = format_html_report("http://emby.example.com", _keyless_decisions(), api_key=KEY)
+
+    assert "data:image/jpeg;base64," in html, "posters should be embedded"
+    assert KEY not in html
+    assert "api_key=" not in html
+    assert seen
+    assert all(h.get("X-Emby-Token") == KEY for h in seen.values())
+    assert all("api_key" not in url for url in seen)
+
+
+def test_without_the_key_keyless_posters_are_not_fetched():
+    """The key must reach the inliner explicitly: the URLs no longer carry it."""
+    from emby_dedupe.reports.html import format_html_report
+
+    seen: dict = {}
+    with mock.patch("httpx.Client", _per_url_client(seen)):
+        html = format_html_report("http://emby.example.com", _keyless_decisions())
+
+    assert seen == {}
+    assert "data:image/jpeg;base64," not in html
+
+
+def test_key_is_sent_only_to_the_emby_server():
+    """An image on another host is fetched without the key."""
+    emby = "https://emby.example.com/Items/1/Images/Primary?maxWidth=200"
+    same_origin = "https://EMBY.example.com:443/Items/2/Images/Primary?maxWidth=200"
+    foreign = "https://cdn.example.net/poster.jpg"
+    other_port = "https://emby.example.com:8443/Items/3/Images/Primary"
+    seen: dict = {}
+    with mock.patch("httpx.Client", _per_url_client(seen)):
+        out = inline_poster_urls([emby, same_origin, foreign, other_port], KEY, emby_url="https://emby.example.com")
+
+    assert seen[emby].get("X-Emby-Token") == KEY
+    assert seen[same_origin].get("X-Emby-Token") == KEY
+    assert "X-Emby-Token" not in seen[foreign]
+    assert "X-Emby-Token" not in seen[other_port]
+    assert all(v.startswith("data:") for v in out.values())
+
+
+def test_generate_reports_hands_the_key_to_the_html_report():
+    """The CLI passes the key to the report as its own argument, not inside metadata."""
+    from emby_dedupe.cli import main as cli_main
+
+    with mock.patch.object(cli_main, "generate_html_report", return_value="/tmp/r.html") as gen, \
+         mock.patch.object(cli_main, "format_markdown_table", return_value=""):
+        cli_main._generate_reports("http://emby.example.com", [], {}, [], [], True, True, True, api_key=KEY)
+
+    assert gen.call_args.kwargs.get("api_key") == KEY
+    metadata = gen.call_args.args[2] if len(gen.call_args.args) > 2 else gen.call_args.kwargs.get("metadata")
+    assert KEY not in str(metadata)

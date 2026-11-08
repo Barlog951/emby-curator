@@ -327,19 +327,19 @@ def _process_decisions_to_groups(valid_decisions: list[dict[str, Any]], base_url
                 continue
 
 
-def _inline_group_posters(template_data: dict[str, Any]) -> None:
+def _inline_group_posters(template_data: dict[str, Any], base_url: str, api_key: str | None) -> None:
     """Replace every poster URL in the report with an embedded ``data:`` URI, in place.
 
-    The scan builds image URLs with ``?api_key=<live key>`` so the browser can load
-    them. Writing that into the report would put a working credential in a file that
-    gets opened and shared, so the posters are fetched here (key sent as a header) and
-    embedded instead. On failure the URL is kept but stripped of the key.
+    The report is a file that gets opened and shared, so it must never depend on the
+    Emby server or carry a credential. Posters are fetched here, with the key in a
+    header sent only to the Emby server itself, and embedded. On failure the plain URL
+    is kept (any credential stripped).
     """
     from emby_dedupe.reports.images import inline_images_in_place, share_inlined_images
 
     # Walks the entire context, not just duplicate_groups: the excluded-media section
     # renders posters too, and enumerating sections by hand let it leak the live key.
-    inline_images_in_place(template_data)
+    inline_images_in_place(template_data, api_key, emby_url=base_url)
     # Each distinct poster is then written once, as a CSS class, instead of once per card.
     template_data["poster_css"] = share_inlined_images(template_data)
 
@@ -646,7 +646,8 @@ def _attach_json_twin(template_data: dict[str, Any], stats: dict[str, Any]) -> N
 
 
 def build_report_context(base_url: str, decisions: list[dict[str, Any]],
-                         metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+                         metadata: dict[str, Any] | None = None,
+                         api_key: str | None = None) -> dict[str, Any]:
     """Everything the template needs, including the JSON twin (``report_json``).
 
     Args:
@@ -654,6 +655,8 @@ def build_report_context(base_url: str, decisions: list[dict[str, Any]],
         decisions: Decision objects containing items to keep and delete.
         metadata: Excluded ids, language priorities, run provenance (``run``) and the
             guard history (``history``, see reports/history).
+        api_key: Emby key used to fetch the posters that get embedded. It is sent as a
+            header to the Emby server only and never stored in the context.
     """
     stats = calculate_report_statistics(decisions)
     valid_decisions = _validate_decisions(decisions)
@@ -668,9 +671,8 @@ def build_report_context(base_url: str, decisions: list[dict[str, Any]],
     template_data["language_decisions"] = sum(
         1 for d in valid_decisions if d["keep"].get("changed_by_language_priority"))
 
-    # Embed the posters and drop the API key: the scan builds image URLs carrying
-    # ?api_key=..., which would write a live credential into this file.
-    _inline_group_posters(template_data)
+    # Embed the posters, so the report shows them without reaching the Emby server.
+    _inline_group_posters(template_data, base_url, api_key)
 
     # Rows per title and outcome, after the posters: a row shows its keeper's poster class.
     from emby_dedupe.reports.clusters import build_clusters
@@ -699,7 +701,8 @@ def render_report(template_data: dict[str, Any]) -> str:
         raise
 
 
-def format_html_report(base_url: str, decisions: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> str:
+def format_html_report(base_url: str, decisions: list[dict[str, Any]], metadata: dict[str, Any] | None = None,
+                       api_key: str | None = None) -> str:
     """
     Formats decisions into a beautiful HTML report using Jinja2 templates.
 
@@ -707,14 +710,16 @@ def format_html_report(base_url: str, decisions: list[dict[str, Any]], metadata:
         base_url (str): The base URL of the Emby server.
         decisions (list): List of decision objects containing items to keep and delete.
         metadata (dict, optional): Additional metadata such as excluded IDs and language priorities.
+        api_key (str, optional): Emby key used to fetch the posters that get embedded.
 
     Returns:
         str: A fully formed HTML document as a string.
     """
-    return render_report(build_report_context(base_url, decisions, metadata))
+    return render_report(build_report_context(base_url, decisions, metadata, api_key=api_key))
 
 
-def generate_html_report(base_url: str, decisions: list[dict[str, Any]], metadata: dict[str, Any] | None = None) -> str:
+def generate_html_report(base_url: str, decisions: list[dict[str, Any]], metadata: dict[str, Any] | None = None,
+                         api_key: str | None = None) -> str:
     """
     Generates an HTML report and saves it to a temporary file that can be opened in a browser.
 
@@ -726,6 +731,7 @@ def generate_html_report(base_url: str, decisions: list[dict[str, Any]], metadat
         base_url (str): The base URL of the Emby server.
         decisions (list): List of decision objects containing items to keep and delete.
         metadata (dict, optional): Additional metadata such as excluded IDs and language priorities.
+        api_key (str, optional): Emby key used to fetch the posters that get embedded.
 
     Returns:
         str: Path to the generated HTML file.
@@ -743,7 +749,7 @@ def generate_html_report(base_url: str, decisions: list[dict[str, Any]], metadat
     run.setdefault("json_name", os.path.basename(json_path))
     metadata["run"] = run
 
-    context = build_report_context(base_url, decisions, metadata)
+    context = build_report_context(base_url, decisions, metadata, api_key=api_key)
     html_content = render_report(context)
 
     temp_path = json_path[:-len(".json")] + ".html"
