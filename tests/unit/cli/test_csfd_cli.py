@@ -138,6 +138,8 @@ def test_run_fill_dry_run_and_doit_end_to_end(tmp_path, monkeypatch):
         if request.method == "POST":
             posted.append((request.url.path, request.content))
             return httpx.Response(204)
+        if request.url.path == "/Users/u/Items/1":  # the full item re-read right before the write
+            return httpx.Response(200, json={**item, "OriginalTitle": "Tatra", "LockedFields": ["Name"]})
         return httpx.Response(200, json={"Items": [item], "TotalRecordCount": 1})
 
     film = _film()
@@ -160,13 +162,17 @@ def test_run_fill_dry_run_and_doit_end_to_end(tmp_path, monkeypatch):
     body = json.loads(posted[0][1])
     assert body["Overview"] == "Plot."
     assert body["ProviderIds"]["Csfd"] == "1885748"
+    assert body["OriginalTitle"] == "Tatra"
+    assert "Name" in body["LockedFields"]
+    assert "Overview" in body["LockedFields"]
 
 
-def test_item_plan_describe_and_apply_failure_path():
+def test_item_plan_describe_and_apply_failure_path(monkeypatch):
     plan = ItemPlan("1", "X", film=_film(), fields={"Overview": "long"}, poster=True)
     assert cli._describe(plan) == "Overview=…, poster"
     client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500)))
-    assert cli._apply(client, "http://emby:8096", _FakeCsfd([], _film()), _item(), plan) is False
+    monkeypatch.setattr(cli, "fetch_full_item", lambda *_a: _item(Id="1"))
+    assert cli._apply(client, "http://emby:8096", "u", _FakeCsfd([], _film()), plan) is False
 
 
 def test_run_fill_saves_cache_periodically(monkeypatch):
@@ -321,3 +327,49 @@ def test_person_updates_fill_only_empty_biographical_fields():
     assert cli.person_updates(filled, profile) == {}
     short = CsfdCreatorProfile(bio="Too short.")
     assert cli.person_updates(empty, short) == {}
+
+
+def test_stored_id_is_read_in_any_key_casing():
+    assert cli.stored_csfd_id(_item(ProviderIds={"csfd": "42"})) == "42"
+    assert cli.stored_csfd_id(_item(ProviderIds={"Csfd": "42"})) == "42"
+    assert cli.stored_csfd_id(_item(ProviderIds={"Csfd": ""})) == ""
+    assert not is_candidate(_item(ProviderIds={"IMDB": "tt1"}, ImageTags={"Primary": "t"},
+                                  Overview="x", Genres=["D"]), only_unmatched=False)
+
+
+def test_already_stamped_item_with_nothing_to_fill_is_not_written():
+    item = _item(ProviderIds={"Csfd": "1885748"}, ImageTags={"Primary": "t"}, Overview="x",
+                 Genres=["Documentary"], CommunityRating=8.0)
+    plan = plan_item(item, _film())
+    assert plan.fields == {}
+    assert not plan.needs_stamp
+    assert not plan.has_changes
+
+
+def test_new_stamp_alone_is_written_once():
+    item = _item(ImageTags={"Primary": "t"}, Overview="x", Genres=["Documentary"], CommunityRating=8.0)
+    plan = plan_item(item, _film())
+    assert plan.needs_stamp
+    assert plan.has_changes
+
+
+def test_empty_film_id_never_erases_a_stamp():
+    item = _item(ProviderIds={"csfd": "1885748"})
+    plan = plan_item(item, _film(csfd_id=""))
+    payload = build_payload(item, plan)
+    assert payload["ProviderIds"] == {"csfd": "1885748"}
+    assert not plan.needs_stamp
+
+
+def test_stamp_reuses_the_existing_key_casing():
+    item = _item(ProviderIds={"csfd": "1"})
+    payload = build_payload(item, plan_item(item, _film()))
+    assert payload["ProviderIds"] == {"csfd": "1885748"}
+
+
+def test_directors_only_page_does_not_rewrite_people_every_run():
+    """ČSFD lists no actors for many documentaries: once the directors are in, People stays."""
+    film = _film(directors=["Jana Nová"], cast=[])
+    assert "People" in plan_item(_item(People=[]), film).fields
+    with_director = _item(People=[{"Name": "Jana Nová", "Type": "Director"}])
+    assert "People" not in plan_item(with_director, film).fields

@@ -519,7 +519,8 @@ def run_descriptions_command(args: argparse.Namespace) -> None:
     base_url = f"{validated_host}:{validated_port}"
 
     try:
-        client = httpx.Client(headers={"X-Emby-Token": args.api_key})
+        # A POST right after an Emby restart can take far longer than httpx's 5 s default.
+        client = httpx.Client(headers={"X-Emby-Token": args.api_key}, timeout=120)
         if not check_emby_connection(client, f"{base_url}/System/Info"):
             logger.error(f"Unable to connect to Emby at {base_url}.")
             sys.exit(1)

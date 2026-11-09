@@ -65,6 +65,7 @@ from emby_dedupe.utils.constants import (
 )
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.logging import logger, set_logging_level
+from emby_dedupe.utils.providers import normalize_provider_ids
 
 PROVIDER_KEYS = ("Tmdb", "Imdb", "Tvdb")
 CSFD_PROVIDER_KEY = "Csfd"
@@ -72,7 +73,7 @@ CACHE_SAVE_EVERY = 10
 # Emby omits these unless asked: People for the cast gap, OriginalTitle for the strict
 # matcher's second title, Path for the AI matcher's folder name.
 ITEM_EXTRA_FIELDS = "People,Path,OriginalTitle"
-READ_ONLY_FIELDS = ("Path", "OriginalTitle")  # fetched for matching, never written back
+EMBY_TIMEOUT = 120  # seconds; a POST right after an Emby restart can take far longer than httpx's 5 s default
 ROLE_ABBREVIATIONS = {"a.z.": "archívne zábery"}  # ČSFD's shorthand for archive footage
 VERIFY_FETCH_LIMIT = 2  # film pages fetched per query when no title matched outright
 _FOLDER_TITLE_RE = re.compile(r"^(.*?)\((?:19|20)\d{2}(?:-\d{4})?\)")  # group 1 is stripped by the caller
@@ -88,11 +89,17 @@ class ItemPlan:
     reason: str = ""
     fields: dict[str, object] = field(default_factory=dict)
     poster: bool = False
+    stamped: str = ""  # the Csfd id the item already carries
+
+    @property
+    def needs_stamp(self) -> bool:
+        """True when the matched film's id is not on the item yet."""
+        return self.film is not None and bool(self.film.csfd_id) and self.film.csfd_id != self.stamped
 
     @property
     def has_changes(self) -> bool:
-        """True when something is written: a field, a poster, or just the Csfd id stamp."""
-        return bool(self.fields) or self.poster or self.film is not None
+        """True when something is written: a field, a poster, or a new Csfd id stamp."""
+        return bool(self.fields) or self.poster or self.needs_stamp
 
 
 # ---------------------------------------------------------------------------
@@ -100,8 +107,13 @@ class ItemPlan:
 # ---------------------------------------------------------------------------
 
 def _has_provider(item: dict) -> bool:
-    ids = item.get("ProviderIds") or {}
-    return any(ids.get(k) for k in PROVIDER_KEYS)
+    ids = normalize_provider_ids(item.get("ProviderIds"))
+    return any(ids.get(k.lower()) for k in PROVIDER_KEYS)
+
+
+def stored_csfd_id(item: dict) -> str:
+    """The item's Csfd provider id in any key casing ("Csfd", "csfd"), or ""."""
+    return str(normalize_provider_ids(item.get("ProviderIds")).get(CSFD_PROVIDER_KEY.lower()) or "").strip()
 
 
 def missing_fields(item: dict) -> list[str]:
@@ -124,7 +136,7 @@ def is_candidate(item: dict, only_unmatched: bool) -> bool:
     """True when the item is worth a ČSFD lookup."""
     if item.get("Type") not in ("Movie", "Series"):
         return False
-    if (item.get("ProviderIds") or {}).get(CSFD_PROVIDER_KEY) and not missing_fields(item):
+    if stored_csfd_id(item) and not missing_fields(item):
         return False  # resolved by an earlier run and nothing left to fill
     if only_unmatched:
         return not _has_provider(item)
@@ -164,7 +176,7 @@ def resolve_film(
     """Find the ČSFD page for an item: manual map first, then strict search."""
     if item["Id"] in manual:
         return csfd.film(manual[item["Id"]]), "manual map"
-    stamped = (item.get("ProviderIds") or {}).get(CSFD_PROVIDER_KEY)
+    stamped = stored_csfd_id(item)
     if stamped:
         return csfd.film(film_url(stamped)), "stored csfd id"
     kind = KIND_SERIES if item.get("Type") == "Series" else KIND_FILM
@@ -191,7 +203,8 @@ def plan_item(item: dict, film: CsfdFilm, overwrite_poster: bool = False) -> Ite
     ``overwrite_poster`` uploads ČSFD artwork even when a Primary image exists —
     used to replace fallback frame posters with real art on hand-mapped items.
     """
-    plan = ItemPlan(item_id=item["Id"], name=item.get("Name", item["Id"]), film=film)
+    plan = ItemPlan(item_id=item["Id"], name=item.get("Name", item["Id"]), film=film,
+                    stamped=stored_csfd_id(item))
     gaps = missing_fields(item)
     if "overview" in gaps and film.plot:
         plan.fields["Overview"] = film.plot
@@ -201,7 +214,9 @@ def plan_item(item: dict, film: CsfdFilm, overwrite_poster: bool = False) -> Ite
         plan.fields["ProductionYear"] = film.year
     if item.get("CommunityRating") is None and film.rating_10 is not None:
         plan.fields["CommunityRating"] = film.rating_10
-    if "cast" in gaps and (film.cast or film.directors):
+    has_directors = any(p.get("Type") == "Director" for p in item.get("People") or [])
+    if "cast" in gaps and (film.cast or (film.directors and not has_directors)):
+        # ČSFD lists no actors for many documentaries: directors alone are written once only.
         plan.fields["People"] = people_entries(film)
     plan.poster = ("poster" in gaps or overwrite_poster) and film.poster_url is not None
     return plan
@@ -395,13 +410,12 @@ def write_ai_review(path: str, suggestions: list[AiSuggestion], model: str) -> N
 
 
 def build_payload(item: dict, plan: ItemPlan) -> dict:
-    """Full-object POST body: the item plus the planned fields and locks."""
+    """Full-object POST body: the item plus the planned fields and locks.
+
+    ``item`` must be a single-item GET (``fetch_full_item``): Emby clears every field
+    missing from the body, and list responses never carry ``LockedFields``.
+    """
     payload = copy.deepcopy(item)
-    # Fetched only for matching. Keep them out of the write, so the POST has the same shape
-    # as the hundreds of writes that preceded their fetch (Emby's full-object update has
-    # surprised us before: a 'Cast' lock silently dropped all LockedFields).
-    for read_only in READ_ONLY_FIELDS:
-        payload.pop(read_only, None)
     locked = payload.setdefault("LockedFields", [])
     for key, value in plan.fields.items():
         payload[key] = value
@@ -414,8 +428,9 @@ def build_payload(item: dict, plan: ItemPlan) -> dict:
     if isinstance(genres, list):
         payload["GenreItems"] = [{"Name": g, "Id": ""} for g in genres]
     provider_ids = payload.setdefault("ProviderIds", {})
-    if plan.film is not None:
-        provider_ids[CSFD_PROVIDER_KEY] = plan.film.csfd_id
+    if plan.film is not None and plan.film.csfd_id:  # an empty id would erase the stamp
+        key = next((k for k in provider_ids if k.lower() == CSFD_PROVIDER_KEY.lower()), CSFD_PROVIDER_KEY)
+        provider_ids[key] = plan.film.csfd_id
     return payload
 
 
@@ -466,9 +481,10 @@ def _describe(plan: ItemPlan) -> str:
     return ", ".join(parts)
 
 
-def _apply(client: httpx.Client, base_url: str, csfd: CsfdClient, item: dict,
-           plan: ItemPlan) -> bool:
-    ok = post_item_update(client, base_url, plan.item_id, build_payload(item, plan))
+def _apply(client: httpx.Client, base_url: str, user_id: str, csfd: CsfdClient, plan: ItemPlan) -> bool:
+    """Write the plan onto a fresh full copy of the item, then upload the poster."""
+    full_item = fetch_full_item(client, base_url, user_id, plan.item_id)
+    ok = post_item_update(client, base_url, plan.item_id, build_payload(full_item, plan))
     if ok and plan.poster and plan.film and plan.film.poster_url:
         try:
             data, content_type = csfd.fetch_poster(plan.film.poster_url)
@@ -613,7 +629,7 @@ def _run_fill(client: httpx.Client, base_url: str, user_id: str,
             plan = _lookup(csfd, item, manual, stats, getattr(args, "overwrite_poster", False), ai, never)
             plans.append(plan)
             if args.doit and plan.has_changes:  # a bare match still stamps the Csfd id
-                stats["updated" if _apply(client, base_url, csfd, item, plan) else "failed"] += 1
+                stats["updated" if _apply(client, base_url, user_id, csfd, plan) else "failed"] += 1
     finally:
         _end_run(cache, ai)
     if getattr(args, "report", None):
@@ -812,7 +828,7 @@ def run_csfd_people_command(args: argparse.Namespace) -> None:
     validated_host, validated_port = handle_host_and_port(args.host, port)
     base_url = f"{validated_host}:{validated_port}"
     try:
-        client = httpx.Client(headers={"X-Emby-Token": args.api_key}, timeout=120)
+        client = httpx.Client(headers={"X-Emby-Token": args.api_key}, timeout=EMBY_TIMEOUT)
         if not check_emby_connection(client, f"{base_url}/System/Info"):
             logger.error(f"Unable to connect to Emby at {base_url}.")
             sys.exit(1)
@@ -842,7 +858,7 @@ def run_csfd_command(args: argparse.Namespace) -> None:
     validated_host, validated_port = handle_host_and_port(args.host, port)
     base_url = f"{validated_host}:{validated_port}"
     try:
-        client = httpx.Client(headers={"X-Emby-Token": args.api_key})
+        client = httpx.Client(headers={"X-Emby-Token": args.api_key}, timeout=EMBY_TIMEOUT)
         if not check_emby_connection(client, f"{base_url}/System/Info"):
             logger.error(f"Unable to connect to Emby at {base_url}.")
             sys.exit(1)

@@ -509,9 +509,11 @@ class TestWebhookCompatibility:
 
         self._setup_genres_mocks(mocker)
         # _fetch_items_by_ids now uses batch fetch_items_by_ids
-        item_1 = {"Id": "123", "Name": "Movie 1", "Genres": ["dada"], "GenreItems": [], "LockedFields": []}
-        item_2 = {"Id": "456", "Name": "Movie 2", "Genres": ["Drama"], "GenreItems": [], "LockedFields": []}
+        item_1 = {"Id": "123", "Type": "Movie", "Name": "Movie 1", "Genres": ["dada"], "GenreItems": []}
+        item_2 = {"Id": "456", "Type": "Movie", "Name": "Movie 2", "Genres": ["Drama"], "GenreItems": []}
         mocker.patch("emby_dedupe.cli.genres.fetch_items_by_ids", return_value=[item_1, item_2])
+        full = {**item_1, "OfficialRating": "R", "PremiereDate": "2024-01-01", "LockedFields": ["Overview"]}
+        mock_full = mocker.patch("emby_dedupe.cli.genres.fetch_full_item", return_value=full)
         mock_update = mocker.patch("emby_dedupe.cli.genres.update_item_genres", return_value=True)
 
         runner = CliRunner()
@@ -532,6 +534,9 @@ class TestWebhookCompatibility:
         call_args = mock_update.call_args
         new_genres = call_args[0][4] if len(call_args[0]) > 4 else call_args.kwargs.get("new_genres", [])
         assert "Comedy" in new_genres
+        # The write starts from the single-item GET, never from the 4-field list copy.
+        mock_full.assert_called_once_with(mocker.ANY, "http://emby:8096", "user-123", "123")
+        assert call_args[0][3] is full
 
     def test_typer_genres_fix_doit_validate_item_ids(self, mocker):
         """Webhook: genres fix --doit --validate --item-ids 123,456 must work end-to-end."""
@@ -540,9 +545,10 @@ class TestWebhookCompatibility:
         from emby_dedupe.cli.app import app
 
         self._setup_genres_mocks(mocker)
-        item = {"Id": "123", "Name": "Movie 1", "Genres": [], "ProviderIds": {"Tmdb": "999"}, "GenreItems": [], "LockedFields": []}
-        # _fetch_items_by_ids now uses batch fetch_items_by_ids
+        item = {"Id": "123", "Type": "Movie", "Name": "Movie 1", "Genres": [], "ProviderIds": {"Tmdb": "999"}, "GenreItems": []}
         mocker.patch("emby_dedupe.cli.genres.fetch_items_by_ids", return_value=[item])
+        full = {**item, "OfficialRating": "PG", "CommunityRating": 7.1, "LockedFields": []}
+        mocker.patch("emby_dedupe.cli.genres.fetch_full_item", return_value=full)
         mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
         mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
         mocker.patch(
@@ -575,6 +581,7 @@ class TestWebhookCompatibility:
 
         assert result.exit_code == 0, f"exit_code={result.exit_code}\n{result.output}"
         mock_update.assert_called_once()
+        assert mock_update.call_args[0][3] is full
 
     def test_typer_genres_normalize_item_ids_no_host_fails(self, mocker):
         """Without --host (and no env vars), genres normalize --item-ids must exit non-zero."""
@@ -605,10 +612,13 @@ class TestWebhookCompatibility:
         from emby_dedupe.cli.app import app
 
         self._setup_genres_mocks(mocker)
-        item_1 = {"Id": "123", "Name": "Movie 1", "Genres": ["dada"], "GenreItems": [], "LockedFields": [], "ProviderIds": {"Tmdb": "999"}}
-        item_2 = {"Id": "456", "Name": "Movie 2", "Genres": ["Drama"], "GenreItems": [], "LockedFields": [], "ProviderIds": {"Tmdb": "888"}}
+        item_1 = {"Id": "123", "Type": "Movie", "Name": "Movie 1", "Genres": ["dada"], "GenreItems": [], "ProviderIds": {"Tmdb": "999"}}
+        item_2 = {"Id": "456", "Type": "Series", "Name": "Show 2", "Genres": ["Drama"], "GenreItems": [], "ProviderIds": {"Tmdb": "888"}}
+        episode = {"Id": "789", "Type": "Episode", "Name": "Pilot", "Genres": ["dada"], "GenreItems": [], "ProviderIds": {"Tmdb": "777"}}
         # First call: initial fetch; second call: re-fetch after normalize
-        mocker.patch("emby_dedupe.cli.genres.fetch_items_by_ids", side_effect=[[item_1, item_2], [item_1, item_2]])
+        mocker.patch("emby_dedupe.cli.genres.fetch_items_by_ids", side_effect=[[item_1, item_2, episode], [item_1, item_2]])
+        full = {**item_1, "OfficialRating": "R", "OriginalTitle": "Film", "LockedFields": ["Name"]}
+        mocker.patch("emby_dedupe.cli.genres.fetch_full_item", return_value=full)
         mock_update = mocker.patch("emby_dedupe.cli.genres.update_item_genres", return_value=True)
         mocker.patch("emby_dedupe.api.genre_providers.load_genre_cache", return_value={})
         mocker.patch("emby_dedupe.api.genre_providers.save_genre_cache")
@@ -627,14 +637,16 @@ class TestWebhookCompatibility:
                 "genres", "process",
                 "--doit",
                 "--validate",
-                "--item-ids", "123,456",
+                "--item-ids", "123,456,789",
                 "--tmdb-api-key", "tmdb-key",
             ],
         )
 
         assert result.exit_code == 0, f"exit_code={result.exit_code}\n{result.output}"
-        # item_1 had "dada" → "Comedy" normalization → should be updated
+        # item_1 had "dada" → "Comedy" normalization → should be updated; the episode is skipped
         mock_update.assert_called_once()
+        assert mock_update.call_args[0][2] == "123"
+        assert mock_update.call_args[0][3] is full
         call_args = mock_update.call_args
         new_genres = call_args[0][4] if len(call_args[0]) > 4 else call_args.kwargs.get("new_genres", [])
         assert "Comedy" in new_genres

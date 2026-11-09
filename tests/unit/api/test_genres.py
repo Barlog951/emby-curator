@@ -426,17 +426,30 @@ class TestFetchFullItem:
 
 
 class TestGetUserId:
-    def test_returns_first_user_id(self, mocker):
+    def test_returns_first_user_id_when_no_admin(self, mocker):
         mock_client = mocker.MagicMock()
         mock_resp = mocker.MagicMock()
         mock_resp.json.return_value = [
-            {"Id": "user-abc-123", "Name": "Barlog"},
+            {"Id": "user-abc-123", "Name": "alice"},
             {"Id": "other-user", "Name": "Other"},
         ]
         mock_client.request.return_value = mock_resp
 
         user_id = get_user_id(mock_client, "http://emby")
         assert user_id == "user-abc-123"
+
+    def test_prefers_the_first_administrator(self, mocker):
+        """A restricted first account would hide items from every user-scoped read."""
+        mock_client = mocker.MagicMock()
+        mock_resp = mocker.MagicMock()
+        mock_resp.json.return_value = [
+            {"Id": "kid", "Name": "kid", "Policy": {"IsAdministrator": False, "EnableAllFolders": False}},
+            {"Id": "admin", "Name": "admin", "Policy": {"IsAdministrator": True}},
+            {"Id": "admin2", "Name": "admin2", "Policy": {"IsAdministrator": True}},
+        ]
+        mock_client.request.return_value = mock_resp
+
+        assert get_user_id(mock_client, "http://emby") == "admin"
 
     def test_raises_when_no_users(self, mocker):
         mock_client = mocker.MagicMock()

@@ -335,7 +335,7 @@ _CREATOR_LINK_RE = re.compile(
 DIRECTOR_HEADINGS = {"Réžia", "Režie"}
 CAST_HEADINGS = {"Hrajú", "Hrají"}
 _NAME_LINK_RE = re.compile(r'<span class="normal (?:more|less)-name-link">.*?</span>\s*</span>', re.S)
-_ID_RE = re.compile(r"/film/(\d+)-")
+_ID_RE = re.compile(r"/film/(\d+)(?:-|/|$)")  # slugged or id-only page URL
 
 
 def _parse_origin(fragment: str) -> tuple[list[str], int | None]:

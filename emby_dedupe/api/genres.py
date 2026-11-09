@@ -34,14 +34,17 @@ _GENRE_FIELDS_BATCH = "Genres,GenreItems,ProviderIds,LockedFields"
 
 
 def get_user_id(client: httpx.Client, base_url: str) -> str:
-    """Fetch the first user's ID from the Emby server.
+    """ID of the first administrator on the Emby server (the first user when there is none).
+
+    User-scoped reads see only what the user may see, so an administrator keeps the jobs
+    independent of other accounts' folder access and parental limits.
 
     Args:
         client: The httpx client configured with auth headers.
         base_url: Base URL of the Emby server.
 
     Returns:
-        The ID string of the first user.
+        The user ID.
 
     Raises:
         EmbyServerConnectionError: If the request fails or no users are found.
@@ -51,7 +54,11 @@ def get_user_id(client: httpx.Client, base_url: str) -> str:
         users = response.json()
         if not users:
             raise EmbyServerConnectionError("No users found on Emby server.")
-        return users[0]["Id"]
+        admin = next((u for u in users if (u.get("Policy") or {}).get("IsAdministrator")), None)
+        if admin is None:
+            logger.warning("No administrator account found; reading as the first user")
+            return users[0]["Id"]
+        return admin["Id"]
     except httpx.HTTPStatusError as e:
         raise EmbyServerConnectionError(
             f"Failed to fetch users from Emby server: {e.response.content.decode('utf-8')}"
@@ -90,11 +97,11 @@ def fetch_items_with_genres(
     item_types: str = "Movie,Series",
     extra_fields: str = "",
 ) -> list[dict]:
-    """Fetch all media items with full metadata, paginated.
+    """Fetch all media items with the listed metadata fields, paginated.
 
-    Uses the user-scoped endpoint (/Users/{user_id}/Items) to return all fields
-    in a single batch request — the same payload as fetch_full_item. This avoids
-    a second per-item GET during normalization, halving the number of requests.
+    A list response is NOT a full item: it never carries ``LockedFields`` and omits
+    fields that were not requested. Never POST it back; re-read the item with
+    ``fetch_full_item`` before any write.
 
     Args:
         client: The httpx client configured with auth headers.

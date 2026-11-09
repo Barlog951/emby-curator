@@ -387,3 +387,9 @@ def test_parse_film_series_origin_has_no_bracket_in_the_country():
     film = parse_film(page, "https://www.csfd.sk/film/314255-narodni-klenoty/prehlad/")
     assert film.countries == ["Česko"]
     assert film.year == 2012
+
+
+def test_parse_film_reads_the_id_from_an_id_only_page_url():
+    """A stored id is looked up as /film/<id>/prehlad/; the id must survive the round trip."""
+    assert parse_film(FILM_HTML, csfd.film_url("1885748")).csfd_id == "1885748"
+    assert parse_film(FILM_HTML, "https://www.csfd.sk/film/1885748-tatransky-duric/prehlad/").csfd_id == "1885748"

@@ -255,12 +255,23 @@ def _preview_normalization_changes(items_to_update: list[tuple[dict, list[str]]]
     print(f"Run with --doit to apply ({len(items_to_update)} items)")
 
 
+_GENRE_TYPES = ("Movie", "Series")  # genres live on movies and series, never on episodes or sets
+
+
+def _fetch_genre_items(client: httpx.Client, base_url: str, user_id: str, item_ids: list[str]) -> list[dict]:
+    """The given items that carry genres; other types (episodes, seasons, collections) are dropped."""
+    items = fetch_items_by_ids(client, base_url, user_id, item_ids)
+    kept = [i for i in items if i.get("Type") in _GENRE_TYPES]
+    if len(kept) < len(items):
+        logger.info(f"Skipped {len(items) - len(kept)} item(s) that are not movies or series")
+    return kept
+
+
 def _apply_normalization_updates(
     items_to_update: list,
     client: httpx.Client,
     base_url: str,
     user_id: str,
-    item_ids: list[str] | None,
     lock: bool,
 ) -> None:
     """Apply normalization updates for each (item, new_genres) pair and print summary."""
@@ -269,9 +280,9 @@ def _apply_normalization_updates(
     errors = 0
     for item, new_genres in tqdm(items_to_update, desc="Normalizing genres", unit="item"):
         try:
-            # In --item-ids mode, item is already the full item from fetch_full_item.
-            # In library scan mode, fetch the full item for safe POST-back.
-            full_item = item if item_ids else fetch_full_item(client, base_url, user_id, item["Id"])
+            # Emby clears every field missing from the POST body, and list responses carry only
+            # a few fields (never LockedFields), so the write always starts from a single-item GET.
+            full_item = fetch_full_item(client, base_url, user_id, item["Id"])
             result = update_item_genres(client, base_url, item["Id"], full_item, new_genres, lock=lock)
             if result:
                 updated += 1
@@ -311,7 +322,7 @@ def _run_normalize(
         items = prefetched_items
     elif item_ids:
         # Targeted mode: fetch only specific items (from webhook)
-        items = fetch_items_by_ids(client, base_url, user_id, item_ids)
+        items = _fetch_genre_items(client, base_url, user_id, item_ids)
     else:
         # Use the non-user-scoped endpoint for detection: it returns raw stored genre names
         # (e.g. "Suspense"). The user-scoped endpoint silently normalises some names in its
@@ -339,9 +350,7 @@ def _run_normalize(
         _preview_normalization_changes(items_to_update)
         return
 
-    _apply_normalization_updates(
-        items_to_update, client, base_url, user_id, item_ids, args.lock
-    )
+    _apply_normalization_updates(items_to_update, client, base_url, user_id, args.lock)
 
     if repair_dupes:
         print("\nScanning for duplicate genres (--repair-dupes)...")
@@ -390,8 +399,7 @@ def _create_provider_clients(
 def _process_single_item_genres(
     item: dict,
     providers: GenreProviders,
-    client, base_url: str, user_id: str,
-    item_ids: list | None, args,
+    client, base_url: str, user_id: str, args,
 ) -> str:
     """Process one item's external genres. Returns status: no_data|no_diff|dry_run|updated|error."""
     try:
@@ -413,7 +421,7 @@ def _process_single_item_genres(
             print(f"  {item_name}: would add {missing}")
             return "dry_run"
 
-        full_item = item if item_ids else fetch_full_item(client, base_url, user_id, item["Id"])
+        full_item = fetch_full_item(client, base_url, user_id, item["Id"])
         result = update_item_genres(
             client, base_url, item["Id"], full_item, comparison["merged"], lock=args.lock
         )
@@ -432,7 +440,6 @@ def _apply_genre_updates(
     client: httpx.Client,
     base_url: str,
     user_id: str,
-    item_ids: list[str] | None,
     args: argparse.Namespace,
 ) -> None:
     """Iterate items and apply external genre updates from TMDB/OMDb.
@@ -446,7 +453,6 @@ def _apply_genre_updates(
         client: Emby HTTP client.
         base_url: Emby server base URL with port.
         user_id: Emby user ID for full-item fetches.
-        item_ids: If provided, items are already full items (no second fetch needed).
         args: Parsed CLI arguments (uses .doit and .lock).
     """
     found = 0
@@ -456,9 +462,7 @@ def _apply_genre_updates(
     errors = 0
 
     for item in tqdm(items, desc="Fetching external genres", unit="item"):
-        status = _process_single_item_genres(
-            item, providers, client, base_url, user_id, item_ids, args,
-        )
+        status = _process_single_item_genres(item, providers, client, base_url, user_id, args)
         if status == "no_data":
             skipped_no_data += 1
         elif status == "no_diff":
@@ -520,7 +524,7 @@ def _run_fix(
         print(f"Processing {len(items)} specific item(s) (normalize + validate)")
     elif item_ids:
         # Targeted mode: fetch only specific items, always validate (check + fill)
-        items = fetch_items_by_ids(client, base_url, user_id, item_ids)
+        items = _fetch_genre_items(client, base_url, user_id, item_ids)
         print(f"Processing {len(items)} specific item(s) (normalize + validate)")
     else:
         # Determine mode: validate processes all items, gaps-only (default) processes only untagged
@@ -538,9 +542,7 @@ def _run_fix(
             print(f"Validating genres for {len(items)} items")
 
     try:
-        _apply_genre_updates(
-            items, providers, client, base_url, user_id, item_ids, args,
-        )
+        _apply_genre_updates(items, providers, client, base_url, user_id, args)
     finally:
         save_genre_cache(providers.cache)
 
@@ -566,15 +568,13 @@ def _run_process(
         args: Parsed CLI arguments.
         item_ids: List of Emby item IDs to process.
     """
-    items = fetch_items_by_ids(client, base_url, user_id, item_ids)
+    items = _fetch_genre_items(client, base_url, user_id, item_ids)
     print(f"Processing {len(items)} item(s) (normalize + fix)")
 
     # Phase 1: Normalize
     items_to_update = _collect_normalization_candidates(items)
     if items_to_update and args.doit:
-        _apply_normalization_updates(
-            items_to_update, client, base_url, user_id, item_ids, args.lock
-        )
+        _apply_normalization_updates(items_to_update, client, base_url, user_id, args.lock)
         # Re-fetch only the modified items to get fresh genres from the server
         updated_ids = [item["Id"] for item, _ in items_to_update]
         refreshed = {

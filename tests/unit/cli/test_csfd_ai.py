@@ -380,18 +380,18 @@ def test_strict_matcher_uses_emby_original_title():
     assert "Zauberhaftes Albanien" in csfd.searched
 
 
-def test_write_payload_keeps_its_proven_shape():
-    """Path and OriginalTitle are fetched only for matching (2026-09-23). They must not start
-    appearing in the full-object POST that every --doit write sends to Emby."""
-    item = _item(OriginalTitle="El Conde")
+def test_write_payload_keeps_every_field_of_the_full_item():
+    """Emby clears what the POST body lacks: OriginalTitle, locks and the rest go back as read."""
+    item = _item(OriginalTitle="El Conde", LockedFields=["Name"], OfficialRating="R")
     plan = cli.plan_item(item, _film())
     payload = cli.build_payload(item, plan)
-    assert "Path" not in payload
-    assert "OriginalTitle" not in payload
+    assert payload["OriginalTitle"] == "El Conde"
+    assert payload["OfficialRating"] == "R"
+    assert payload["Path"] == item["Path"]
+    assert "Name" in payload["LockedFields"]
     assert payload["Name"] == "The Count"
     assert payload["ProviderIds"]["Csfd"] == "100"
-    assert item["Path"]
-    assert item["OriginalTitle"] == "El Conde"  # the fetched item is untouched
+    assert item["LockedFields"] == ["Name"]  # the fetched item is untouched
 
 
 # --- Claude + Jev cross-check (2026-10-08, logs/haiku-poc/EVALUATION.md) ---------
