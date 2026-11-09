@@ -72,7 +72,7 @@ class TestNewRunStats:
         assert all(v == 0 for v in s.values())
         assert set(s.keys()) == {
             "found_overview", "found_tagline", "found_title", "found_year",
-            "updated", "skipped_no_data", "errors", "cache_hits",
+            "updated", "failed", "skipped_no_data", "skipped_mismatch", "errors", "cache_hits",
         }
 
 
@@ -638,7 +638,7 @@ class TestPrintFillSummary:
         stats["updated"] = 3
         _print_fill_summary(stats, doit=True)
         out = capsys.readouterr().out
-        assert "5 overview translations" in out
+        assert "proposed 5 overviews" in out
         assert "3 items updated" in out
         # No dry-run hint when doit=True
         assert "Dry-run" not in out
@@ -1037,3 +1037,96 @@ class TestEpisodeUsesTmdbOrder:
         out = _fetch_localized_for_episode({"ParentIndexNumber": 1, "IndexNumber": 3, "Name": "A Man Alone"}, "90",
                                            MagicMock(), MagicMock(), None, 100, _new_run_stats())
         assert out["en-US"]["overview"] == "Odo"
+
+
+class TestFailuresAreVisible:
+    """A run that could not write everything exits non-zero, and refused POSTs are counted."""
+
+    def _patch_connection(self, monkeypatch):
+        monkeypatch.setattr(desc_cli, "handle_host_and_port", lambda h, p: (h, p or 8096))
+        monkeypatch.setattr(desc_cli, "check_emby_connection", lambda c, u: True)
+        monkeypatch.setattr(desc_cli, "get_user_id", lambda c, u: "uid")
+        monkeypatch.setattr(desc_cli, "_resolve_library_ids", lambda c, b, k, libs, all_libs: ["lib1"])
+        monkeypatch.setattr(desc_cli.httpx, "Client", lambda **kw: MagicMock())
+
+    def _args(self):
+        return argparse.Namespace(host="http://emby", port=8096, api_key="k", library=["Movies"],
+                                  all_libraries=False, item_ids=None, verbosity=0)
+
+    def test_refused_update_exits_non_zero(self, monkeypatch):
+        self._patch_connection(monkeypatch)
+        stats = desc_cli._new_run_stats()
+        stats["failed"] = 1
+        monkeypatch.setattr(desc_cli, "_run_fill", lambda *a: stats)
+        args = self._args()
+        with pytest.raises(SystemExit) as exc:
+            run_descriptions_command(args)
+        assert exc.value.code == 1
+
+    def test_a_few_lookup_errors_do_not_fail_a_large_run(self):
+        stats = desc_cli._new_run_stats()
+        stats.update(updated=400, skipped_no_data=600, errors=3)
+        assert not desc_cli.run_failed(stats)
+        stats["errors"] = 40
+        assert desc_cli.run_failed(stats)
+
+    def test_clean_run_exits_normally(self, monkeypatch):
+        self._patch_connection(monkeypatch)
+        monkeypatch.setattr(desc_cli, "_run_fill", lambda *a: desc_cli._new_run_stats())
+        run_descriptions_command(self._args())
+
+    def test_refused_post_is_counted_as_failed(self, monkeypatch):
+        monkeypatch.setattr(desc_cli, "fetch_full_item", lambda *a: {"Id": "1", "Overview": "Old text", "LockedFields": []})
+        monkeypatch.setattr(desc_cli, "update_item_metadata", lambda *a, **k: False)
+        stats = desc_cli._new_run_stats()
+        args = argparse.Namespace(doit=True, lock=True)
+        desc_cli._apply_or_preview(MagicMock(), "http://emby", "uid", {"Id": "1", "Name": "X"},
+                                   "Nový text", "sk", None, None, None, None, args, stats)
+        assert stats["failed"] == 1
+        assert stats["updated"] == 0
+
+    def test_no_change_due_is_not_a_failure(self, monkeypatch):
+        monkeypatch.setattr(desc_cli, "fetch_full_item", lambda *a: {"Id": "1", "Overview": "Nový text", "LockedFields": []})
+        monkeypatch.setattr(desc_cli, "update_item_metadata", lambda *a, **k: False)
+        stats = desc_cli._new_run_stats()
+        args = argparse.Namespace(doit=True, lock=True)
+        desc_cli._apply_or_preview(MagicMock(), "http://emby", "uid", {"Id": "1", "Name": "X"},
+                                   "Nový text", "sk", None, None, None, None, args, stats)
+        assert stats["failed"] == 0
+
+
+class TestTitleChangeRecord:
+    def test_replacement_is_appended_old_then_new(self, monkeypatch, tmp_path):
+        log = tmp_path / "titles.tsv"
+        monkeypatch.setenv(desc_cli.ENV_TITLE_LOG, str(log))
+        monkeypatch.setattr(desc_cli, "fetch_full_item",
+                            lambda *a: {"Id": "7", "Type": "Movie", "Name": "Der Untergang", "LockedFields": []})
+        monkeypatch.setattr(desc_cli, "update_item_metadata", lambda *a, **k: True)
+        stats = desc_cli._new_run_stats()
+        desc_cli._apply_or_preview(MagicMock(), "http://emby", "uid", {"Id": "7", "Name": "Der Untergang"},
+                                   None, None, None, None, "Downfall", None,
+                                   argparse.Namespace(doit=True, lock=True), stats)
+        fields = log.read_text(encoding="utf-8").strip().split("\t")
+        assert fields[1:] == ["7", "Movie", "Der Untergang", "Downfall"]
+
+    def test_no_record_without_a_title_change(self, monkeypatch, tmp_path):
+        log = tmp_path / "titles.tsv"
+        monkeypatch.setenv(desc_cli.ENV_TITLE_LOG, str(log))
+        monkeypatch.setattr(desc_cli, "fetch_full_item",
+                            lambda *a: {"Id": "7", "Type": "Movie", "Name": "Film", "Overview": "x", "LockedFields": []})
+        monkeypatch.setattr(desc_cli, "update_item_metadata", lambda *a, **k: True)
+        desc_cli._apply_or_preview(MagicMock(), "http://emby", "uid", {"Id": "7", "Name": "Film"},
+                                   "Nový text", "sk", None, None, None, None,
+                                   argparse.Namespace(doit=True, lock=True), desc_cli._new_run_stats())
+        assert not log.exists()
+
+
+class TestSlavicTextIsKept:
+    def test_existing_slovak_overview_is_not_replaced(self):
+        item = {"Id": "1", "Overview": "Mladý muž sa vráti do rodnej dediny a nájde tam starú lásku.",
+                "Taglines": [], "Name": "Film"}
+        localized = {"cs-CZ": {"overview": "Mladý muž se vrátí do rodné vesnice.", "tagline": "", "title": ""},
+                     "en-US": {"overview": "A young man returns home.", "tagline": "Home.", "title": "Film"}}
+        overview, tagline, _title, _year = desc_cli._pick_updates(item, localized, ("sk-SK", "cs-CZ"), False)
+        assert overview is None
+        assert tagline == ("Home.", "en-US")

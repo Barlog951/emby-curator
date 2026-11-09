@@ -117,6 +117,7 @@ ignore = ["E501"]  # Ignore line length errors
 "tests/*" = ["E501"]   # Line length in tests
 # Standalone operational scripts use a deliberately compact one-line style.
 "scripts/dv/*" = ["E701", "E702"]  # allow `if x: stmt` / `a; b` in the dv tooling
+"scripts/host/*" = ["E701", "E702"]  # the same compact style in the emby-gpu job scripts
 
 [tool.coverage.run]
 source = ["emby_dedupe"]

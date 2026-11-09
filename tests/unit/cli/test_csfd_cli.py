@@ -5,6 +5,7 @@ import json
 from argparse import Namespace
 
 import httpx
+import pytest
 
 from emby_dedupe.api.csfd import CsfdCreator, CsfdFilm, CsfdHit
 from emby_dedupe.cli import csfd as cli
@@ -273,6 +274,12 @@ def test_run_people_uploads_only_matched_real_photos(tmp_path, monkeypatch):
         def fetch_poster(self, url):
             return b"\xff\xd8", "image/jpeg"
 
+        def unresolved_recently(self, name):
+            return False
+
+        def mark_unresolved(self, name):
+            pass
+
         def creator(self, url):
             from emby_dedupe.api.csfd import CsfdCreatorProfile
             return CsfdCreatorProfile("1940-02-03", "Zvolen", "2021-07-18",
@@ -373,3 +380,19 @@ def test_directors_only_page_does_not_rewrite_people_every_run():
     assert "People" in plan_item(_item(People=[]), film).fields
     with_director = _item(People=[{"Name": "Jana Nová", "Type": "Director"}])
     assert "People" not in plan_item(with_director, film).fields
+
+
+def test_refused_writes_exit_non_zero():
+    stats = {"errors": 0, "failed": 2, "matched": 100}
+    with pytest.raises(SystemExit):
+        cli._exit_on_failures(stats)
+
+
+def test_many_lookup_errors_exit_non_zero():
+    stats = {"errors": 20, "failed": 0, "matched": 100, "unmatched": 50}
+    with pytest.raises(SystemExit):
+        cli._exit_on_failures(stats)
+
+
+def test_one_lookup_error_in_a_normal_week_passes():
+    cli._exit_on_failures({"errors": 1, "failed": 0, "matched": 288, "unmatched": 74, "updated": 280})

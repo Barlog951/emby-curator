@@ -122,3 +122,14 @@ class TestLoadSaveCache:
         monkeypatch.setattr(cache_mod, "CACHE_PATH", target)
         # Must not raise
         cache_mod.save_cache({"k": make_entry({"foo": "bar"})})
+
+
+def test_long_expired_entries_are_pruned():
+    import time
+
+    from emby_dedupe.api.description_cache import PRUNE_AFTER_SECONDS, prune_cache
+    now = int(time.time())
+    cache = {"movie:1": {"_ts": now, "data": None}, "movie:2": {"_ts": now - PRUNE_AFTER_SECONDS - 10, "data": None},
+             "other": "kept"}
+    assert prune_cache(cache) == 1
+    assert set(cache) == {"movie:1", "other"}

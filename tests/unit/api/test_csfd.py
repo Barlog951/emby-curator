@@ -9,12 +9,14 @@ import pytest
 from emby_dedupe.api import csfd
 from emby_dedupe.api.csfd import (
     CsfdClient,
+    CsfdCreator,
     CsfdError,
     CsfdFilm,
     CsfdHit,
     normalize_title,
     parse_film,
     parse_search,
+    pick_creator,
     pick_match,
 )
 
@@ -393,3 +395,41 @@ def test_parse_film_reads_the_id_from_an_id_only_page_url():
     """A stored id is looked up as /film/<id>/prehlad/; the id must survive the round trip."""
     assert parse_film(FILM_HTML, csfd.film_url("1885748")).csfd_id == "1885748"
     assert parse_film(FILM_HTML, "https://www.csfd.sk/film/1885748-tatransky-duric/prehlad/").csfd_id == "1885748"
+
+
+def test_pick_match_needs_the_items_year_and_skips_subpages():
+    assert pick_match([_hit("Solo", 2018)], "Solo", None, "film") is None
+    episode = CsfdHit("https://www.csfd.sk/film/123-show/456-pilot/", "Pilot", 2020, "film")
+    assert pick_match([episode], "Pilot", 2020, "film") is None
+
+
+def test_pick_creator_never_takes_the_only_namesake_with_a_photo():
+    """Two people share the name, only the director has a photo: the actor's portrait is unknown."""
+    actor = CsfdCreator("https://www.csfd.sk/tvurce/1-jan-novak/", "Jan Novák", "herec", 1970, None)
+    director = CsfdCreator("https://www.csfd.sk/tvurce/2-jan-novak/", "Jan Novák", "režisér", 1950, "https://img/p.jpg")
+    assert pick_creator([actor, director], "Jan Novák") is None
+    assert pick_creator([actor], "Jan Novák", need_photo=False) is actor
+
+
+def test_empty_search_results_expire(monkeypatch):
+    cache: dict = {}
+    client = csfd.CsfdClient(httpx.Client(), cache=cache)
+    pages = iter(["<div>nothing</div>", "<div>nothing</div>"])
+    calls: list[str] = []
+    monkeypatch.setattr(client, "_get_page", lambda url: calls.append(url) or next(pages))
+    assert client.search("Nic") == []
+    assert client.search("Nic") == []
+    assert len(calls) == 1  # the fresh miss is trusted
+    cache["search:Nic"]["miss_at"] -= csfd.MISS_TTL_SECONDS + 1
+    assert client.search("Nic") == []
+    assert len(calls) == 2  # the old miss is looked up again
+
+
+def test_unresolved_people_are_remembered_for_a_while():
+    cache: dict = {}
+    client = csfd.CsfdClient(httpx.Client(), cache=cache)
+    assert not client.unresolved_recently("X Y")
+    client.mark_unresolved("X Y")
+    assert client.unresolved_recently("X Y")
+    cache["unresolved:X Y"] -= csfd.MISS_TTL_SECONDS + 1
+    assert not client.unresolved_recently("X Y")

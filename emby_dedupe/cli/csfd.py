@@ -41,6 +41,7 @@ from emby_dedupe.api.csfd import (
     CsfdHit,
     candidate_hits,
     film_url,
+    is_subpage,
     load_csfd_cache,
     pick_creator,
     pick_match,
@@ -241,9 +242,6 @@ AI_MAX_CANDIDATES = 8  # each candidate costs one film-page fetch through FlareS
 AI_REVIEW_MIN = 0.5  # below this a pick is noise, not even worth a review line
 AI_DEFAULT_THRESHOLD = 0.9
 AI_NONE = "none"
-# An episode or season page (/film/<series>/<episode>/) carries its series' id: matching
-# one would stamp the series with an episode's plot and poster, so they are never offered.
-_SUBPAGE_RE = re.compile(r"/film/\d+-[^/]+/\d+-")
 AI_INSTRUCTIONS = (
     "Which ČSFD database entry is the SAME film or series as the library item? Use its title "
     "(it may be in Slovak, Czech, English or another language), its folder name (which often "
@@ -284,7 +282,7 @@ def ai_candidates(csfd: CsfdClient, item: dict) -> list[CsfdHit]:
     out: list[CsfdHit] = []
     for query in title_queries(item):
         for hit in candidate_hits(csfd.search(query), item.get("ProductionYear"), kind):
-            if hit.url not in seen and not _SUBPAGE_RE.search(hit.url):
+            if hit.url not in seen and not is_subpage(hit.url):
                 seen.add(hit.url)
                 out.append(hit)
     return out[:AI_MAX_CANDIDATES]
@@ -611,7 +609,7 @@ def _lookup(csfd: CsfdClient, item: dict, manual: dict[str, str], stats: dict[st
 
 
 def _run_fill(client: httpx.Client, base_url: str, user_id: str,
-              library_ids: list[str], args: argparse.Namespace) -> None:
+              library_ids: list[str], args: argparse.Namespace) -> dict[str, int]:
     cache = None if getattr(args, "no_cache", False) else load_csfd_cache()
     csfd = CsfdClient(httpx.Client(), args.flaresolverr_url, cache)
     manual = load_manual_map(getattr(args, "map_file", None))
@@ -637,10 +635,11 @@ def _run_fill(client: httpx.Client, base_url: str, user_id: str,
     if ai is not None:
         _finish_ai(ai, args)
     mode = "applied" if args.doit else "dry run — re-run with --doit to apply"
-    logger.info(
+    print(
         f"ČSFD fill ({mode}): matched {stats['matched']}, unmatched {stats['unmatched']}, "
         f"errors {stats['errors']}, updated {stats['updated']}, failed {stats['failed']}"
     )
+    return stats
 
 
 def _end_run(cache: dict | None, ai: AiMatcher | None) -> None:
@@ -748,30 +747,44 @@ def _process_person(client: httpx.Client, base_url: str, user_id: str, csfd: Csf
                     stats: dict[str, int], doit: bool) -> tuple[str, str, int, str, str]:
     """Resolve one actor on ČSFD; with ``doit`` upload the portrait (if missing) and fill the bio."""
     gaps = person.get("gaps") or ["photo"]
+    if csfd.unresolved_recently(person["Name"]):
+        stats["skipped_recent"] += 1
+        return person["Id"], person["Name"], person["refs"], "unresolved recently", ""
     creator, outcome = _resolve_creator(csfd, person["Name"], stats, need_photo="photo" in gaps)
+    if creator is None and not outcome.startswith("error"):
+        csfd.mark_unresolved(person["Name"])
     if creator and doit:
-        if "photo" in gaps and creator.photo_url:
-            stats["updated" if _upload_portrait(client, base_url, csfd, person["Id"], creator) else "failed"] += 1
-        try:
-            if _fill_person_bio(client, base_url, user_id, csfd, person["Id"], creator):
-                stats["bio"] += 1
-                outcome += "+bio"
-        except (CsfdError, httpx.HTTPError) as exc:
-            logger.warning(f"{person['Name']}: bio not filled: {exc}")
+        outcome += _apply_person(client, base_url, user_id, csfd, person, creator, gaps, stats)
     return person["Id"], person["Name"], person["refs"], outcome, creator.url if creator else ""
 
 
+def _apply_person(client: httpx.Client, base_url: str, user_id: str, csfd: CsfdClient, person: dict,
+                  creator: CsfdCreator, gaps: list[str], stats: dict[str, int]) -> str:
+    """Upload the portrait (if missing) and fill the bio; returns the suffix for the report outcome."""
+    if "photo" in gaps and creator.photo_url:
+        stats["updated" if _upload_portrait(client, base_url, csfd, person["Id"], creator) else "failed"] += 1
+    try:
+        if _fill_person_bio(client, base_url, user_id, csfd, person["Id"], creator):
+            stats["bio"] += 1
+            return "+bio"
+    except (CsfdError, httpx.HTTPError) as exc:
+        logger.warning(f"{person['Name']}: bio not filled: {exc}")
+    return ""
+
+
 def _run_people(client: httpx.Client, base_url: str, user_id: str,
-                library_ids: list[str], args: argparse.Namespace) -> None:
+                library_ids: list[str], args: argparse.Namespace) -> dict[str, int]:
     cache = None if getattr(args, "no_cache", False) else load_csfd_cache()
     csfd = CsfdClient(httpx.Client(), args.flaresolverr_url, cache)
     items = fetch_items_with_genres(client, base_url, library_ids, user_id, extra_fields=ITEM_EXTRA_FIELDS)
-    candidates = photo_candidates(items, fetch_persons(client, base_url), args.min_refs)
+    candidates = [p for p in photo_candidates(items, fetch_persons(client, base_url), args.min_refs)
+                  if not csfd.unresolved_recently(p["Name"])]  # the limit goes to names not tried lately
     limit = getattr(args, "limit", None)
     candidates = candidates[:limit] if limit else candidates
     logger.info(f"{len(candidates)} actor(s) missing a photo or biography, referenced >= {args.min_refs}x")
     rows: list[tuple[str, str, int, str, str]] = []
-    stats = {"matched": 0, "no_photo": 0, "ambiguous": 0, "updated": 0, "bio": 0, "failed": 0, "errors": 0}
+    stats = {"matched": 0, "no_photo": 0, "ambiguous": 0, "skipped_recent": 0, "updated": 0, "bio": 0,
+             "failed": 0, "errors": 0}
     try:
         for index, person in enumerate(tqdm(candidates, desc="ČSFD people", unit="actor"), start=1):
             if cache is not None and index % CACHE_SAVE_EVERY == 0:
@@ -783,7 +796,8 @@ def _run_people(client: httpx.Client, base_url: str, user_id: str,
     if getattr(args, "report", None):
         _write_people_report(args.report, rows)
     mode = "applied" if args.doit else "dry run — re-run with --doit to apply"
-    logger.info(f"ČSFD people ({mode}): " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+    print(f"ČSFD people ({mode}): " + ", ".join(f"{k} {v}" for k, v in stats.items()))
+    return stats
 
 
 def _resolve_creator(csfd: CsfdClient, name: str, stats: dict[str, int],
@@ -834,12 +848,24 @@ def run_csfd_people_command(args: argparse.Namespace) -> None:
             sys.exit(1)
         user_id = get_user_id(client, base_url)
         library_ids = _resolve_library_ids(client, base_url, args.api_key, libraries, args.all_libraries)
-        _run_people(client, base_url, user_id, library_ids, args)
+        people_stats = _run_people(client, base_url, user_id, library_ids, args)
     except EmbyServerConnectionError as e:
         logger.error(str(e))
         sys.exit(1)
     except httpx.HTTPError as e:
         logger.error(f"HTTP error: {e}")
+        sys.exit(1)
+    _exit_on_failures(people_stats)
+
+
+ERROR_SHARE_LIMIT = 0.02  # ČSFD lookup errors tolerated before a run counts as failed
+ERROR_COUNT_LIMIT = 3
+
+
+def _exit_on_failures(stats: dict[str, int]) -> None:
+    """Exit 1 when Emby refused a write or lookups failed beyond a small share of the run."""
+    seen = sum(v for k, v in stats.items() if k not in ("updated", "bio", "failed"))
+    if stats.get("failed") or stats.get("errors", 0) > max(ERROR_COUNT_LIMIT, ERROR_SHARE_LIMIT * seen):
         sys.exit(1)
 
 
@@ -864,10 +890,11 @@ def run_csfd_command(args: argparse.Namespace) -> None:
             sys.exit(1)
         user_id = get_user_id(client, base_url)
         library_ids = _resolve_library_ids(client, base_url, args.api_key, libraries, all_libraries)
-        _run_fill(client, base_url, user_id, library_ids, args)
+        fill_stats = _run_fill(client, base_url, user_id, library_ids, args)
     except EmbyServerConnectionError as e:
         logger.error(str(e))
         sys.exit(1)
     except httpx.TimeoutException as e:
         logger.error(f"HTTP request timed out: {e}")
         sys.exit(1)
+    _exit_on_failures(fill_stats)

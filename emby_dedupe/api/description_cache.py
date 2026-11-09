@@ -53,8 +53,23 @@ def load_cache() -> dict:
     return load_json_cache(CACHE_PATH, label="description cache")
 
 
+PRUNE_AFTER_SECONDS = 2 * DEFAULT_TTL_SECONDS  # entries this old are never read again
+
+
+def prune_cache(cache: dict, max_age_seconds: int = PRUNE_AFTER_SECONDS) -> int:
+    """Drop entries older than ``max_age_seconds`` in place; returns how many were removed."""
+    now = time.time()
+    stale = [key for key, entry in cache.items()
+             if isinstance(entry, dict) and isinstance(entry.get("_ts"), (int, float))
+             and now - entry["_ts"] > max_age_seconds]
+    for key in stale:
+        del cache[key]
+    return len(stale)
+
+
 def save_cache(cache: dict) -> None:
-    """Write the cache to disk atomically via a sibling ``.tmp`` file."""
+    """Prune long-expired entries, then write the cache to disk atomically via a sibling ``.tmp`` file."""
+    prune_cache(cache)
     save_json_cache(CACHE_PATH, cache, label="description cache")
 
 

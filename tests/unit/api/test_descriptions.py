@@ -115,6 +115,28 @@ class TestPickTitleFromLocalized:
         )
         assert result == ("Cologne 75", "en-US")
 
+    def test_slovak_and_czech_titles_with_unreliable_guesses_are_kept(self):
+        """Titles lingua guesses as Slovene/Spanish/Turkish/Italian stay when it is not sure."""
+        for title, english in [
+            ("Kurýr z Madridu", "The Courier"), ("Superpolda", "Super Fuzz"),
+            ("Super Mario Bros. vo filme", "The Super Mario Bros. Movie"), ("Ťažký rok", "A Difficult Year"),
+            ("Ide sa rodiť!", "Here We Go"), ("Host u večeře", "The Dinner Guest"),
+            ("Princ a Večernica", "The Prince and the Evening Star"), ("Soľ nad zlato", "Salt and Gold"),
+        ]:
+            assert pick_title_from_localized(title, {"en-US": {"title": english}}) is None, title
+
+    def test_single_word_titles_are_kept(self):
+        assert pick_title_from_localized("Avatar", {"en-US": {"title": "Avatar: Special"}}) is None
+        assert pick_title_from_localized("Shrek", {"en-US": {"title": "Shrek the Third"}}) is None
+
+    def test_tmdb_czech_or_slovak_title_is_kept(self):
+        localized = {"en-US": {"title": "Dinner for Schmucks"}, "sk-SK": {"title": "Večera pre hlupákov"}}
+        assert pick_title_from_localized("Večera pre hlupákov", localized) is None
+
+    def test_clearly_foreign_titles_are_replaced(self):
+        result = pick_title_from_localized("Der Untergang", {"en-US": {"title": "Downfall"}})
+        assert result == ("Downfall", "en-US")
+
     def test_noop_when_en_equals_current(self):
         # Detected as Spanish, but TMDB EN equals the current title
         # (proper-noun case) — nothing to do.
@@ -948,3 +970,71 @@ class TestEpisodeTitleSimilarity:
         from emby_dedupe.api.descriptions import episode_title_similarity
         assert episode_title_similarity("", {"en-US": {"title": "x"}}) == 0.0
         assert episode_title_similarity("x", None) == 0.0
+
+
+class TestReviewedDescriptionRules:
+    def test_partial_tmdb_result_is_not_cached(self):
+        import httpx
+        good = MagicMock()
+        good.status_code = 200
+        good.json.return_value = {"title": "X", "overview": "ov", "tagline": ""}
+        good.raise_for_status = MagicMock()
+        client = MagicMock()
+        client.get.side_effect = [good, httpx.ConnectError("timeout")]
+        limiter = MagicMock()
+        cache: dict = {}
+        result = fetch_tmdb_localized(client, limiter, "5", "movie", langs=("en-US", "sk-SK"), cache=cache)
+        assert result is not None
+        assert result["en-US"]["overview"] == "ov"
+        assert "sk-SK" not in result
+        assert cache == {}
+
+    def test_english_fallback_is_written_without_a_lock(self):
+        client = MagicMock()
+        client.post.return_value = MagicMock(is_success=True)
+        item = {"Id": "1", "Name": "Film", "Overview": "", "LockedFields": ["Genres"]}
+        assert update_item_metadata(client, "http://emby", "1", item, new_overview="English text",
+                                    lock=True, unlocked=frozenset({"Overview"}))
+        payload = client.post.call_args.kwargs["json"]
+        assert payload["Overview"] == "English text"
+        assert payload["LockedFields"] == ["Genres"]
+
+    def test_slovak_overview_is_locked(self):
+        client = MagicMock()
+        client.post.return_value = MagicMock(is_success=True)
+        item = {"Id": "1", "Name": "Film", "Overview": "", "LockedFields": []}
+        assert update_item_metadata(client, "http://emby", "1", item, new_overview="Slovenský text", lock=True)
+        assert client.post.call_args.kwargs["json"]["LockedFields"] == ["Overview"]
+
+
+class TestEpisodeTextMismatch:
+    def test_specific_name_matching_no_tmdb_title_is_a_mismatch(self):
+        from emby_dedupe.api.descriptions import episode_text_mismatch
+        localized = {"en-US": {"title": "The Haunted Car"}, "sk-SK": {"title": "Strašidelné auto"}}
+        assert episode_text_mismatch("Monster Blood", localized)
+
+    def test_same_episode_in_other_words_is_not_a_mismatch(self):
+        from emby_dedupe.api.descriptions import episode_text_mismatch
+        localized = {"en-US": {"title": "Who's in Control (Turkish Airlines Flight 1951)"}}
+        assert not episode_text_mismatch("Who's In Control?", localized)
+
+    def test_a_translation_is_not_another_episode(self):
+        from emby_dedupe.api.descriptions import episode_text_mismatch
+        assert not episode_text_mismatch("The Dream Tamer", {"en-US": {"title": "Episode 4"}, "cs-CZ": {"title": "Krotitelka snů"}})
+
+    def test_generic_names_never_decide(self):
+        from emby_dedupe.api.descriptions import episode_text_mismatch, is_generic_episode_name
+        for name in ("Episode 5", "Epizóda 05", "S01E05", "12", "", "Díl 3", "Chapter 4", "5. epizoda", "2. díl"):
+            assert is_generic_episode_name(name), name
+        assert not episode_text_mismatch("Epizóda 05", {"en-US": {"title": "The Haunted Car"}})
+        assert not episode_text_mismatch("Monster Blood", {"en-US": {"title": "Episode 4"}})
+
+
+def test_an_empty_tagline_alone_does_not_make_a_candidate():
+    from emby_dedupe.api.descriptions import collect_overview_candidates
+    slovak = "Mladý muž sa vráti do rodnej dediny a nájde tam starú lásku."
+    item = {"Id": "1", "Type": "Movie", "ProviderIds": {"Tmdb": "5"}, "ProductionYear": 2020,
+            "Overview": slovak, "Taglines": []}
+    assert collect_overview_candidates([item]) == []
+    english_tagline = {**item, "Taglines": ["The adventure of a lifetime begins now."]}
+    assert collect_overview_candidates([english_tagline]) == [english_tagline]

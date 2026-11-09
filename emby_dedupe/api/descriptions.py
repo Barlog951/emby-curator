@@ -187,21 +187,26 @@ def _collect_localized_results(
     log_ctx: str,
     langs: tuple[str, ...],
     payload_parser=_parse_tmdb_payload,
-) -> tuple[dict[str, dict[str, str]], bool]:
-    """Iterate ``langs``, return (collected, not_found).  ``not_found`` short-circuits on 404.
+) -> tuple[dict[str, dict[str, str]], bool, bool]:
+    """Iterate ``langs``, return (collected, not_found, complete).
 
+    ``not_found`` short-circuits on 404. ``complete`` is False when a language failed
+    with a transport or HTTP error: such a partial result must not be cached, or one
+    timeout reads as "no Slovak text" for the whole cache lifetime.
     ``payload_parser`` lets callers swap the per-language parsing — episodes
     use a slightly different shape (no tagline field on TMDB).
     """
     out: dict[str, dict[str, str]] = {}
+    complete = True
     for lang in langs:
         data = _fetch_tmdb_one_lang(client, limiter, url, lang, log_ctx)
         if data is None:
+            complete = False
             continue
         if data.get("__not_found__"):
-            return out, True
+            return out, True, True
         out[lang] = payload_parser(data)
-    return out, False
+    return out, False, complete
 
 
 def _parse_tmdb_episode_payload(data: dict) -> dict[str, str]:
@@ -245,12 +250,12 @@ def fetch_tmdb_episode_localized(
 
     url = f"{TMDB_BASE}/tv/{series_tmdb_id}/season/{season}/episode/{episode}"
     log_ctx = f"episode {series_tmdb_id}/S{season}E{episode}"
-    out, not_found = _collect_localized_results(
+    out, not_found, complete = _collect_localized_results(
         client, limiter, url, log_ctx, langs,
         payload_parser=_parse_tmdb_episode_payload,
     )
     result = None if not_found else out
-    if cache is not None:
+    if cache is not None and complete:
         cache[cache_key] = make_entry(result)
     return result
 
@@ -325,6 +330,37 @@ def episode_title_similarity(name: str, localized: dict | None) -> float:
     )
 
 
+EPISODE_TITLE_MISMATCH = 0.45  # below this, and with no shared word, the titles name another episode
+_SIGNIFICANT_WORD = re.compile(r"\w{4,}", re.UNICODE)
+_EPISODE_WORD = r"(?:episode|epiz[oó]da|d[ií]l|diel|chapter|kapitola|part|[čc]as[tť]|folge|[ée]pisode)"
+_GENERIC_EPISODE_NAME = re.compile(
+    rf"^(?:{_EPISODE_WORD}\s*\d+|\d+\.?\s*{_EPISODE_WORD}|\d+|s\d+\s*e\d+.*)$",
+    re.IGNORECASE,
+)
+
+
+def is_generic_episode_name(name: str) -> bool:
+    """True for names that carry no episode identity ("Episode 5", "Epizóda 05", "S01E05", "")."""
+    return not name.strip() or bool(_GENERIC_EPISODE_NAME.match(name.strip()))
+
+
+def episode_text_mismatch(name: str, localized: dict | None) -> bool:
+    """True when a specific Emby episode name clearly differs from TMDB's English title at the same numbers.
+
+    Then TMDB's text at those numbers belongs to another episode; writing it would put a wrong,
+    locked overview on this one. It needs a specific English title on TMDB, and the name may share
+    no word with, nor resemble, TMDB's title in any language; generic titles never decide.
+    """
+    english = ((localized or {}).get("en-US") or {}).get("title", "")
+    if is_generic_episode_name(name) or is_generic_episode_name(english):
+        return False
+    titles = [v.get("title", "") for v in (localized or {}).values()]
+    words = set(_SIGNIFICANT_WORD.findall(name.lower()))
+    if any(words & set(_SIGNIFICANT_WORD.findall(t.lower())) for t in titles):
+        return False  # shares a word with TMDB's title in some language: likely the same episode
+    return episode_title_similarity(name, localized) < EPISODE_TITLE_MISMATCH
+
+
 def fetch_tmdb_localized(
     client: httpx.Client,
     limiter: RateLimiter,
@@ -358,9 +394,9 @@ def fetch_tmdb_localized(
 
     url = f"{TMDB_BASE}/{media_type}/{tmdb_id}"
     log_ctx = f"{media_type}/{tmdb_id}"
-    out, not_found = _collect_localized_results(client, limiter, url, log_ctx, langs)
+    out, not_found, complete = _collect_localized_results(client, limiter, url, log_ctx, langs)
     result = None if not_found else out
-    if cache is not None and cache_key is not None:
+    if cache is not None and cache_key is not None and complete:
         cache[cache_key] = make_entry(result)
     return result
 
@@ -403,14 +439,40 @@ def pick_year_from_localized(localized: dict) -> int | None:
     return None
 
 
+# A title is replaced only when the detector is sure it is another language: short titles
+# ("Shrek", "Kurýr z Madridu") get unreliable guesses that often name Slovene or Spanish.
+_TITLE_FOREIGN_MIN_CONFIDENCE = 0.6
+_TITLE_KEEP_MAX_CONFIDENCE = 0.15
+_TITLE_MIN_WORDS = 2
+
+
+def title_is_clearly_foreign(title: str) -> bool:
+    """True when lingua is confident the title is neither Czech, Slovak nor English."""
+    if len(title.split()) < _TITLE_MIN_WORDS:
+        return False
+    values = _get_title_detector().compute_language_confidence_values(title.strip())
+    if not values:
+        return False
+    top = values[0]
+    if top.language.iso_code_639_1.name.lower() in _TITLE_KEEP_ISO_CODES:
+        return False
+    keep = sum(v.value for v in values if v.language.iso_code_639_1.name.lower() in _TITLE_KEEP_ISO_CODES)
+    return top.value >= _TITLE_FOREIGN_MIN_CONFIDENCE and keep <= _TITLE_KEEP_MAX_CONFIDENCE
+
+
+def _same_title(a: str, b: str) -> bool:
+    return a.strip().casefold() == b.strip().casefold()
+
+
 def pick_title_from_localized(
     current_title: str, localized: dict
 ) -> tuple[str, str] | None:
     """Apply the title policy using language detection (lingua-py).
 
-    Keep the current title if its detected language is Czech, Slovak, or
-    English.  Otherwise replace it with the en-US TMDB title (when available
-    and different).  OriginalTitle is never touched by this function.
+    Keep the current title when it is TMDb's Czech or Slovak title, or unless lingua is
+    confident it is some other language (see :func:`title_is_clearly_foreign`). Otherwise
+    replace it with the en-US TMDb title (when available and different). OriginalTitle is
+    never touched by this function.
 
     Args:
         current_title: The title Emby currently holds.
@@ -421,10 +483,12 @@ def pick_title_from_localized(
     """
     if not current_title or not current_title.strip():
         return None
-
-    detected = detect_title_language(current_title)
-    if detected in _TITLE_KEEP_ISO_CODES:
-        return None  # cs/sk/en — keep
+    for lang in ("cs-CZ", "sk-SK"):
+        local_title = (localized.get(lang) or {}).get("title", "")
+        if local_title and _same_title(local_title, current_title):
+            return None  # TMDb's own Czech/Slovak title
+    if not title_is_clearly_foreign(current_title):
+        return None
 
     en_title = (localized.get(_TITLE_REPLACEMENT_LANG) or {}).get("title", "")
     if not en_title:
@@ -463,9 +527,9 @@ def _is_episode_candidate(it: dict) -> bool:
 def _is_movie_or_series_candidate(it: dict) -> bool:
     """Eligible iff has a TMDB ID and either needs text localization or a year.
 
-    A TMDB-having item is a candidate when its Overview/Tagline still looks
-    non-Slavic (needs localization) OR it has no ``ProductionYear`` yet (needs
-    the year backfill) — so items with good Slavic text but a missing year are
+    A TMDB-having item is a candidate when its Overview, or a non-empty Tagline,
+    still looks non-Slavic (needs localization) OR it has no ``ProductionYear`` yet
+    (needs the year backfill) — so items with good Slavic text but a missing year are
     still picked up.
     """
     pids = it.get("ProviderIds") or {}
@@ -476,7 +540,9 @@ def _is_movie_or_series_candidate(it: dict) -> bool:
     ov = (it.get("Overview") or "").strip()
     tags = it.get("Taglines") or []
     tag = (tags[0] if tags else "").strip()
-    return not _looks_slavic(ov) or not _looks_slavic(tag)
+    # An empty tagline alone is no reason: most titles have none on TMDB, and checking them
+    # every week only re-reads the cache.
+    return not _looks_slavic(ov) or (bool(tag) and not _looks_slavic(tag))
 
 
 def collect_overview_candidates(items: list[dict]) -> list[dict]:
@@ -591,6 +657,34 @@ def post_item_update(
         return False
 
 
+def _metadata_changes(
+    full_item: dict,
+    new_overview: str | None,
+    new_title: str | None,
+    new_tagline: str | None,
+    new_year: int | None,
+) -> tuple[bool, bool, bool, bool]:
+    """Which of Overview, Name, Tagline and ProductionYear an update would change."""
+    current_locked = full_item.get("LockedFields") or []
+    current_tagline = (full_item.get("Taglines") or [None])[0]
+    overview_changes = _field_needs_update(new_overview, full_item.get("Overview"), "Overview", current_locked)
+    title_changes = _field_needs_update(new_title, full_item.get("Name"), "Name", current_locked)
+    tagline_changes = new_tagline is not None and "Tagline" not in current_locked and current_tagline != new_tagline
+    year_changes = new_year is not None and not full_item.get("ProductionYear")
+    return overview_changes, title_changes, tagline_changes, year_changes
+
+
+def has_metadata_changes(
+    full_item: dict,
+    new_overview: str | None = None,
+    new_title: str | None = None,
+    new_tagline: str | None = None,
+    new_year: int | None = None,
+) -> bool:
+    """True when :func:`update_item_metadata` would POST something for these values."""
+    return any(_metadata_changes(full_item, new_overview, new_title, new_tagline, new_year))
+
+
 def update_item_metadata(
     client: httpx.Client,
     base_url: str,
@@ -601,6 +695,7 @@ def update_item_metadata(
     new_tagline: str | None = None,
     new_year: int | None = None,
     lock: bool = True,
+    unlocked: frozenset[str] = frozenset(),
 ) -> bool:
     """Update Overview, Name, Tagline, and/or ProductionYear for one Emby item.
 
@@ -619,23 +714,15 @@ def update_item_metadata(
       enum risks the whole POST being rejected; since we only ever set it when
       empty, churn is a non-issue.
 
+    ``unlocked`` names data fields ("Overview", "Taglines") written without their lock:
+    an English fallback must stay open for a later Slovak or Czech translation.
+
     Returns:
         True when a non-empty payload was POSTed and accepted.
     """
-    current_locked = full_item.get("LockedFields") or []
-    current_tagline = (full_item.get("Taglines") or [None])[0]
-    overview_changes = _field_needs_update(
-        new_overview, full_item.get("Overview"), "Overview", current_locked,
+    overview_changes, title_changes, tagline_changes, year_changes = _metadata_changes(
+        full_item, new_overview, new_title, new_tagline, new_year,
     )
-    title_changes = _field_needs_update(
-        new_title, full_item.get("Name"), "Name", current_locked,
-    )
-    tagline_changes = (
-        new_tagline is not None
-        and "Tagline" not in current_locked
-        and current_tagline != new_tagline
-    )
-    year_changes = new_year is not None and not full_item.get("ProductionYear")
     if not (overview_changes or title_changes or tagline_changes or year_changes):
         return False
 
@@ -643,13 +730,15 @@ def update_item_metadata(
     locked = payload.setdefault("LockedFields", []) if lock else None
 
     if overview_changes:
-        _apply_field_update(payload, "Overview", new_overview, "Overview", locked)
+        _apply_field_update(payload, "Overview", new_overview, "Overview",
+                            None if "Overview" in unlocked else locked)
     if title_changes:
         _apply_field_update(payload, "Name", new_title, "Name", locked)
     if tagline_changes:
         # Emby's data field is "Taglines" (plural list) but the LockedFields
         # enum uses "Tagline" (singular); "Taglines" in LockedFields is silently rejected.
-        _apply_field_update(payload, "Taglines", [new_tagline], "Tagline", locked)
+        _apply_field_update(payload, "Taglines", [new_tagline], "Tagline",
+                            None if "Taglines" in unlocked else locked)
     if year_changes:
         payload["ProductionYear"] = new_year
 

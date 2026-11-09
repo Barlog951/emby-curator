@@ -100,10 +100,14 @@ GENRE_NORMALIZATION_MAP = {
     "detský": "Kids",               # Slovak for "children's" (2 items)
     "akčný a dobrodružný": "Action",  # Slovak "Action & Adventure" — Action dominant (3 items)
     "tv film": "TV Movie",          # Emby variant of TMDB "TV Movie" (75 items)
+    "vojnový a politický": "War",   # Slovak for TMDB TV "War & Politics"
+    "game-show": "Game Show",       # hyphenated variant
 }
 
 # Extra genre `genres origin` gives Czech/Slovak films (kept next to the English ones)
 ORIGIN_GENRE_DEFAULT = "Česko-slovenský"
+# Christmas genre kept in sync with the emby-advisor list (scripts/host/vianocne_sync.py)
+CHRISTMAS_GENRE = "Vianočné"
 
 # TMDB canonical genre names — the authoritative list used for audit suggestions.
 # Anything found in Emby that is NOT in this set and NOT already in
@@ -122,8 +126,8 @@ TMDB_CANONICAL_GENRES: frozenset[str] = frozenset({
     # Distinct Emby categories without a TMDB equivalent
     "TV Movie", "Anime", "Travel", "Food", "Game Show",
     "Martial Arts", "Indie", "Home and Garden",
-    # Our own: Czech/Slovak films, added by `genres origin`
-    ORIGIN_GENRE_DEFAULT,
+    # Our own: Czech/Slovak films (`genres origin`) and Christmas films (vianocne_sync)
+    ORIGIN_GENRE_DEFAULT, CHRISTMAS_GENRE,
 })
 
 # Environment variable names for Phase 2 external APIs (define early)

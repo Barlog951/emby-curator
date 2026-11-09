@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
+from datetime import datetime
+from pathlib import Path
 
 import httpx
 from tqdm import tqdm
@@ -17,11 +20,14 @@ from emby_dedupe.api.description_cache import (
 from emby_dedupe.api.descriptions import (
     EPISODE_TITLE_MIN_SIMILARITY,
     LANG_CHAIN_DEFAULT,
+    _looks_slavic,
     build_series_tmdb_map,
     collect_overview_candidates,
+    episode_text_mismatch,
     episode_title_similarity,
     fetch_tmdb_episode_localized,
     fetch_tmdb_localized,
+    has_metadata_changes,
     pick_overview_with_fallback,
     pick_tagline_with_fallback,
     pick_title_from_localized,
@@ -41,6 +47,33 @@ from emby_dedupe.cli.genres import _resolve_library_ids
 from emby_dedupe.utils.constants import ENV_DEDUPE_TMDB_API_KEY
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.logging import logger, set_logging_level
+
+CACHE_SAVE_EVERY = 200  # candidates between cache saves, so a killed run keeps its TMDB lookups
+ENV_TITLE_LOG = "DEDUPE_TITLE_LOG"
+ERROR_SHARE_LIMIT = 0.02  # lookup errors tolerated before a run counts as failed (transient TMDB blips)
+ERROR_COUNT_LIMIT = 3
+
+
+def run_failed(stats: dict) -> bool:
+    """True when Emby refused a write, or lookups failed beyond a small share of the run."""
+    if stats.get("failed"):
+        return True
+    seen = sum(stats.get(k, 0) for k in ("updated", "skipped_no_data", "skipped_mismatch", "errors"))
+    return stats.get("errors", 0) > max(ERROR_COUNT_LIMIT, ERROR_SHARE_LIMIT * seen)
+_DEFAULT_TITLE_LOG = Path.home() / ".emby-dedupe" / "title-changes.tsv"
+
+
+def record_title_change(item: dict, old_title: str, new_title: str) -> None:
+    """Print and append one title replacement, so it can be reviewed and undone."""
+    print(f"  title: {old_title!r} -> {new_title!r} ({item.get('Type')} {item.get('Id')})")
+    path = Path(os.environ.get(ENV_TITLE_LOG) or _DEFAULT_TITLE_LOG)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(f"{datetime.now().isoformat(timespec='seconds')}\t{item.get('Id')}\t{item.get('Type')}\t"
+                     f"{old_title}\t{new_title}\n")
+    except OSError as e:
+        logger.error(f"Could not record the title change of {item.get('Id')}: {e}")
 
 
 def _parse_lang_chain(raw: str | None) -> tuple[str, ...]:
@@ -100,7 +133,7 @@ _DESC_FETCH_FIELDS = (
 def _new_run_stats() -> dict:
     return {
         "found_overview": 0, "found_tagline": 0, "found_title": 0, "found_year": 0,
-        "updated": 0, "skipped_no_data": 0, "errors": 0, "cache_hits": 0,
+        "updated": 0, "failed": 0, "skipped_no_data": 0, "skipped_mismatch": 0, "errors": 0, "cache_hits": 0,
     }
 
 
@@ -184,13 +217,13 @@ def _fetch_localized_for_episode(
     pids = {k.lower(): v for k, v in (item.get("ProviderIds") or {}).items()}
     tvdb_id = pids.get("tvdb")
     if not tvdb_id:
-        return localized
+        return _unless_other_episode(item, localized, stats)
     resolved = resolve_tmdb_episode_numbers(
         tmdb_client, tmdb_limiter, series_tmdb_id, str(tvdb_id),
         cache=cache, cache_ttl=cache_ttl_seconds,
     )
     if not resolved or resolved == (season, episode):
-        return localized
+        return _unless_other_episode(item, localized, stats)
     alternative = fetch_tmdb_episode_localized(
         tmdb_client, tmdb_limiter, series_tmdb_id, resolved[0], resolved[1],
         cache=cache, cache_ttl=cache_ttl_seconds,
@@ -199,6 +232,16 @@ def _fetch_localized_for_episode(
     alt_score = episode_title_similarity(name, alternative)
     if alt_score >= EPISODE_TITLE_MIN_SIMILARITY and alt_score > episode_title_similarity(name, localized):
         return alternative
+    return _unless_other_episode(item, localized, stats)
+
+
+def _unless_other_episode(item: dict, localized: dict | None, stats: dict) -> dict | None:
+    """None (skip) when TMDB's text at these numbers clearly belongs to another episode."""
+    if episode_text_mismatch(item.get("Name") or "", localized):
+        stats["skipped_mismatch"] += 1
+        logger.info(f"Skipped {item.get('SeriesName')} S{item.get('ParentIndexNumber')}E{item.get('IndexNumber')} "
+                    f"{item.get('Name')!r}: TMDB has another episode at these numbers")
+        return None
     return localized
 
 
@@ -274,8 +317,9 @@ def _pick_updates(
     cur_ov = (item.get("Overview") or "").strip()
     cur_tags = item.get("Taglines") or []
     cur_tag = (cur_tags[0] if cur_tags else "").strip()
-    overview_pick = pick_overview_with_fallback(localized, cur_ov, lang_chain)
-    tagline_pick = pick_tagline_with_fallback(localized, cur_tag, lang_chain)
+    # A Slovak or Czech text already there (TMDb's, ČSFD's or hand-written) is left alone.
+    overview_pick = None if _looks_slavic(cur_ov) else pick_overview_with_fallback(localized, cur_ov, lang_chain)
+    tagline_pick = None if _looks_slavic(cur_tag) else pick_tagline_with_fallback(localized, cur_tag, lang_chain)
     title_pick = (
         pick_title_from_localized(item.get("Name") or "", localized)
         if update_title
@@ -308,12 +352,23 @@ def _apply_or_preview(
         return
     try:
         full_item = fetch_full_item(client, base_url, user_id, item["Id"])
+        old_title = full_item.get("Name") or ""
+        title_due = has_metadata_changes(full_item, new_title=new_title)
+        # An English fallback is written without its lock, so a later translation can replace it.
+        unlocked = frozenset(
+            field for field, lang in (("Overview", overview_lang), ("Taglines", tagline_lang))
+            if lang and not lang.startswith(("sk", "cs"))
+        )
         if update_item_metadata(
             client, base_url, item["Id"], full_item,
             new_overview=new_overview, new_title=new_title,
-            new_tagline=new_tagline, new_year=new_year, lock=args.lock,
+            new_tagline=new_tagline, new_year=new_year, lock=args.lock, unlocked=unlocked,
         ):
             stats["updated"] += 1
+            if title_due and new_title:
+                record_title_change(full_item, old_title, new_title)
+        elif has_metadata_changes(full_item, new_overview, new_title, new_tagline, new_year):
+            stats["failed"] += 1  # a change was due but Emby refused the POST
     except Exception as e:  # noqa: BLE001
         logger.error(f"Failed to update {item.get('Name','?')}: {e}")
         stats["errors"] += 1
@@ -335,6 +390,7 @@ def _process_item(
     stats: dict,
 ) -> None:
     """Process a single candidate item end-to-end (fetch + pick + apply)."""
+    mismatches_before = stats["skipped_mismatch"]
     try:
         localized = _fetch_localized_for_item(
             item, client, base_url, user_id,
@@ -347,7 +403,8 @@ def _process_item(
         return
 
     if localized is None:
-        stats["skipped_no_data"] += 1
+        if stats["skipped_mismatch"] == mismatches_before:  # a mismatch is counted on its own
+            stats["skipped_no_data"] += 1
         return
 
     overview_pick, tagline_pick, title_pick, new_year = _pick_updates(
@@ -380,12 +437,14 @@ def _process_item(
 def _print_fill_summary(stats: dict, doit: bool) -> None:
     print()
     print(
-        f"Fill summary: {stats['found_overview']} overview translations, "
-        f"{stats['found_tagline']} tagline translations, "
-        f"{stats['found_title']} title replacements, "
-        f"{stats['found_year']} years proposed, "
+        f"Fill summary: proposed {stats['found_overview']} overviews, "
+        f"{stats['found_tagline']} taglines, "
+        f"{stats['found_title']} titles, "
+        f"{stats['found_year']} years (before the lock and no-change checks); "
         f"{stats['updated']} items updated, "
+        f"{stats['failed']} updates refused, "
         f"{stats['skipped_no_data']} skipped (no TMDB data), "
+        f"{stats['skipped_mismatch']} episodes skipped (TMDB has another episode there), "
         f"{stats['errors']} errors"
     )
     if not doit and (
@@ -448,15 +507,15 @@ def _run_fill(
     user_id: str,
     library_ids: list[str],
     args: argparse.Namespace,
-) -> None:
-    """Fill English Overviews from TMDB using the language fallback chain."""
+) -> dict:
+    """Fill English Overviews from TMDB using the language fallback chain. Returns the run's stats."""
     tmdb_key = _resolve_tmdb_key(args)
     lang_chain = _parse_lang_chain(getattr(args, "overview_langs", None))
     items, candidates = _collect_candidates(client, base_url, user_id, library_ids, args)
 
     if not candidates:
         print("Nothing to do.")
-        return
+        return _new_run_stats()
 
     print(f"Language chain: {' -> '.join(lang_chain)} -> EN (keep)")
 
@@ -468,9 +527,11 @@ def _run_fill(
     stats = _new_run_stats()
 
     try:
-        for item in tqdm(
+        for index, item in enumerate(tqdm(
             candidates, desc="Fetching from TMDB", unit="item", disable=args.doit is False
-        ):
+        ), start=1):
+            if cache is not None and index % CACHE_SAVE_EVERY == 0:
+                save_cache(cache)  # a killed run keeps the TMDB lookups made so far
             _process_item(
                 item, client, base_url, user_id,
                 tmdb_client, tmdb_limiter, series_tmdb_map,
@@ -484,6 +545,7 @@ def _run_fill(
             print(f"Cache saved: {len(cache)} entries (this run: {stats['cache_hits']} cache hits)")
 
     _print_fill_summary(stats, args.doit)
+    return stats
 
 
 def _validate_args(
@@ -529,10 +591,12 @@ def run_descriptions_command(args: argparse.Namespace) -> None:
         library_ids = _resolve_library_ids(
             client, base_url, args.api_key, libraries, all_libraries
         )
-        _run_fill(client, base_url, user_id, library_ids, args)
+        stats = _run_fill(client, base_url, user_id, library_ids, args)
     except EmbyServerConnectionError as e:
         logger.error(str(e))
         sys.exit(1)
     except httpx.TimeoutException as e:
         logger.error(f"HTTP request timed out: {e}")
         sys.exit(1)
+    if stats and run_failed(stats):
+        sys.exit(1)  # the run finished, but too many items could not be read or written

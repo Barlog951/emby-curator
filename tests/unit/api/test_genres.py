@@ -630,3 +630,12 @@ class TestFetchItemsByIds:
 
         assert len(items) == 1
         assert items[0]["Id"] == "200"
+
+
+class TestReviewedGenreNames:
+    def test_slovak_war_and_politics_and_hyphenated_game_show_are_mapped(self):
+        assert normalize_genre_name("Vojnový a Politický", GENRE_NORMALIZATION_MAP) == "War"
+        assert normalize_genre_name("Game-Show", GENRE_NORMALIZATION_MAP) == "Game Show"
+
+    def test_own_genres_are_never_suggested_for_mapping(self):
+        assert suggest_genre_mappings({"Vianočné": 347, "Česko-slovenský": 906}) == []

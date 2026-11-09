@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import html
 import re
+import time
 import unicodedata
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -305,11 +306,13 @@ def pick_creator(creators: list[CsfdCreator], name: str, need_photo: bool = True
     actor (or none is), the choice is ambiguous and nothing is returned.
     """
     wanted = normalize_title(name)
-    same = [c for c in creators if (c.photo_url or not need_photo) and normalize_title(c.name) == wanted]
-    if len(same) == 1:
-        return same[0]
-    actors = [c for c in same if any(w in c.occupation.lower() for w in ACTOR_WORDS)]
-    return actors[0] if len(actors) == 1 else None
+    same = [c for c in creators if normalize_title(c.name) == wanted]
+    if len(same) > 1:
+        # Namesakes: only the one actor among them may be taken, never "the one with a photo".
+        same = [c for c in same if any(w in c.occupation.lower() for w in ACTOR_WORDS)]
+    if len(same) != 1:
+        return None
+    return same[0] if same[0].photo_url or not need_photo else None
 
 
 _ORIGIN_RE = re.compile(r'<div class="origin">(.*?)</div>', re.S)
@@ -336,6 +339,15 @@ DIRECTOR_HEADINGS = {"Réžia", "Režie"}
 CAST_HEADINGS = {"Hrajú", "Hrají"}
 _NAME_LINK_RE = re.compile(r'<span class="normal (?:more|less)-name-link">.*?</span>\s*</span>', re.S)
 _ID_RE = re.compile(r"/film/(\d+)(?:-|/|$)")  # slugged or id-only page URL
+# An episode or season page (/film/<series>/<episode>/) carries its series' id: matching
+# one would stamp the series with an episode's plot and poster, so they are never matched.
+_SUBPAGE_RE = re.compile(r"/film/\d+-[^/]+/\d+-")
+MISS_TTL_SECONDS = 30 * 86400  # how long "no results" and unresolved people are trusted
+
+
+def is_subpage(url: str) -> bool:
+    """True for an episode or season page of a series."""
+    return bool(_SUBPAGE_RE.search(url or ""))
 
 
 def _parse_origin(fragment: str) -> tuple[list[str], int | None]:
@@ -457,24 +469,24 @@ def pick_match(
 ) -> CsfdHit | None:
     """Choose the one hit that unambiguously is ``title`` (``year``).
 
-    Rules: same kind, normalized titles equal, and when both years are known
-    they differ by at most ``YEAR_TOLERANCE``. If several hits survive and the
-    year cannot break the tie, return None — ambiguity is a manual decision.
+    Rules: the item has a year; same kind, normalized titles equal, no episode or
+    season sub-page, and the years differ by at most ``YEAR_TOLERANCE`` (a single
+    same-title hit without a year on ČSFD is accepted). If several hits survive and
+    the year cannot break the tie, return None — ambiguity is a manual decision.
     """
+    if year is None:
+        return None  # a title alone is not unambiguous: a namesake of any year could be the only hit
     wanted = normalize_title(title)
-    same_title = [h for h in hits if h.kind == kind and normalize_title(h.title) == wanted]
-    if year is not None:
-        close = [
-            h for h in same_title
-            if h.year is not None and abs(h.year - year) <= YEAR_TOLERANCE
-        ]
-        if len(close) == 1:
-            return close[0]
-        if close:
-            exact = [h for h in close if h.year == year]
-            return exact[0] if len(exact) == 1 else None
-        same_title = [h for h in same_title if h.year is None]
-    return same_title[0] if len(same_title) == 1 else None
+    same_title = [h for h in hits if h.kind == kind and normalize_title(h.title) == wanted
+                  and not is_subpage(h.url)]
+    close = [h for h in same_title if h.year is not None and abs(h.year - year) <= YEAR_TOLERANCE]
+    if len(close) == 1:
+        return close[0]
+    if close:
+        exact = [h for h in close if h.year == year]
+        return exact[0] if len(exact) == 1 else None
+    undated = [h for h in same_title if h.year is None]  # ČSFD lists no year: tolerated when it is the only one
+    return undated[0] if len(undated) == 1 else None
 
 
 def candidate_hits(hits: list[CsfdHit], year: int | None, kind: str) -> list[CsfdHit]:
@@ -543,26 +555,52 @@ class CsfdClient:
             raise CsfdError(f"ČSFD returned HTTP {solution.get('status')} for {url}")
         return str(solution.get("response") or "")
 
-    def search(self, query: str) -> list[CsfdHit]:
-        """Search ČSFD; results are cached per query."""
-        key = f"search:{query}"
-        if self._cache is not None and key in self._cache:
-            return [CsfdHit(**h) for h in self._cache[key]]
-        page = self._get_page(f"{CSFD_BASE}/hladat/?q={quote(query, safe='')}")
-        hits = parse_search(page)
+    def _cached_rows(self, key: str) -> list[dict] | None:
+        """Cached result rows; None when absent or an expired "no results" entry.
+
+        Empty results expire after ``MISS_TTL_SECONDS``: a layout change or a challenge
+        page served with HTTP 200 parses as "no results" and must not be final.
+        """
+        if self._cache is None or key not in self._cache:
+            return None
+        value = self._cache[key]
+        if isinstance(value, dict):  # {"miss_at": epoch}
+            return [] if time.time() - float(value.get("miss_at", 0)) < MISS_TTL_SECONDS else None
+        return value or None  # an empty list from before misses expired is looked up again
+
+    def _store_rows(self, key: str, rows: list[dict]) -> None:
         if self._cache is not None:
-            self._cache[key] = [asdict(h) for h in hits]
+            self._cache[key] = rows if rows else {"miss_at": int(time.time())}
+
+    def search(self, query: str) -> list[CsfdHit]:
+        """Search ČSFD; results are cached per query (misses for ``MISS_TTL_SECONDS``)."""
+        key = f"search:{query}"
+        cached = self._cached_rows(key)
+        if cached is not None:
+            return [CsfdHit(**h) for h in cached]
+        hits = parse_search(self._get_page(f"{CSFD_BASE}/hladat/?q={quote(query, safe='')}"))
+        self._store_rows(key, [asdict(h) for h in hits])
         return hits
 
     def search_creators(self, query: str) -> list[CsfdCreator]:
-        """People rows for a search; cached per query."""
+        """People rows for a search; cached per query (misses for ``MISS_TTL_SECONDS``)."""
         key = f"people:{query}"
-        if self._cache is not None and key in self._cache:
-            return [CsfdCreator(**c) for c in self._cache[key]]
+        cached = self._cached_rows(key)
+        if cached is not None:
+            return [CsfdCreator(**c) for c in cached]
         creators = parse_creator_search(self._get_page(f"{CSFD_BASE}/hladat/?q={quote(query, safe='')}"))
-        if self._cache is not None:
-            self._cache[key] = [asdict(c) for c in creators]
+        self._store_rows(key, [asdict(c) for c in creators])
         return creators
+
+    def unresolved_recently(self, name: str) -> bool:
+        """True when this person could not be resolved within ``MISS_TTL_SECONDS``."""
+        entry = (self._cache or {}).get(f"unresolved:{name}")
+        return isinstance(entry, (int, float)) and time.time() - entry < MISS_TTL_SECONDS
+
+    def mark_unresolved(self, name: str) -> None:
+        """Remember a person ČSFD could not resolve, so the weekly limit goes to new names."""
+        if self._cache is not None:
+            self._cache[f"unresolved:{name}"] = int(time.time())
 
     def creator(self, url: str) -> CsfdCreatorProfile:
         """Biographical facts for a creator page; cached per URL."""
