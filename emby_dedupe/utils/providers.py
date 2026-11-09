@@ -44,6 +44,16 @@ def provider_id_conflict(a: dict[str, Any] | None, b: dict[str, Any] | None) -> 
     return None
 
 
+def shares_provider_id(a: dict[str, Any] | None, b: dict[str, Any] | None) -> bool:
+    """True when the two items carry the same IMDb, TMDb or TVDB id."""
+    left, right = normalize_provider_ids(a), normalize_provider_ids(b)
+    for provider in PROVIDER_PRIORITY:
+        x, y = left.get(provider), right.get(provider)
+        if x and y and str(x).strip().lower() == str(y).strip().lower():
+            return True
+    return False
+
+
 def iter_provider_ids(
     imdb: str | None, tmdb: str | None, tvdb: str | None
 ) -> Iterator[tuple[str, str]]:

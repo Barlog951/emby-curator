@@ -52,6 +52,11 @@ The following architectures are supported in the latest Docker version:
   report flags these with a "DV Profile 5 — green/pink" badge.
 - Optional DV P5 → HDR10 converter (`scripts/dv/`, NVENC/libplacebo) to produce the clean
   copy in the first place — see [`scripts/dv/README.md`](scripts/dv/README.md)
+- **Watched copies are kept:** a duplicate someone has watched is not deleted when the kept copy
+  shares no IMDb/TMDb/TVDB id with it, because the watched state would not carry over.
+- **Episode numbering audit** (`numbering`): flags episodes Emby shows under another episode's
+  number, leaves unnumbered, spreads over several seasons or numbers inconsistently. Series
+  numbered differently on purpose go into `~/.emby-dedupe/numbering-allow.txt` (one series id per line).
 - **Fold-delete safety guard:** Emby's `DELETE /Items/{id}` removes a media file's *owning
   folder* (a movie folder or per-episode subfolder), not just the file. The deletion path
   refuses any delete that would fold-delete a folder containing the item being **kept**, so
@@ -116,6 +121,7 @@ emby-curator [shared options] SUBCOMMAND [subcommand options]
 | `csfd people` | ČSFD portraits, biographies and birth/death dates for actors |
 | `check` | Check if media should be downloaded |
 | `missing-episodes` | Find missing TV episodes |
+| `numbering` | Read-only list of episodes whose Emby season/episode numbers disagree with their file names |
 
 ### Shared Options (before subcommand)
 
@@ -204,6 +210,17 @@ emby-curator ... genres audit [--suggest]
 emby-curator ... genres normalize [--doit] [--repair-dupes] [--item-ids IDS]
 emby-curator ... genres fix [--doit] [--gaps-only | --validate] [--item-ids IDS]
 emby-curator ... genres origin [--doit] [--genre-name NAME] [--item-ids IDS]
+```
+
+### numbering subcommand options
+
+```
+emby-curator ... numbering [--allow-file PATH] [--json-out PATH] [--marks] [--show-remapped]
+
+  --allow-file PATH      Series ids numbered differently on purpose [env: DEDUPE_NUMBERING_ALLOW_FILE]
+  --json-out PATH        Also write every finding to a JSON file
+  --marks                Show who has each flagged episode marked watched
+  --show-remapped        List episodes remapped by a constant offset one by one too
 ```
 
 ## Examples

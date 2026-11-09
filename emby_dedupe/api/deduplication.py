@@ -22,6 +22,7 @@ from emby_dedupe.api.deletion_guard import (
 )
 from emby_dedupe.api.fold_safe_delete import duration_mismatch
 from emby_dedupe.api.metadata import get_image_url, rate_media_items
+from emby_dedupe.api.watch_history import annotate_watched_copies, watched_copy_reason
 from emby_dedupe.models.disjoint_set import DisjointSet
 from emby_dedupe.reports import markdown
 from emby_dedupe.utils.constants import (
@@ -1487,13 +1488,16 @@ def merge_audio_first_reason(item: dict, keeper: dict) -> str | None:
 
 
 def _refusal_reason(item: dict, keeper: dict, frames: FrameChecker | None = None) -> str | None:
-    """Every reason the guard keeps both copies: different content first, then an audio merge."""
-    return _different_content_reason(item, keeper, frames) or merge_audio_first_reason(item, keeper)
+    """Every reason the guard keeps both copies: different content first, then an audio merge,
+    then watch history the delete would lose."""
+    return (_different_content_reason(item, keeper, frames) or merge_audio_first_reason(item, keeper)
+            or watched_copy_reason(item, keeper))
 
 
 def _refuse_different_content(item: dict, keeper: dict, frames: FrameChecker | None = None) -> str | None:
     """Delete-time backstop: refuse a delete when the "duplicate" may be different content,
-    or when deleting it would lose a language or the better picture (merge audio first).
+    when deleting it would lose a language or the better picture (merge audio first), or
+    when someone watched it and the kept copy shares no provider id with it.
 
     Returns the reason when refused (and records it on the item), else None. Deliberately
     does NOT set the fold-safe marker: --fold-safe-delete removes guard-refused duplicates
@@ -1763,6 +1767,9 @@ def process_deletion_and_generate_report(
     # The frame check streams from Emby; run all pairs up front, a few at a time.
     if frames is not None:
         frames.prefetch(*_frame_check_pairs(decisions))
+
+    # Who watched each copy that shares no provider id with its keeper (the guard holds those).
+    annotate_watched_copies(client, base_url, decisions)
 
     if not doit:
         deletion_progress_bar = tqdm(

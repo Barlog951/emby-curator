@@ -515,6 +515,47 @@ def missing_episodes_cmd(
 
 
 # ---------------------------------------------------------------------------
+# numbering subcommand
+# ---------------------------------------------------------------------------
+
+@app.command("numbering")
+def numbering_cmd(
+    ctx: typer.Context,
+    allow_file: str | None = typer.Option(
+        None, "--allow-file", envvar="DEDUPE_NUMBERING_ALLOW_FILE",
+        help="Series ids numbered differently on purpose, one per line (default ~/.emby-dedupe/numbering-allow.txt).",
+    ),
+    json_out: str | None = typer.Option(None, "--json-out", help="Also write every finding to this JSON file."),
+    marks: bool = typer.Option(
+        False, "--marks", help="Show who has each flagged episode marked watched (one request per user and episode)."
+    ),
+    show_remapped: bool = typer.Option(
+        False, "--show-remapped", help="List episodes remapped by a constant offset one by one too."
+    ),
+) -> None:
+    """List episodes whose Emby season/episode numbers disagree with their file names (read-only).
+
+    Flags episodes shown under another episode's number, left unnumbered, spread over
+    several seasons or numbered inconsistently. Scans the whole server unless --library is given.
+    """
+    from argparse import Namespace
+
+    from emby_dedupe.cli.numbering import run_numbering_command
+
+    config: AppConfig = ctx.obj if ctx.obj else AppConfig()
+    run_numbering_command(Namespace(
+        host=config.host,
+        port=config.port,
+        api_key=config.api_key,
+        library=config.libraries or [],
+        allow_file=allow_file,
+        json_out=json_out,
+        marks=marks,
+        show_remapped=show_remapped,
+    ))
+
+
+# ---------------------------------------------------------------------------
 # cleanup subcommand
 # ---------------------------------------------------------------------------
 
