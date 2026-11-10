@@ -43,6 +43,8 @@ descriptions_app = typer.Typer(
 app.add_typer(descriptions_app, name="descriptions")
 csfd_app = typer.Typer(name="csfd", help="Fill metadata and posters from ČSFD.")
 app.add_typer(csfd_app, name="csfd")
+ratings_app = typer.Typer(name="ratings", help="Fill empty age ratings (OfficialRating) from TMDb certificates.")
+app.add_typer(ratings_app, name="ratings")
 
 # Shared help strings used across multiple genre subcommands
 _LOCK_OPT = "--lock/--no-lock"
@@ -512,6 +514,53 @@ def missing_episodes_cmd(
     )
 
     run_missing_episodes_command(args)
+
+
+# ---------------------------------------------------------------------------
+# ratings subcommands
+# ---------------------------------------------------------------------------
+
+def _run_ratings(ctx: typer.Context, **kwargs) -> None:
+    from argparse import Namespace
+
+    from emby_dedupe.cli.ratings import run_ratings_command
+
+    config: AppConfig = ctx.obj if ctx.obj else AppConfig()
+    run_ratings_command(Namespace(host=config.host, port=config.port, api_key=config.api_key,
+                                  library=config.libraries or [], doit=kwargs.pop("doit") or config.doit,
+                                  **kwargs))
+
+
+@ratings_app.command("fill")
+def ratings_fill(
+    ctx: typer.Context,
+    doit: bool = typer.Option(False, "--doit", help=_DOIT_HELP),
+    tmdb_api_key: str | None = typer.Option(
+        None, "--tmdb-api-key", envvar="DEDUPE_TMDB_API_KEY", help=_TMDB_KEY_HELP
+    ),
+    types: str = typer.Option("Movie", "--types", help="Item types, comma-separated: Movie, Series."),
+    min_age_hours: float = typer.Option(
+        48, "--min-age-hours", help="Skip items added more recently, so Emby's own fetch runs first."
+    ),
+    limit: int | None = typer.Option(None, "--limit", help="Process at most this many items."),
+    json_out: str | None = typer.Option(None, "--json-out", help="Also write the counts and choices as JSON."),
+) -> None:
+    """Fill an EMPTY age rating from TMDb: the Slovak or US certificate, else neighbouring countries
+    on the Slovak scale (SK-7 … SK-18). Never replaces a rating, never writes a guess; every write
+    is journaled (~/.emby-dedupe/ratings-journal.jsonl) and can be undone with `ratings undo`.
+    """
+    _run_ratings(ctx, action="fill", doit=doit, tmdb_api_key=tmdb_api_key, types=types,
+                 min_age_hours=min_age_hours, limit=limit, json_out=json_out)
+
+
+@ratings_app.command("undo")
+def ratings_undo(
+    ctx: typer.Context,
+    run: str = typer.Option(..., "--run", help="Run id printed by `ratings fill --doit`."),
+    doit: bool = typer.Option(False, "--doit", help=_DOIT_HELP),
+) -> None:
+    """Clear the ratings one fill run wrote, where the item still holds that run's value."""
+    _run_ratings(ctx, action="undo", doit=doit, run=run)
 
 
 # ---------------------------------------------------------------------------

@@ -122,6 +122,7 @@ emby-curator [shared options] SUBCOMMAND [subcommand options]
 | `check` | Check if media should be downloaded |
 | `missing-episodes` | Find missing TV episodes |
 | `numbering` | Read-only list of episodes whose Emby season/episode numbers disagree with their file names |
+| `ratings fill` / `ratings undo` | Fill an empty age rating from TMDb certificates (Slovak/US first, then neighbouring countries on the Slovak scale); journaled, undoable |
 
 ### Shared Options (before subcommand)
 
