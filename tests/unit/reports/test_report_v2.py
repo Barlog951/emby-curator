@@ -74,7 +74,7 @@ def test_refused_pair_shows_its_flags_as_notes_not_checks():
     assert "other copy has a language the kept one lacks" in row["risk_text"]
     html = _render([d])
     assert 'class="chip chip-note" title="other copy has a language the kept one lacks">loses eng</span>' in html
-    assert 'class="chip chip-note" title="&#39;(n)&#39; file name">&#39;(n)&#39; name</span>' in html
+    assert 'class="chip chip-note" title="numbered file name like (2) and a different runtime">numbered copy</span>' in html
     assert 'class="chip chip-check"' not in html
 
 
@@ -170,7 +170,7 @@ def test_exclude_hint_prefers_the_imdb_id_and_appears_on_every_outcome():
     html = _render([blocked, removed])
     assert html.count('<code class="ids"><span>tt24786748</span></code>') == 2
     assert "Don't want this removed?" in html
-    assert "Keep both copies for good?" in html
+    assert "Checked and they really differ? Add to <code>--exclude-ids</code>" in html
 
 
 def test_numeric_only_ids_come_with_a_collision_warning():
@@ -182,8 +182,9 @@ def test_numeric_only_ids_come_with_a_collision_warning():
 
 def test_decide_block_aggregates_the_guarded_pairs():
     ids_a, ids_b = {"Imdb": "tt1"}, {"Imdb": "tt2"}
-    decisions = [_pair("skipped_unsafe", n=1, error="x", keep={"ids": ids_a}, delete={"ids": ids_a}),
-                 _pair("skipped_unsafe", n=2, series="B", error="x", keep={"ids": ids_b}, delete={"ids": ids_b})]
+    runtime = "duration-mismatch (keeper 3127s vs delete 3506s)"
+    decisions = [_pair("skipped_unsafe", n=1, error=runtime, keep={"ids": ids_a}, delete={"ids": ids_a}),
+                 _pair("skipped_unsafe", n=2, series="B", error=runtime, keep={"ids": ids_b}, delete={"ids": ids_b})]
     html = _render(decisions)
     assert "<code>--exclude-ids tt1,tt2</code>" in html
 
@@ -402,11 +403,11 @@ def test_row_body_says_constant_facts_once_and_marks_the_odd_file():
     row = _rows(files, "blocked")[0]
     labels = [line["label"] for line in row["shared"]]
 
-    assert labels == ["Folder", "Kept", "Other", "Guard"]
+    assert labels == ["Folder", "Kept", "Other", "Next step"], "the closed row already names the reason"
     assert row["shared"][0]["text"] == "/S/Show/S01"
     assert row["shared"][1]["text"] == "1080p WEB-DL · ac3 5.1 cs · added 2026-10-01"
     assert row["shared"][2]["text"] == "1080i WEB-DL · ac3 5.1 cs · added 2026-10-01", "the majority value is the row's fact"
-    assert row["shared"][3]["text"] == "runtime 45 vs 45 min (×1.00, different cut), beyond the guard's tolerance"
+    assert row["shared"][3]["text"].startswith("compare both in Emby")
     odd = [f for f in row["files"] if f["delete"]["vary"]]
     assert len(odd) == 1
     assert odd[0]["episode"] == "S01E05"
@@ -463,13 +464,12 @@ def test_facts_carry_their_kind_so_each_gets_one_colour():
     assert '<td class="pf-num fact-size" data-l="Size">1.00 GB</td>' in html
 
 
-def test_stats_row_is_back_under_the_legend():
-    """Fuki asked where the previous version's statistics went: one tile row, the cleanup look."""
+def test_stats_row_holds_only_facts_the_headline_and_legend_do_not_give():
+    """Fuki kept the tile row (10-12) but only for new facts (11-12): counts by outcome live in the legend."""
     html = _render([_pair("success", n=1, delete={"size_gb": 1.0}),
                     _pair("skipped_unsafe", n=2, error="x", delete={"size_gb": 2.0})])
-    for label, value in (("Duplicate groups", "2"), ("Copies found", "2"), ("Removed", "1"), ("Blocked by guard", "1"),
-                         ("Failed", "0"), ("Freed", "1.00 GB"), ("Keepers on disk", "2.00 GB"), ("Space saved", "20.0%")):
+    for label, value in (("Duplicate groups", "2"), ("Copies found", "2"), ("Keepers on disk", "2.00 GB"),
+                         ("Space saved", "20.0%")):
         assert f'<div class="stat-value">{value}</div><div class="stat-label">{label}</div>' in html, label
-    dry = _render([_pair("not_attempted")])
-    assert '<div class="stat-label">Would remove</div>' in dry
-    assert "Failed</div>" not in dry
+    for gone in ("Removed", "Blocked by guard", "Failed", "Freed"):
+        assert f'<div class="stat-label">{gone}</div>' not in html, gone

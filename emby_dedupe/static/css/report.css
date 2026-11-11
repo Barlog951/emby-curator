@@ -115,7 +115,7 @@ footer {
     text-align: center;
     margin-top: 40px;
     padding-top: 20px;
-    border-top: 1px solid var(--accent);
+    border-top: 1px solid var(--line);
     font-size: 0.9rem;
     color: rgba(248, 248, 242, 0.7);
 }
@@ -469,7 +469,7 @@ h1.run-headline {
 }
 
 .run-stats .stat-item { padding: 10px 8px; }
-.run-stats .stat-value { font-size: 1.5rem; }
+.run-stats .stat-value { font-size: 1.5rem; color: var(--text-color); }
 .run-stats .stat-label { font-size: 0.8rem; color: var(--muted); }
 
 .run-decide {
@@ -511,18 +511,18 @@ h1.run-headline {
 
 .ids span { white-space: nowrap; }
 
-/* ---- One colour per kind of fact, the cleanup report's palette ------------------------ */
-.fact-quality { color: #bd93f9; }
-.fact-audio { color: #8be9fd; }
-.fact-size { color: #50fa7b; }
-.fact-runtime { color: #ffb86c; }
-.fact-score { color: #ff79c6; }
+/* ---- Facts in neutral text: colour is reserved for outcomes -------------------------- */
+.fact-quality { color: var(--text-color); }
+.fact-audio { color: var(--text-color); }
+.fact-size { color: var(--soft); }
+.fact-runtime { color: var(--soft); }
+.fact-score { color: var(--soft); }
 .fact-date { color: var(--soft); }
 .fact-path { color: var(--soft); }
 .fact-reason { color: var(--soft); }
 .pairs th.fact-runtime, .pairs th.fact-size, .pairs th.fact-score { opacity: 0.85; }
-.pf-vary.vary-video { border-color: #bd93f9; color: #bd93f9; }
-.pf-vary.vary-audio { border-color: #8be9fd; color: #8be9fd; }
+.pf-vary.vary-video { border-color: var(--muted); color: var(--soft); }
+.pf-vary.vary-audio { border-color: var(--muted); color: var(--soft); }
 .pf-vary.vary-added { border-color: #8a877f; color: var(--soft); }
 
 /* ---- Outcome sections ------------------------------------------------------------ */
@@ -731,7 +731,7 @@ h1.run-headline {
 .pairs th.pf-ep { width: 7%; }
 .pairs th.pf-file { width: 25%; }
 .pairs th.pf-num { width: 6%; }
-.pairs th.pf-links { width: 7%; }
+.pairs th.pf-links { width: 10%; }
 .pairs th.pf-num, .pairs td.pf-num { font-family: inherit; }
 .pairs td.pf-num { font-family: var(--mono); }
 .pf-name { display: inline-block; vertical-align: middle; }
@@ -752,7 +752,18 @@ h1.run-headline {
 
 .pf-num { font-family: var(--mono); font-size: 0.82rem; white-space: nowrap; line-height: 1.35; }
 .pf-num .score { cursor: help; }
-.pf-links { white-space: nowrap; font-size: 0.85rem; line-height: 1.35; }
+.pf-links { font-size: 0.85rem; line-height: 1.35; }
+/* A real tap target: the kept copy is the evidence the reader checks after a run. */
+.pf-links .url-link {
+    margin: 0 0 4px 0;
+    padding: 3px 8px;
+    min-height: 24px;
+    border-radius: 4px;
+    background-color: var(--tile);
+    white-space: nowrap;
+}
+.pf-links .url-link:hover { text-decoration: none; background-color: var(--line); }
+.score-note { display: block; font-family: inherit; font-size: 0.75rem; color: var(--muted); white-space: normal; }
 
 .cfile-note, .exclude-hint {
     font-size: 0.88rem;
@@ -822,6 +833,9 @@ footer { text-align: left; font-size: 0.85rem; }
     .pairs td { border: none; padding: 2px 0; }
     .pairs .pf-second { border-left: none; padding-left: 0; }
     .pairs td::before { content: attr(data-l) " "; color: var(--muted); font-size: 0.78rem; }
+    .pairs td.pf-second { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
+    .pairs td.same-as-kept { display: none; }
+    .out-title { display: block; position: static; line-height: 1.35; }
     .pairs td.pf-ep::before { content: none; }
     .pf-ep { margin-bottom: 2px; }
 }
@@ -854,6 +868,12 @@ footer { text-align: left; font-size: 0.85rem; }
 }
 
 /* ---- Forced colours: every state keeps a real border ------------------------------ */
+/* Print: the new link buttons and score notes as plain black text. */
+@media print {
+    .pf-links .url-link { background: none !important; padding: 0; }
+    .score-note { color: #000 !important; }
+}
+
 @media (forced-colors: active) {
     .run-seg, .pill, .tag, .chip, .run-swatch { border: 1px solid CanvasText; forced-color-adjust: none; }
     .seg-failed { background: repeating-linear-gradient(45deg, CanvasText 0 4px, Canvas 4px 8px); }

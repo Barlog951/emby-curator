@@ -67,16 +67,16 @@ def test_blocked_row_explains_the_runtime_and_offers_the_exclude_ids_value():
                         runtimes=(3127, 3506), ids=ids)])
 
     assert "Blocked by the safety guard · 1 file" in html
-    assert "runtime 52 vs 58 min (×1.12, different cut)" in html
+    assert '<span class="fact-runtime">52 vs 58 min</span>' in html, "the closed row carries the runtimes"
     assert "<span>tt24786748</span>" in html, "IMDb id only"
     assert "9514669" not in html, "IMDb id only"
 
 
-def test_real_run_always_shows_the_failed_section():
+def test_real_run_without_failures_shows_failed_zero_in_the_legend_only():
     html = _render([_ep(1, "success")])
 
-    assert "Failed · 0 files" in html
-    assert "Nothing failed." in html
+    assert "Failed · 0 files" not in html, "no empty section"
+    assert '<span class="run-swatch seg-failed zero"></span>Failed <strong>0</strong>' in html
 
 
 def test_dry_run_sections_and_no_failed_section():

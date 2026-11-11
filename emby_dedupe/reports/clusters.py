@@ -62,7 +62,7 @@ RISK_TEXT = {
     "score_inversion": "kept copy scores lower",
     "language_loss": "deleted copy has a language the kept one lacks",
     "hdr_loss": "deleted copy has HDR the kept one lacks",
-    "dup_suffix": "'(n)' file name",
+    "dup_suffix": "numbered file name like (2) and a different runtime",
     "cross_folder": "episodes in different folders",
     "name_lies": "file name claims a resolution the video does not have",
 }
@@ -71,7 +71,7 @@ NOTE_TEXT = {
     "score_inversion": "kept copy scores lower",
     "language_loss": "other copy has a language the kept one lacks",
     "hdr_loss": "other copy has HDR the kept one lacks",
-    "dup_suffix": "'(n)' file name",
+    "dup_suffix": "numbered file name like (2) and a different runtime",
     "cross_folder": "episodes in different folders",
     "name_lies": "file name claims a resolution the video does not have",
 }
@@ -80,10 +80,10 @@ NOTE_TEXT = {
 CHIP_TEXT = {
     "score_inversion": "scores lower",
     "language_loss": "loses {langs}",
-    "hdr_loss": "loses HDR",
-    "dup_suffix": "'(n)' name",
+    "hdr_loss": "loses {hdr}",
+    "dup_suffix": "numbered copy",
     "cross_folder": "different folders",
-    "name_lies": "name lies",
+    "name_lies": "name overstates resolution",
 }
 
 _UNKNOWN_LANGS = frozenset({"", "und", "unknown"})
@@ -135,7 +135,8 @@ def _quality_label(item: dict[str, Any]) -> str:
     """Resolution and codec as Emby names them, plus HDR/DV and the source tier."""
     res = str(_video(item).get("resolution") or "").strip()
     hdr = _hdr_tag(item)
-    if hdr and ("dolby vision" in res.lower() or hdr.lower() in res.lower()):
+    squashed = res.lower().replace(" ", "")
+    if hdr and ("dolbyvision" in squashed or hdr.lower().replace(" ", "") in squashed):
         hdr = ""
     src = _source_tier((item.get("quality_description") or {}).get("source_quality_multiplier"))
     return " ".join(x for x in (res, hdr, src) if x) or "unknown quality"
@@ -202,14 +203,27 @@ def _rating(item: dict[str, Any]) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
 
+# Guard messages name a rule by a stable token. A runtime message can embed the frame
+# check's verdict ("frame-check unsure"), so the runtime token is matched first.
+_REASON_CODES = (
+    ("duration-mismatch", "runtime"),
+    ("season folder", "season_folder"),
+    ("merge-audio-first", "merge_audio"),
+    ("frame-check different", "pictures_differ"),
+    ("frame-check unavailable", "picture_check_missing"),
+    ("frame-check unsure", "picture_check_unsure"),
+    ("provider-id-conflict", "different_title"),
+    ("runtime-unknown", "runtime_unknown"),
+    ("duration-unknown", "runtime_unknown"),
+    ("watched-copy", "watched_copy"),
+)
+
+
 def _reason_code(error: str | None) -> str:
     text = error or ""
-    if "duration-mismatch" in text:
-        return "runtime"
-    if "season folder" in text:
-        return "season_folder"
-    if text.startswith("merge-audio-first"):
-        return "merge_audio"
+    for token, code in _REASON_CODES:
+        if token in text:
+            return code
     return "guard" if text else ""
 
 
@@ -346,12 +360,59 @@ def _shared_facts(files: list[dict[str, Any]], row: dict[str, Any]) -> list[dict
             constant.append(("path", f"in {next(iter(dirs[role])) or '/'}"))
         if constant:
             lines.append(_fact_line(label, constant))
-    # The pill and the section already name the status; only the guard's reason is new here.
+    return lines + _guard_lines(row, files)
+
+
+def _guard_lines(row: dict[str, Any], files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """For a pair that stays: the next step, since the closed row already names the reason.
+
+    The guard's own sentence is shown only where no next step exists (an unknown rule) or
+    for a failed delete; the raw message stays in ``data-reason`` and the JSON twin.
+    """
     guard = _guard_line(row, files)
-    if guard:
-        label = "Error" if row["outcome"] in DELETING_OUTCOMES else "Guard"
-        lines.append(_fact_line(label, [("reason", guard)]))
-    return lines
+    if not guard:
+        return []
+    if row["outcome"] in DELETING_OUTCOMES:
+        return [_fact_line("Error", [("reason", guard)])]
+    step = _next_step(row)
+    if step:
+        return [_fact_line("Next step", [("reason", step)])]
+    return [_fact_line("Guard", [("reason", guard)])]
+
+
+def _next_step(row: dict[str, Any]) -> str:
+    """The one thing to do about a held pair, by guard rule."""
+    if row["reason_code"] == "guard" and "co-located" in row["reason"]:
+        return "move one copy into its own folder, then run again"
+    return NEXT_STEP.get(row["reason_code"], "")
+
+
+# The guard's verdict in plain words; the raw message follows in brackets.
+_GUARD_SENTENCE = {
+    "pictures_differ": "the sampled frames don't match, so these are probably different episodes or cuts",
+    "picture_check_missing": "the picture check didn't run for this pair, so nothing is proven either way",
+    "picture_check_unsure": "the sampled frames neither clearly match nor clearly differ",
+    "different_title": "the two copies carry ids of different titles",
+    "runtime_unknown": "Emby hasn't read the runtime of one copy yet, so the same content can't be checked",
+    "watched_copy": "someone watched the copy to delete, and the kept copy shares no id that would carry it over",
+}
+
+# What the reader can do about a held pair. Excluding is offered only where the copies
+# are shown to differ; an unproven pair is re-checked, never hidden for good.
+NEXT_STEP = {
+    "runtime": "compare both in Emby; a different cut or episode: exclude the pair; mislabelled: fix the numbering",
+    "pictures_differ": "compare both in Emby; mislabelled: fix the numbering; really different: exclude the pair",
+    "picture_check_missing": "run again with the frame check; don't exclude yet",
+    "picture_check_unsure": "compare both in Emby before deciding; don't exclude yet",
+    "season_folder": "move the copy into the right season folder, then run again",
+    "merge_audio": "check the audio language, tag or merge it, then run again",
+    "different_title": "fix the wrong id in Emby, or exclude the pair",
+    "runtime_unknown": "refresh both items' metadata in Emby, then run again",
+    "watched_copy": "keep both, or move the watch history to the kept copy first",
+}
+
+# Reason codes whose pairs are shown to be different files, so excluding them is safe.
+EXCLUDABLE_REASONS = frozenset({"runtime", "pictures_differ", "season_folder", "different_title"})
 
 
 def _guard_line(row: dict[str, Any], files: list[dict[str, Any]]) -> str:
@@ -361,6 +422,9 @@ def _guard_line(row: dict[str, Any], files: list[dict[str, Any]]) -> str:
         return ""
     if row["reason_code"] == "runtime":
         return f"{_reason_text('runtime', files, '')}, beyond the guard's tolerance"
+    if row["reason_code"] in _GUARD_SENTENCE:
+        detail = next(iter(reasons)) if len(reasons) == 1 else "details per file below"
+        return f"{_GUARD_SENTENCE[row['reason_code']]} ({detail})"
     if row["reason_code"] == "season_folder":
         return "the two copies sit in different season folders"
     if row["reason_code"] == "merge_audio":
@@ -400,6 +464,9 @@ def _side(item: dict[str, Any], base_url: str, server_id: str) -> dict[str, Any]
         "score": score,
         "score_text": f"{score:.1f}" if score is not None else "",
         "score_summary": str(qd.get("score_summary") or ""),
+        # The scorer multiplies a Dolby Vision profile 5 copy by 0.0001 so it never wins;
+        # the near-zero score is deliberate and says so beside the number.
+        "score_note": "DV P5 penalty" if _video(item).get("is_dovi_p5") else "",
         "dovi_p5": bool(_video(item).get("is_dovi_p5")),
         "ai_upscale": bool(qd.get("is_ai_upscale")),
         "image_class": item.get("image_class", ""),
@@ -408,12 +475,27 @@ def _side(item: dict[str, Any], base_url: str, server_id: str) -> dict[str, Any]
     }
 
 
-def _why_kept(keep: dict[str, Any]) -> str:
-    """One short clause on why this copy won, only when language priority had a say."""
+def _language_key(code: str) -> str:
+    """The comparison key of a language code as the report displays it."""
+    lower = str(code).lower()
+    return _same_language(LANGUAGE_NORMALIZATION_MAP.get(lower, lower))
+
+
+def _why_kept(keep: dict[str, Any], item: dict[str, Any]) -> str:
+    """One short clause on why this copy won over ``item``, only when its language decided.
+
+    Language priority picks per group; for one pair it decided only when the other copy
+    lacks that language. The score clause compares this pair's own scores.
+    """
     lang = keep.get("priority_language_used")
     if not keep.get("selected_by_language_priority") or not lang:
         return ""
-    if keep.get("changed_by_language_priority"):
+    if _language_key(lang) in {_language_key(code) for code in _languages(item)}:
+        return ""
+    keep_score, item_score = _rating(keep), _rating(item)
+    if keep_score is None or item_score is None or keep_score == item_score:
+        return f"kept for its {lang} audio"
+    if keep_score < item_score:
         return f"kept for its {lang} audio, over a copy with the better score"
     return f"kept for its {lang} audio; also the better score"
 
@@ -441,7 +523,7 @@ def _file_record(keep: dict[str, Any], item: dict[str, Any], base_url: str) -> d
         "delete": delete_side,
         "folders_differ": keep_side["dir"] != delete_side["dir"],
         "lost_langs": _lost_languages(delete_side["langs_list"], keep_side["langs_list"]),
-        "keep_note": _why_kept(keep),
+        "keep_note": _why_kept(keep, item),
         "exclude_ids": _shared_provider_ids(keep, item),
         "pair_key": f"{keep_side['path']}|{delete_side['path']}",
         "size": delete_side["size"],
@@ -503,7 +585,18 @@ def _score_text(files: list[dict[str, Any]]) -> str:
 def _lang_text(files: list[dict[str, Any]]) -> str:
     keep = _summarise([f["keep"]["langs"] for f in files])
     delete = _summarise([f["delete"]["langs"] for f in files])
-    return f"{keep} (same)" if keep == delete else f"{keep} / {delete}"
+    return f"{keep} (same)" if _same_langs(keep, delete) else f"{keep} / {delete}"
+
+
+def _same_langs(keep: str, other: str) -> bool:
+    """Language summaries with the same languages in any track order count as the same.
+
+    A summary lists every distinct value, most common first ("cs eng / cs"); both sides
+    must match variant for variant.
+    """
+    def variants(summary: str) -> list[list[str]]:
+        return [sorted(part.split()) for part in summary.split(" / ")]
+    return variants(keep) == variants(other)
 
 
 def _row_id(row: dict[str, Any], index: int) -> str:
@@ -511,6 +604,14 @@ def _row_id(row: dict[str, Any], index: int) -> str:
     season = row["season_folder"]
     where = f"-s{season:02d}" if isinstance(season, int) else ""
     return f"row-{row['outcome']}-{slug}{where}-{index}"
+
+
+def _lost_hdr(files: list[dict[str, Any]]) -> str:
+    """"Dolby Vision" when the other copy is DV and the kept one has some other HDR, else "HDR"."""
+    for f in files:
+        if f["delete"]["hdr"].startswith("DV") and f["keep"]["hdr"] not in ("SDR", "") and not f["keep"]["hdr"].startswith("DV"):
+            return "Dolby Vision"
+    return "HDR"
 
 
 def _finish_row(row: dict[str, Any], index: int, history: dict[str, int]) -> dict[str, Any]:
@@ -540,13 +641,16 @@ def _finish_row(row: dict[str, Any], index: int, history: dict[str, int]) -> dic
     row["flags"] = sorted({flag for f in files for flag in f["flags"]}, key=list(RISK_TEXT).index)
     texts = RISK_TEXT if row["risk"] else NOTE_TEXT
     row["risk_text"] = [texts[f] for f in row["flags"]]
-    row["chips"] = [{"text": CHIP_TEXT[f].format(langs=row["lang_loss"] or "a language"), "title": texts[f]}
+    lost_hdr = _lost_hdr(files)
+    row["chips"] = [{"text": CHIP_TEXT[f].format(langs=row["lang_loss"] or "a language", hdr=lost_hdr), "title": texts[f]}
                     for f in row["flags"]]
     reasons = list(dict.fromkeys(f["reason"] for f in files if f["reason"]))
     row["reason"] = _one_reason(reasons)
     row["reason_text"] = _reason_text(row["reason_code"], files, row["reason"])
     row["exclude_ids"] = sorted({pid for f in files for pid in f["exclude_ids"]})
     row["exclude_numeric"] = any(not pid.startswith("tt") for pid in row["exclude_ids"])
+    # Excluding hides a pair for good; offer it only where the guard showed the copies differ.
+    row["excludable"] = row["outcome"] == "would_remove" or row["reason_code"] in EXCLUDABLE_REASONS
     row["blocked_runs"] = max((history.get(f["pair_key"], 0) for f in files), default=0)
     row["shared"] = _shared_facts(files, row)
     row["per_file_status"] = len({f["status_text"] for f in files}) > 1
@@ -556,6 +660,18 @@ def _finish_row(row: dict[str, Any], index: int, history: dict[str, int]) -> dic
     return row
 
 
+_SHORT_REASON = {
+    "season_folder": "different season folders",
+    "merge_audio": "merge audio first",
+    "pictures_differ": "pictures differ",
+    "picture_check_missing": "picture check didn't run",
+    "picture_check_unsure": "pictures unclear",
+    "different_title": "different titles",
+    "runtime_unknown": "runtime unknown",
+    "watched_copy": "watched copy",
+}
+
+
 def _short_reason(row: dict[str, Any], files: list[dict[str, Any]]) -> str:
     """Three words for the closed row; the sentence lives in the shared block."""
     if row["outcome"] == "failed":
@@ -563,13 +679,9 @@ def _short_reason(row: dict[str, Any], files: list[dict[str, Any]]) -> str:
     code = row["reason_code"]
     if code == "runtime":
         return _reason_text(code, files, row["reason"])
-    if code == "season_folder":
-        return "different season folders"
-    if code == "merge_audio":
-        return "merge audio first"
     if code == "guard":
-        return "guard: shared folder" if "co-located" in row["reason"] else "guard refused"
-    return ""
+        return "shared folder" if "co-located" in row["reason"] else "held by the guard"
+    return _SHORT_REASON.get(code, "")
 
 
 def _quality_diff(keep: str, other: str) -> str:
@@ -593,7 +705,7 @@ def _diff_text(row: dict[str, Any], files: list[dict[str, Any]]) -> str:
     keep_q = row["keep_quality"].split(" / ")[0]
     other_q = row["delete_quality"].split(" / ")[0]
     parts = [("quality", _quality_diff(keep_q, other_q))]
-    if row["keep_langs"] != row["delete_langs"]:
+    if not _same_langs(row["keep_langs"], row["delete_langs"]):
         parts.append(("audio", f"{row['keep_langs'].split(' / ')[0]} vs {row['delete_langs'].split(' / ')[0]}"))
     if row["reason_code"] == "runtime":
         pairs = [(f["keep"]["seconds"], f["delete"]["seconds"]) for f in files
@@ -650,10 +762,8 @@ def _reason_text(code: str, files: list[dict[str, Any]], reason: str) -> str:
                     f"{_minute_span([d for _, d in pairs])} min "
                     f"(×{ratio:.2f}, {_runtime_relation(ratio, gap)})")
         return "runtime differs"
-    if code == "season_folder":
-        return "different season folders"
-    if code == "merge_audio":
-        return "merge audio first"
+    if code in _SHORT_REASON:
+        return _SHORT_REASON[code]
     return reason[:80] if reason else ""
 
 

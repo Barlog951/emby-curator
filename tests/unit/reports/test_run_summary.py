@@ -67,7 +67,8 @@ def test_empty_run_verdict():
 def test_bar_has_a_text_alternative_and_zero_states_are_outlined():
     html = _render([_group(1, "success")])
 
-    assert 'aria-label="0 failed, 1 removed, 0 blocked by guard"' in html
+    # This file is worth a second look: the bar carves it out of "removed", counted once.
+    assert 'aria-label="0 failed, 1 removed, worth a second look, 0 removed, 0 blocked by guard"' in html
     assert 'class="run-swatch seg-failed zero"' in html
 
 

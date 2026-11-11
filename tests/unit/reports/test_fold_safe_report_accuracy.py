@@ -67,7 +67,7 @@ def test_guard_refusal_is_not_reported_as_pending():
     html = _render(_decision("skipped_unsafe"))
 
     assert "Blocked by the safety guard · 1 file" in html
-    assert 'pill-blocked">Blocked</span>' in html
+    assert 'data-outcome="blocked"' in html
     assert ">Pending<" not in html
 
 
@@ -76,8 +76,8 @@ def test_dry_run_still_reports_a_planned_delete_as_planned():
     html = _render(_decision("not_attempted"))
 
     assert "Would be removed · 1 file" in html
-    assert 'pill-would_remove">Would remove</span>' in html
-    assert 'pill-blocked">Blocked</span>' not in html
+    assert 'data-outcome="would_remove"' in html
+    assert 'data-outcome="blocked"' not in html
 
 
 def test_fold_safe_removal_overrides_the_guard_verdict():

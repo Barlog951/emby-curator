@@ -402,6 +402,8 @@ def _empty_verdict(excluded_groups: int) -> tuple[str, str]:
 def _dry_verdict(totals: dict[str, int], space: str) -> tuple[str, str]:
     would, blocked = totals["would_remove"], totals["would_block"]
     if not would and blocked:
+        if blocked == 1:
+            return "Nothing would be removed.", "The safety guard would block the only delete."
         return "Nothing would be removed.", f"The safety guard would block all {_plural(blocked, 'delete')}."
     headline = f"Dry run: {_plural(would, 'file')} would be removed, {space} would be freed."
     if not blocked:
@@ -447,8 +449,14 @@ def _reconcile_line(stats: dict[str, Any], totals: dict[str, int], dry: bool) ->
             f"{stats['percentage_saved']:.1f}% of the pair space {'would be' if dry else 'was'} freed.")
 
 
-def _bar_segments(totals: dict[str, int], dry: bool) -> list[dict[str, Any]]:
-    """Outcome bar segments; widths come from the counts (``flex-grow``), no script needed."""
+def _bar_segments(totals: dict[str, int], dry: bool, clusters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Outcome bar segments; widths come from the counts (``flex-grow``), no script needed.
+
+    The files worth a second look are carved out of the removed (or would-remove) segment,
+    so every file is counted once.
+    """
+    deleting = "would_remove" if dry else "removed"
+    check = sum(row["count"] for row in (clusters or {}).get("check", []) if row["outcome"] == deleting)
     if dry:
         spec = [("would_remove", "Would remove", "seg-would"), ("would_block", "Would be blocked", "seg-blocked")]
     else:
@@ -456,7 +464,15 @@ def _bar_segments(totals: dict[str, int], dry: bool) -> list[dict[str, Any]]:
                 ("blocked", "Blocked by guard", "seg-blocked")]
     if totals["other"]:
         spec.append(("other", "Other status", "seg-other"))
-    return [{"key": key, "label": label, "css": css, "count": totals[key]} for key, label, css in spec]
+    segments = [{"key": key, "label": label, "css": css, "count": totals[key]} for key, label, css in spec]
+    if check:
+        for seg in segments:
+            if seg["key"] == deleting:
+                seg["count"] -= check
+        index = next(i for i, seg in enumerate(segments) if seg["key"] == deleting)
+        label = "Check first" if dry else "Removed, worth a second look"
+        segments.insert(index, {"key": "check", "label": label, "css": "seg-check", "count": check})
+    return segments
 
 
 def _legend(segments: list[dict[str, Any]], clusters: dict[str, Any], excluded_groups: int,
@@ -466,21 +482,30 @@ def _legend(segments: list[dict[str, Any]], clusters: dict[str, Any], excluded_g
     if clusters["check"]:
         legend.append({"href": "#check", "label": "Check first" if dry else "Second look", "count": clusters["check_files"],
                        "css": "seg-check", "emphasis": True})
-    legend += [{"href": f"#{s['key']}", "label": s["label"], "count": s["count"], "css": s["css"], "emphasis": False}
-               for s in segments]
-    legend.append({"href": "#excluded", "label": "Excluded", "count": excluded_groups, "css": "seg-excluded",
+    totals = clusters["totals"]
+    legend += [{"href": f"#{s['key']}", "label": s["label"], "count": totals[s["key"]], "css": s["css"], "emphasis": False}
+               for s in segments if s["key"] != "check"]
+    legend.append({"href": "#excluded", "label": "Excluded groups", "count": excluded_groups, "css": "seg-excluded",
                    "emphasis": False})
     return legend
 
 
 def _decide_block(clusters: dict[str, Any], dry: bool, run: dict[str, Any]) -> list[dict[str, str]]:
-    """One copy-paste value per next action: exclude, run for real, read the twin."""
+    """One copy-paste value per next action: exclude, run for real, read the twin.
+
+    Excluding hides a pair for good, so only pairs the guard showed to differ are offered;
+    unproven pairs are counted with the advice to run again instead.
+    """
     blocked = clusters["sections"]["blocked"] + clusters["sections"]["would_block"]
-    ids = sorted({pid for row in blocked for pid in row["exclude_ids"]})
+    ids = sorted({pid for row in blocked if row["excludable"] for pid in row["exclude_ids"]})
+    unproven = sum(row["count"] for row in blocked if not row["excludable"])
     actions = []
     if ids:
-        actions.append({"label": f"Keep every guarded pair for good ({_plural(len(ids), 'id')})",
+        actions.append({"label": f"Stop pairing copies shown to differ, after checking each ({_plural(len(ids), 'id')})",
                         "command": "--exclude-ids " + ",".join(ids)})
+    if unproven:
+        actions.append({"label": f"Not for excluding ({_plural(unproven, 'pair')}): each row's next step says "
+                                 "what to do instead", "command": ""})
     if dry and clusters["totals"]["would_remove"]:
         argv = run.get("argv") or "the same command"
         actions.append({"label": "Run for real", "command": f"{argv} --doit"})
@@ -503,7 +528,8 @@ def _warning(dry: bool, clusters: dict[str, Any]) -> str:
         return ""
     warning = "Files were deleted and cannot be restored."
     if clusters["check"]:
-        warning += " Verify the kept copies in the second-look rows on disk now."
+        files = clusters["check_files"]
+        warning += f" {_plural(files, 'removal')} had a warning sign: check the kept copy in Emby when you can."
     return warning
 
 
@@ -515,22 +541,14 @@ def _language_line(template_data: dict[str, Any]) -> str:
     return f"Language priority {', '.join(lang)} changed {_plural(decisions, 'decision')}."
 
 
-def _stats_tiles(stats: dict[str, Any], totals: dict[str, int], dry: bool, space: str) -> list[dict[str, str]]:
-    """The statistics row under the legend: counts, sizes and the space saved."""
-    tiles = [
+def _stats_tiles(stats: dict[str, Any]) -> list[dict[str, str]]:
+    """The statistics row under the legend: only facts the headline and the legend don't give."""
+    return [
         {"label": "Duplicate groups", "value": str(stats["total_groups"])},
         {"label": "Copies found", "value": str(stats["total_items_to_delete"])},
-        {"label": "Would remove" if dry else "Removed", "value": str(totals["would_remove" if dry else "removed"])},
-        {"label": "Would block" if dry else "Blocked by guard", "value": str(totals["would_block" if dry else "blocked"])},
-    ]
-    if not dry:
-        tiles.append({"label": "Failed", "value": str(totals["failed"])})
-    tiles += [
-        {"label": "Would be freed" if dry else "Freed", "value": space},
         {"label": "Keepers on disk", "value": stats["formatted_size_to_keep"]},
         {"label": "Space saved", "value": f"{stats['percentage_saved']:.1f}%"},
     ]
-    return tiles
 
 
 def _is_dry_run(metadata: dict[str, Any], stats: dict[str, Any]) -> bool:
@@ -557,10 +575,10 @@ def _build_run_summary(stats: dict[str, Any], clusters: dict[str, Any], template
     space = _fmt_size(stats["space_saved"])
     excluded_groups = template_data.get("excluded_groups_count", 0)
     headline, subline, reconcile = _verdict(stats, clusters, dry, space, excluded_groups)
-    segments = _bar_segments(totals, dry)
+    segments = _bar_segments(totals, dry, clusters)
     return {
         "sizes_text": {name: _fmt_size(size) for name, size in clusters["sizes"].items()},
-        "stats_tiles": _stats_tiles(stats, totals, dry, space),
+        "stats_tiles": _stats_tiles(stats),
         "dry": dry, "headline": headline, "subline": subline, "reconcile": reconcile,
         "warning": _warning(dry, clusters),
         "risky": len(clusters["check"]), "risky_files": clusters["check_files"], "segments": segments,

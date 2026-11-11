@@ -32,18 +32,18 @@
 
 {% macro cell(f, side, role, name, r) -%}
 <td class="pf-file{% if role == 'other' %} pf-second{% endif %}" data-l="{{ 'Kept' if role == 'keep' else ('Removed' if name in deleting else 'Other') }}"><span class="pf-name" title="{{ side.path }}">{{ side.short }}</span>{% if role == "other" and not f.episode %}{% if f.status_text and r.per_file_status %}<span class="pf-reason">{{ f.status_text }}</span>{% endif %}{% if r.per_file_reason and f.reason %}<span class="pf-reason">{{ f.reason }}</span>{% endif %}{% endif %}{% for k, v in side.vary.items() %}<span class="pf-vary vary-{{ k }}" title="{{ k }} differs from the rest of the row">{{ v }}</span>{% endfor %}{% if role == "other" and side.image_class and side.image_class != f.keep.image_class %}<span class="thumb thumb-xs poster {{ side.image_class }}" role="img" aria-label="Poster of the other copy differs from the kept one"></span>{% endif %}</td>
-<td class="pf-num fact-runtime" data-l="Runtime">{{ side.runtime or "—" }}</td>
+<td class="pf-num fact-runtime{% if role == 'other' and side.runtime == f.keep.runtime %} same-as-kept{% endif %}" data-l="Runtime">{{ side.runtime or "—" }}</td>
 <td class="pf-num fact-size" data-l="Size">{{ side.size_text }}</td>
-<td class="pf-num fact-score" data-l="Score"><span class="score"{% if side.score_summary %} title="{{ side.score_summary }}"{% endif %}>{{ side.score_text or "—" }}</span></td>
+<td class="pf-num fact-score" data-l="Score"><span class="score"{% if side.score_summary %} title="{{ side.score_summary }}"{% endif %}>{{ side.score_text or "—" }}</span>{% if side.score_note %}<span class="score-note">{{ side.score_note }}</span>{% endif %}</td>
 {%- endmacro %}
 
-{% macro row(r, name) -%}
+{% macro row(r, name, show_pill=false) -%}
 <details class="crow{% if r.risk %} risky{% endif %}" id="{{ r.id }}" data-outcome="{{ name }}" data-reason="{{ r.reason_code }}" data-flags="{{ r.flags|join(' ') }}"{% if r.risk %} open{% endif %}>
     <summary>
         <span class="crow-line1">
             {% if r.image_class %}<span class="thumb poster {{ r.image_class }}" aria-hidden="true"></span>{% else %}<span class="thumb" aria-hidden="true"></span>{% endif %}
             <span class="crow-title"><strong>{{ r.name }}</strong><span class="crow-sub">{{ r.sub }} · {{ r.size_text }}{% if r.blocked_runs > 1 %} · blocked in {{ r.blocked_runs }} runs{% endif %}</span></span>
-            <span class="pill pill-{{ name }}">{{ pill_text[name] }}</span>
+            {% if show_pill %}<span class="pill pill-{{ name }}">{{ pill_text[name] }}</span>{% endif %}
         </span>
         <span class="crow-line2">{% for p in r.diff_parts %}<span class="fact-{{ p.kind }}">{{ p.text }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</span>
         {% if r.chips or r.file_only %}
@@ -68,7 +68,7 @@
                 {% if r.is_episode %}<td class="pf-ep" data-l="Episode"><strong>{{ f.episode or f.title }}</strong>{% if r.per_file_status %}<span class="pf-reason">{{ f.status_text }}</span>{% endif %}{% if r.per_file_reason and f.reason %}<span class="pf-reason">{{ f.reason }}</span>{% endif %}</td>{% endif %}
                 {{ cell(f, f.keep, "keep", name, r) }}
                 {{ cell(f, f.delete, "other", name, r) }}
-                <td class="pf-links" data-l="Emby"><a class="url-link" href="{{ f.keep.url }}" target="_blank" rel="noopener" aria-label="Open the kept copy of {{ f.episode or f.title }} in Emby">kept</a>{% if name != "removed" %} · <a class="url-link" href="{{ f.delete.url }}" target="_blank" rel="noopener" aria-label="Open the other copy of {{ f.episode or f.title }} in Emby">other</a>{% endif %}</td>
+                <td class="pf-links" data-l="Emby"><a class="url-link" href="{{ f.keep.url }}" target="_blank" rel="noopener" aria-label="Open the kept copy of {{ f.episode or f.title }} in Emby">Kept copy</a>{% if name != "removed" %} <a class="url-link" href="{{ f.delete.url }}" target="_blank" rel="noopener" aria-label="Open the other copy of {{ f.episode or f.title }} in Emby">Other copy</a>{% endif %}</td>
             </tr>
             {% endfor %}
             </tbody>
@@ -76,8 +76,8 @@
         </div>
         {% set notes = r.files|map(attribute="keep_note")|reject("equalto", "")|unique|list %}
         {% for note in notes %}<p class="cfile-note">Why this copy: {{ note }}.</p>{% endfor %}
-        {% if r.exclude_ids and name in ["would_remove", "blocked", "would_block"] %}
-        <p class="exclude-hint">{% if name == "would_remove" %}Don't want this removed? Add to <code>--exclude-ids</code> before --doit:{% else %}Keep both copies for good? Add to <code>--exclude-ids</code>:{% endif %} {{ ids(r.exclude_ids) }}{% if r.exclude_numeric %} <span class="muted">(a bare number matches TMDB and TVDB alike; this title has no IMDb id)</span>{% endif %}</p>
+        {% if r.exclude_ids and r.excludable and name in ["would_remove", "blocked", "would_block"] %}
+        <p class="exclude-hint">{% if name == "would_remove" %}Don't want this removed? Add to <code>--exclude-ids</code> before --doit:{% else %}Checked and they really differ? Add to <code>--exclude-ids</code> to stop pairing them:{% endif %} {{ ids(r.exclude_ids) }}{% if r.exclude_numeric %} <span class="muted">(a bare number matches TMDB and TVDB alike; this title has no IMDb id)</span>{% endif %}</p>
         {% endif %}
     </div>
 </details>
@@ -114,7 +114,7 @@
     <details class="run-decide">
         <summary>Next steps: copy-paste values</summary>
         <dl>
-            {% for a in run_summary.decide %}<div><dt>{{ a.label }}</dt><dd><code>{{ a.command }}</code></dd></div>{% endfor %}
+            {% for a in run_summary.decide %}<div><dt>{{ a.label }}</dt>{% if a.command %}<dd><code>{{ a.command }}</code></dd>{% endif %}</div>{% endfor %}
         </dl>
     </details>
     {% endif %}
@@ -127,18 +127,17 @@
 {% if clusters.check %}
 <div class="out-section out-check" id="check" data-outcome="check">
     <h2 class="out-title"><span class="run-swatch seg-check"></span>{{ "Check first" if run_summary.dry else "Removed, worth a second look" }} · {{ clusters.check_files }} file{{ "" if clusters.check_files == 1 else "s" }} · {{ clusters.check|length }} row{{ "" if clusters.check|length == 1 else "s" }}</h2>
-    <p class="out-lead">{% if run_summary.dry %}One signal says the wrong copy may go. Open the row and verify on disk before --doit.{% else %}Already removed. One signal says the wrong copy may have gone: open the row and verify the kept copy on disk.{% endif %}</p>
-    {% for r in clusters.check %}{{ row(r, r.outcome) }}{% endfor %}
+    <p class="out-lead">{% if run_summary.dry %}One signal says the wrong copy may go. Open the row and verify on disk before --doit.{% else %}Already removed. Each row has one warning sign: open it to see the kept copy, then check that copy in Emby.{% endif %}</p>
+    {% for r in clusters.check %}{{ row(r, r.outcome, true) }}{% endfor %}
 </div>
 {% endif %}
 {% for name in ["other", "failed", "removed", "would_remove", "blocked", "would_block"] %}
 {% set rows = clusters.sections[name]|rejectattr("risk")|list %}
 {% set risky_here = clusters.sections[name]|selectattr("risk")|list|length %}
-{% if clusters.totals[name] or (name == "failed" and not run_summary.dry) %}
+{% if clusters.totals[name] %}
 <div class="out-section" id="{{ name }}" data-outcome="{{ name }}">
     <h2 class="out-title"><span class="run-swatch {{ out_css[name] }}{% if not clusters.totals[name] %} zero{% endif %}"></span>{{ out_titles[name] }} · {{ clusters.totals[name] }} file{{ "" if clusters.totals[name] == 1 else "s" }}{% if clusters.sizes[name] and name in deleting %} · {{ run_summary.sizes_text[name] }}{% endif %}{% if risky_here %} · {{ risky_here }} row{{ "" if risky_here == 1 else "s" }} {{ "in Check first" if run_summary.dry else "above, worth a second look" }}{% endif %}</h2>
-    {% if not clusters.totals[name] %}<p class="out-empty">Nothing failed.</p>{% endif %}
-    {% if name in ["blocked", "would_block"] and rows %}<p class="out-lead">Both copies stay. Protective, not an error: fix the files, or add the pair ids to --exclude-ids to stop seeing a pair.</p>{% endif %}
+    {% if name in ["blocked", "would_block"] and rows %}<p class="out-lead">Both copies stay. Each row says what to do next.</p>{% endif %}
     {% for r in rows %}{{ row(r, name) }}{% endfor %}
 </div>
 {% endif %}
@@ -147,7 +146,7 @@
 {# One line per duplicate group an excluded ID actually skipped this run, folded; ids
    that matched nothing are counted, not listed one by one. #}
 <div class="out-section" id="excluded" data-outcome="excluded">
-    <h2 class="out-title"><span class="run-swatch seg-excluded{% if not excluded_groups_count %} zero{% endif %}"></span>Skipped by --exclude-ids · {{ excluded_groups_count }} group{{ "" if excluded_groups_count == 1 else "s" }}</h2>
+    <h2 class="out-title"><span class="run-swatch seg-excluded{% if not excluded_groups_count %} zero{% endif %}"></span>Skipped because you excluded them · {{ excluded_groups_count }} group{{ "" if excluded_groups_count == 1 else "s" }}</h2>
     {% if not has_excluded_ids %}<p class="out-empty">No ids excluded.</p>{% endif %}
     {% if excluded_titles %}
     <details class="excluded-groups">

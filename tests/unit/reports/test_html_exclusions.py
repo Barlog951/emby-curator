@@ -74,7 +74,7 @@ def test_excluded_section_shows_a_count_and_folds_the_ids_away():
     html = format_html_report(BASE, _decision(), _metadata(MANY_IDS))
     section = _section(html)
 
-    assert "Skipped by --exclude-ids · 0 groups" in section
+    assert "Skipped because you excluded them · 0 groups" in section
     assert "all 52 configured ids" in section
     assert '<details class="exclusion-ids">' in section
     # Every ID is still in the report, but inside the collapsed <details>, not the headline.
@@ -88,8 +88,8 @@ def test_excluded_section_counts_groups_skipped_this_run():
     titles = {"tt00000001": {"title": "Call the Midwife", "year": 2012, "image_url": ""}}
     html = format_html_report(BASE, _decision(), _metadata(MANY_IDS, titles))
 
-    assert "Skipped by --exclude-ids · 1 group" in _section(html)
-    assert 'Excluded <strong>1</strong></a>' in html
+    assert "Skipped because you excluded them · 1 group" in _section(html)
+    assert 'Excluded groups <strong>1</strong></a>' in html
 
 
 def test_excluded_section_singular_wording_for_one_id():
@@ -120,7 +120,7 @@ def test_no_excluded_section_when_no_group_was_skipped():
     html = format_html_report(BASE, _decision(), _metadata(MANY_IDS))
 
     assert '<details class="excluded-groups">' not in html
-    assert "Skipped by --exclude-ids · 0 groups" in html
+    assert "Skipped because you excluded them · 0 groups" in html
 
 
 def test_no_banner_without_exclusions():
