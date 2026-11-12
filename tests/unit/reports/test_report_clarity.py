@@ -59,9 +59,12 @@ def test_hdr10_is_not_named_twice_and_dolby_vision_loss_is_named():
     assert "score 0.0 · Dolby Vision profile 5, scored down" in html, "the near-zero score says why"
 
 
-def test_warning_line_asks_for_a_check_in_emby_not_on_disk_now():
+def test_warning_line_states_the_loss_once_and_leaves_the_count_to_the_legend():
     html = _render([_pair("success", keep={"rating": 10.0})])
-    assert "1 removal had a warning sign: check the kept copy in Emby when you can." in html
+    assert "Files were deleted and cannot be restored." in html
+    assert "had a warning sign" not in html, "the legend already counts the second-look files"
+    assert "of them <strong>1</strong> worth a second look" in html
+    assert '<p class="run-line">Real run' not in html, "the badge under it already names the mode"
     assert "on disk now" not in html
 
 
@@ -84,12 +87,15 @@ def test_unproven_rows_carry_no_exclude_hint():
     assert 'class="exclude-hint"' not in html
 
 
-def test_bar_counts_second_look_files_once_and_pills_show_only_in_the_mixed_section():
+def test_bar_counts_second_look_files_once_and_a_pill_never_repeats_its_heading():
     html = _render([_pair("success", n=1, keep={"rating": 10.0}), _pair("success", n=2)])
     assert 'class="run-seg seg-check" style="flex-grow: 1"' in html
     assert 'class="run-seg seg-removed" style="flex-grow: 1"' in html, "2 removed = 1 second look + 1 plain"
     assert 'href="#removed"><span class="run-swatch seg-removed"></span>Removed <strong>2</strong>' in html
-    assert html.count('class="pill pill-removed"') == 1, "only the second-look row carries the pill"
+    assert 'class="pill pill-removed"' not in html, "the section heading already says Removed"
+    assert "row above" not in html, "the legend already counts the second-look rows"
+    dry = _render([_pair("not_attempted", n=1, keep={"rating": 10.0})])
+    assert dry.count('class="pill pill-would_remove"') == 1, "Check first does not name the outcome, the pill does"
 
 
 def test_kept_copy_link_is_a_labelled_target_and_equal_runtimes_are_marked():
@@ -232,3 +238,19 @@ def test_identical_sides_are_described_once():
     labels = [line["label"] for line in row["shared"]]
     assert labels[0] == "Both"
     assert "Kept" not in labels
+
+
+def test_header_time_is_local_like_the_cleanup_report(monkeypatch):
+    import time
+
+    from emby_dedupe.reports.html import _human_time
+
+    monkeypatch.setenv("TZ", "Europe/Bratislava")
+    time.tzset()
+    try:
+        assert _human_time("2026-11-12T08:36:57+00:00") == "12 Nov 2026 09:36"
+        assert _human_time("2026-07-01T08:05:00+00:00") == "1 Jul 2026 10:05", "summer time, no leading zero"
+        assert _human_time("not a stamp") == "not a stamp"
+    finally:
+        monkeypatch.undo()
+        time.tzset()

@@ -238,7 +238,7 @@ def test_risky_rows_open_first_in_their_own_section():
     assert check < html.index('id="removed"')
     assert 'class="crow risky" id="row-removed-show-s01-1" data-outcome="removed" data-reason="" data-flags="score_inversion" open>' in html
     assert "Removed · 2 files" in html
-    assert "1 row above, worth a second look" in html
+    assert "Removed · 2 files</h2>" in html
     assert "Removed, worth a second look · 1 file</h2>" in html
     assert "Already removed." in html
     dry = _render([_pair("not_attempted", n=1, keep={"rating": 10.0})])

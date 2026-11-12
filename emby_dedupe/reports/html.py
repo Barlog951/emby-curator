@@ -529,11 +529,7 @@ def _verdict(stats: dict[str, Any], clusters: dict[str, Any], dry: bool, space: 
 def _warning(dry: bool, clusters: dict[str, Any]) -> str:
     if dry or not clusters["deleted_files"]:
         return ""
-    warning = "Files were deleted and cannot be restored."
-    if clusters["check"]:
-        files = clusters["check_files"]
-        warning += f" {_plural(files, 'removal')} had a warning sign: check the kept copy in Emby when you can."
-    return warning
+    return "Files were deleted and cannot be restored."
 
 
 def _language_line(template_data: dict[str, Any]) -> str:
@@ -620,13 +616,17 @@ def _run_metadata(metadata: dict[str, Any], dry: bool) -> dict[str, Any]:
 
 
 def _human_time(iso: str) -> str:
-    """"11 Oct 2026 16:49" from an RFC 3339 stamp; the stamp itself when it does not parse."""
+    """"11 Oct 2026 16:49" in local time from an RFC 3339 stamp; the stamp itself when it does not parse.
+
+    The footer keeps the UTC stamp; the header shows the reader's clock, as the cleanup report does.
+    """
     from datetime import datetime
 
     try:
-        return datetime.fromisoformat(iso).strftime("%-d %b %Y %H:%M")
+        when = datetime.fromisoformat(iso).astimezone()
     except ValueError:
         return iso
+    return f"{when.day} {when:%b %Y %H:%M}"
 
 
 def _json_payload(template_data: dict[str, Any], stats: dict[str, Any]) -> dict[str, Any]:

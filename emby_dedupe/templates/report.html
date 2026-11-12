@@ -86,7 +86,7 @@
 
 <header class="masthead">
     <p class="eyebrow">Emby Curator · dedupe report</p>
-    <p class="run-line">{{ run.mode_short }} · {{ run.generated_human }}{% if run.libraries %} · librar{{ "y" if run.libraries|length == 1 else "ies" }} {{ run.libraries|join(", ") }}{% endif %}</p>
+    <p class="run-line">{{ run.generated_human }}{% if run.libraries %} · librar{{ "y" if run.libraries|length == 1 else "ies" }} {{ run.libraries|join(", ") }}{% endif %}</p>
 </header>
 
 <main>
@@ -129,15 +129,14 @@
 <div class="out-section out-check" id="check" data-outcome="check">
     <h2 class="out-title"><span class="run-swatch seg-check"></span>{{ "Check first" if run_summary.dry else "Removed, worth a second look" }} · {{ clusters.check_files }} file{{ "" if clusters.check_files == 1 else "s" }}</h2>
     <p class="out-lead">{% if run_summary.dry %}One signal says the wrong copy may go. Open the row and verify on disk before --doit.{% else %}Already removed. Each row has one warning sign: open it to see the kept copy, then check that copy in Emby.{% endif %}</p>
-    {% for r in clusters.check %}{{ row(r, r.outcome, true) }}{% endfor %}
+    {% for r in clusters.check %}{{ row(r, r.outcome, r.outcome != "removed") }}{% endfor %}
 </div>
 {% endif %}
 {% for name in ["other", "failed", "removed", "would_remove", "blocked", "would_block"] %}
 {% set rows = clusters.sections[name]|rejectattr("risk")|list %}
-{% set risky_here = clusters.sections[name]|selectattr("risk")|list|length %}
 {% if clusters.totals[name] %}
 <div class="out-section" id="{{ name }}" data-outcome="{{ name }}">
-    <h2 class="out-title"><span class="run-swatch {{ out_css[name] }}{% if not clusters.totals[name] %} zero{% endif %}"></span>{{ out_titles[name] }} · {{ clusters.totals[name] }} file{{ "" if clusters.totals[name] == 1 else "s" }}{% if clusters.sizes[name] and name == "failed" %} · {{ run_summary.sizes_text[name] }}{% endif %}{% if risky_here %} · {{ risky_here }} row{{ "" if risky_here == 1 else "s" }} {{ "in Check first" if run_summary.dry else "above, worth a second look" }}{% endif %}</h2>
+    <h2 class="out-title"><span class="run-swatch {{ out_css[name] }}{% if not clusters.totals[name] %} zero{% endif %}"></span>{{ out_titles[name] }} · {{ clusters.totals[name] }} file{{ "" if clusters.totals[name] == 1 else "s" }}{% if clusters.sizes[name] and name == "failed" %} · {{ run_summary.sizes_text[name] }}{% endif %}</h2>
     {% if name in ["blocked", "would_block"] and rows %}<p class="out-lead">Both copies stay. Each row says what to do next.</p>{% endif %}
     {% for r in rows %}{{ row(r, name) }}{% endfor %}
 </div>

@@ -90,7 +90,7 @@ def test_fold_safe_removal_overrides_the_guard_verdict():
     assert decisions[0]["delete"][0]["deletion_result"]["status"] == "fold_safe_removed"
     html = _render(decisions)
     assert "1 file only (SSH)" in html
-    assert 'pill-removed">Removed</span>' in html
+    assert 'data-outcome="removed"' in html
     assert 'pill-blocked">Blocked</span>' not in html
 
 

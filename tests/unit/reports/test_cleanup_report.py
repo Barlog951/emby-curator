@@ -650,6 +650,7 @@ class TestGenerateCleanupHtmlReport:
             api_key="KEY",
         )
         assert "Dry run · nothing deleted" in html
+        assert html.count("Dry run") == 1, "only the badge names the mode; masthead and footer do not repeat it"
         assert 'add its id to <code class="flag">--exclude-ids</code>' in html  # markup, not escaped text
         assert "1 film would be removed, 3.73 GiB to free." in html
         assert "Dead Movie" in html
