@@ -137,7 +137,7 @@ def calculate_report_statistics(decisions: list[dict[str, Any]]) -> dict[str, An
 
 
 def format_size(size_bytes: int) -> str:
-    """Format a size in bytes to a human-readable string (e.g. "4.20 GB").
+    """Format a size in bytes to a human-readable string (e.g. "4.20 GiB").
 
     Thin wrapper over the shared ``utils.formatting.format_file_size`` (zero/None → "0 B").
     """

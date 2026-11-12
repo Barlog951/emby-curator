@@ -221,6 +221,21 @@ def _format_title(item: dict) -> str:
     return title
 
 
+def _provider_link(item: dict, provider_id: str) -> str:
+    """The public page of the provider that owns ``provider_id`` on this item, or ''.
+
+    A bare number is a TMDb or a TVDB id; the item's own ProviderIds tell which. A TMDb id
+    has a public page only for a film or a show; an episode or an untyped item gets none.
+    """
+    owners = {str(k).lower() for k, v in (item.get("ProviderIds") or {}).items() if str(v) == str(provider_id)}
+    if "imdb" in owners:
+        return f"https://www.imdb.com/title/{provider_id}"
+    kind = {"Movie": "movie", "Series": "tv"}.get(item.get("Type", ""))
+    if "tmdb" in owners and kind:
+        return f"https://www.themoviedb.org/{kind}/{provider_id}"
+    return ""
+
+
 def _extract_excluded_item_info(item, base_url) -> dict:
     """
     Extract comprehensive metadata for an excluded item (for reporting).
@@ -1250,6 +1265,7 @@ def process_duplicate_groups(
                 # Extract and store excluded item info for reporting
                 excluded_groups_count += 1
                 excluded_info = _extract_excluded_item_info(excluded_item, base_url)
+                excluded_info["link"] = _provider_link(excluded_item, excluded_provider_id or "")
                 excluded_titles[excluded_provider_id] = excluded_info
 
                 logger.debug(f"Skipping group with excluded provider ID {excluded_provider_id}: {excluded_info['title']}. Items: {[i.get('Id') for i in items_details]}")

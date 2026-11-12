@@ -6,11 +6,13 @@ import it without an ``api -> reports`` import cycle.
 
 from __future__ import annotations
 
-_SIZE_UNITS = ("B", "KB", "MB", "GB", "TB", "PB")
+_SIZE_UNITS = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
 
 
 def format_file_size(size_bytes: int | None, *, zero_label: str = "0 B") -> str:
-    """Format a byte count as a human-readable string (e.g. ``"4.20 GB"``).
+    """Format a byte count as a human-readable string (e.g. ``"4.20 GiB"``).
+
+    Units are binary (1 GiB = 1024³ bytes) and labelled as such.
 
     The single file-size formatter for the whole package — previously three
     divergent copies rendered the same size differently ("512 B" vs "512.00 B" vs

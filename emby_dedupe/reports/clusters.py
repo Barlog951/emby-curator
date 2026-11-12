@@ -329,38 +329,107 @@ def _fact_line(label: str, parts: list[tuple[str, str]]) -> dict[str, Any]:
             "parts": [{"kind": kind, "text": text} for kind, text in parts]}
 
 
-def _side_constants(files: list[dict[str, Any]], role: str) -> list[tuple[str, str]]:
+def _mark_odd_files(files: list[dict[str, Any]], role: str, field: str, name: str, common: str) -> None:
+    """Give each file whose value differs from the row's its own value in ``vary``."""
+    for f in files:
+        if f[role][field] != common:
+            f[role]["vary"][name] = f[role][field] or "none"
+
+
+def _side_constants(files: list[dict[str, Any]], role: str, skip: tuple[str, ...] = ()) -> list[tuple[str, str]]:
     """Facts shared by every file on one side; a file that differs gets them in ``vary``."""
     constant: list[tuple[str, str]] = []
     for field, name in _SHARED_FIELDS:
-        counts = Counter(f[role][field] for f in files)
-        common, n = counts.most_common(1)[0]
+        if field in skip:
+            continue
+        common, n = Counter(f[role][field] for f in files).most_common(1)[0]
         # The majority value is the row's fact; a file that differs carries its own.
         if common:
             constant.append((_FACT_KIND[name], f"added {common}" if field == "added" else common))
-        if n == len(files):
-            continue
-        for f in files:
-            if f[role][field] != common:
-                f[role]["vary"][name] = f[role][field] or "none"
+        if n != len(files):
+            _mark_odd_files(files, role, field, name, common)
     return constant
 
 
-def _shared_facts(files: list[dict[str, Any]], row: dict[str, Any]) -> list[dict[str, str]]:
-    """Fold constant facts out of the files; mark the files whose value differs."""
-    dirs = {role: {f[role]["dir"] for f in files} for role in ("keep", "delete")}
-    one_folder = len(dirs["keep"]) == 1 and dirs["keep"] == dirs["delete"]
+def _pair_runtimes_match(f: dict[str, Any]) -> bool:
+    """The pair's runtimes are the same cut by the flag rule (within 5 s or 2%)."""
+    k, d = f["keep"]["seconds"], f["delete"]["seconds"]
+    if not k or not d:
+        return f["keep"]["runtime"] == f["delete"]["runtime"]
+    return abs(k - d) <= max(5, 0.02 * max(k, d))
+
+
+def _common_facts(files: list[dict[str, Any]], folder: str, added: str) -> str:
+    """Facts true of every file on both sides, said once under the pairs."""
+    parts = []
+    if all(_pair_runtimes_match(f) for f in files):
+        runtimes = {f[role]["runtime"] for f in files for role in ("keep", "delete")}
+        parts.append(f"runtime {next(iter(runtimes))} on every file" if len(runtimes) == 1
+                     else "runtimes match in every pair")
+    if added:
+        parts.append(f"all added {added}")
+    if folder:
+        parts.append(f"folder {folder}")
+    return " · ".join(parts)
+
+
+def _side_lines(files: list[dict[str, Any]], row: dict[str, Any], dirs: dict[str, set[str]], one_folder: bool,
+                added: str) -> list[dict[str, Any]]:
+    """One line per side with its constant facts; one "Both" line when the sides read the same."""
     lines: list[dict[str, Any]] = []
-    if one_folder:
-        lines.append(_fact_line("Folder", [("path", next(iter(dirs["keep"])) or "/")]))
     other_label = "Removed" if row["outcome"] in DELETING_OUTCOMES else "Other"
     for role, label in (("keep", "Kept"), ("delete", other_label)):
-        constant = _side_constants(files, role)
+        constant = _side_constants(files, role, skip=("added",) if added else ())
         if not one_folder and len(dirs[role]) == 1:
             constant.append(("path", f"in {next(iter(dirs[role])) or '/'}"))
         if constant:
             lines.append(_fact_line(label, constant))
+    if len(lines) == 2 and lines[0]["text"] == lines[1]["text"]:
+        return [{**lines[0], "label": "Both"}]
+    return lines
+
+
+def _shared_facts(files: list[dict[str, Any]], row: dict[str, Any]) -> list[dict[str, str]]:
+    """Each side's constant facts once; what every file shares goes to ``row["common"]``."""
+    dirs = {role: {f[role]["dir"] for f in files} for role in ("keep", "delete")}
+    one_folder = len(dirs["keep"]) == 1 and dirs["keep"] == dirs["delete"]
+    dates = {f[role]["added"] for f in files for role in ("keep", "delete")}
+    added = next(iter(dates)) if len(dates) == 1 else ""
+    lines = _side_lines(files, row, dirs, one_folder, added)
+    row["common"] = _common_facts(files, (next(iter(dirs["keep"])) or "/") if one_folder else "", added)
     return lines + _guard_lines(row, files)
+
+
+# What a removed file's size means, by the file's own outcome.
+_SIZE_WORD = {"removed": "freed", "would_remove": "to free", "failed": "not freed"}
+_VARY_PREFIX = {"audio": "audio ", "added": "added "}
+
+
+def _file_extras(row: dict[str, Any], f: dict[str, Any], show_scores: bool) -> tuple[list[str], list[str]]:
+    """What the kept and the other file of one pair need beyond their name and size."""
+    keep, other = f["keep"], f["delete"]
+    keep_extra = [_VARY_PREFIX.get(k, "") + v for k, v in keep["vary"].items()]
+    other_extra = [_VARY_PREFIX.get(k, "") + v for k, v in other["vary"].items()]
+    if not _pair_runtimes_match(f):
+        other_extra.append(f"runtime {other['runtime'] or 'unknown'} (kept {keep['runtime'] or 'unknown'})")
+    if show_scores or keep["score_note"] or other["score_note"]:
+        keep_extra += [f"score {keep['score_text'] or '?'}", keep["score_note"]]
+        other_extra += [f"score {other['score_text'] or '?'}", other["score_note"]]
+    if row["per_file_status"]:
+        other_extra.append(f["status_text"])
+    if row["per_file_reason"]:
+        other_extra.append(f["reason"])
+    return keep_extra, other_extra
+
+
+def _pair_lines(row: dict[str, Any]) -> None:
+    """Per file: only what differs from the rest of the row or within its own pair."""
+    show_scores = "score_inversion" in row["flags"]
+    for f in row["files"]:
+        keep_extra, other_extra = _file_extras(row, f, show_scores)
+        f["keep_extra"] = " · ".join(part for part in keep_extra if part)
+        f["other_extra"] = " · ".join(part for part in other_extra if part)
+        f["size_word"] = _SIZE_WORD.get(f["outcome"], "held")
 
 
 def _guard_lines(row: dict[str, Any], files: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -383,7 +452,9 @@ def _guard_lines(row: dict[str, Any], files: list[dict[str, Any]]) -> list[dict[
 def _next_step(row: dict[str, Any]) -> str:
     """The one thing to do about a held pair, by guard rule."""
     if row["reason_code"] == "guard" and "co-located" in row["reason"]:
-        return "move one copy into its own folder, then run again"
+        return "Move one copy into its own folder, then run again."
+    if row["reason_code"] == "runtime" and row.get("frame_code") in _UNPROVEN:
+        return NEXT_STEP[row["frame_code"]]
     return NEXT_STEP.get(row["reason_code"], "")
 
 
@@ -400,16 +471,32 @@ _GUARD_SENTENCE = {
 # What the reader can do about a held pair. Excluding is offered only where the copies
 # are shown to differ; an unproven pair is re-checked, never hidden for good.
 NEXT_STEP = {
-    "runtime": "compare both in Emby; a different cut or episode: exclude the pair; mislabelled: fix the numbering",
-    "pictures_differ": "compare both in Emby; mislabelled: fix the numbering; really different: exclude the pair",
-    "picture_check_missing": "run again with the frame check; don't exclude yet",
-    "picture_check_unsure": "compare both in Emby before deciding; don't exclude yet",
-    "season_folder": "move the copy into the right season folder, then run again",
-    "merge_audio": "check the audio language, tag or merge it, then run again",
-    "different_title": "fix the wrong id in Emby, or exclude the pair",
-    "runtime_unknown": "refresh both items' metadata in Emby, then run again",
-    "watched_copy": "keep both, or move the watch history to the kept copy first",
+    "runtime": "Compare both in Emby. Mislabelled: fix the numbering. A different cut or episode: exclude the pair.",
+    "pictures_differ": "Compare both in Emby. Mislabelled: fix the numbering. Really different: exclude the pair.",
+    "picture_check_missing": "Run again with the frame check. Don't exclude yet.",
+    "picture_check_unsure": "Compare both in Emby before deciding. Don't exclude yet.",
+    "season_folder": "Move the copy into the right season folder, then run again.",
+    "merge_audio": "Check the audio language, tag or merge it, then run again.",
+    "different_title": "Fix the wrong id in Emby, or exclude the pair.",
+    "runtime_unknown": "Refresh both items' metadata in Emby, then run again.",
+    "watched_copy": "Keep both, or move the watch history to the kept copy first.",
 }
+
+# The frame check's verdict as embedded in a guard message, weakest first: one unproven
+# file makes the whole row unproven.
+_FRAME_VERDICTS = (
+    ("frame-check unavailable", "picture_check_missing"),
+    ("frame-check unsure", "picture_check_unsure"),
+    ("frame-check different", "pictures_differ"),
+)
+_UNPROVEN = frozenset({"picture_check_missing", "picture_check_unsure"})
+
+
+def _frame_code(files: list[dict[str, Any]]) -> str:
+    """The weakest frame-check verdict named in the row's guard messages, or ''."""
+    text = " ".join(f["reason"] or "" for f in files)
+    return next((code for token, code in _FRAME_VERDICTS if token in text), "")
+
 
 # Reason codes whose pairs are shown to be different files, so excluding them is safe.
 EXCLUDABLE_REASONS = frozenset({"runtime", "pictures_differ", "season_folder", "different_title"})
@@ -466,7 +553,7 @@ def _side(item: dict[str, Any], base_url: str, server_id: str) -> dict[str, Any]
         "score_summary": str(qd.get("score_summary") or ""),
         # The scorer multiplies a Dolby Vision profile 5 copy by 0.0001 so it never wins;
         # the near-zero score is deliberate and says so beside the number.
-        "score_note": "DV P5 penalty" if _video(item).get("is_dovi_p5") else "",
+        "score_note": "Dolby Vision profile 5, scored down" if _video(item).get("is_dovi_p5") else "",
         "dovi_p5": bool(_video(item).get("is_dovi_p5")),
         "ai_upscale": bool(qd.get("is_ai_upscale")),
         "image_class": item.get("image_class", ""),
@@ -614,9 +701,18 @@ def _lost_hdr(files: list[dict[str, Any]]) -> str:
     return "HDR"
 
 
+def _mark_repeated_keepers(files: list[dict[str, Any]]) -> None:
+    """Group lines that share a kept file (two copies of one episode removed): the kept file
+    and its links are shown once per group."""
+    for before, f, after in zip([None, *files], files, [*files[1:], None], strict=False):
+        f["same_keep"] = before is not None and before["keep"]["id"] == f["keep"]["id"]
+        f["group_end"] = after is None or after["keep"]["id"] != f["keep"]["id"]
+
+
 def _finish_row(row: dict[str, Any], index: int, history: dict[str, int]) -> dict[str, Any]:
     files = row["files"]
     files.sort(key=lambda f: (f["season"], f["episode_number"], f["keep"]["path"]))
+    _mark_repeated_keepers(files)
     episodes = [f["episode"] for f in files if f["episode"]]
     if row["is_episode"]:
         season = row["season_folder"]
@@ -650,13 +746,16 @@ def _finish_row(row: dict[str, Any], index: int, history: dict[str, int]) -> dic
     row["exclude_ids"] = sorted({pid for f in files for pid in f["exclude_ids"]})
     row["exclude_numeric"] = any(not pid.startswith("tt") for pid in row["exclude_ids"])
     # Excluding hides a pair for good; offer it only where the guard showed the copies differ.
-    row["excludable"] = row["outcome"] == "would_remove" or row["reason_code"] in EXCLUDABLE_REASONS
+    row["frame_code"] = _frame_code(files)
+    row["excludable"] = row["outcome"] == "would_remove" or (
+        row["reason_code"] in EXCLUDABLE_REASONS and row["frame_code"] not in _UNPROVEN)
     row["blocked_runs"] = max((history.get(f["pair_key"], 0) for f in files), default=0)
     row["shared"] = _shared_facts(files, row)
     row["per_file_status"] = len({f["status_text"] for f in files}) > 1
     row["per_file_reason"] = (row["reason_code"] not in ("runtime", "season_folder", "merge_audio")
                               and len({f["reason"] for f in files if f["reason"]}) > 1)
     row["diff_text"] = _diff_text(row, files)
+    _pair_lines(row)
     return row
 
 
@@ -687,13 +786,55 @@ def _short_reason(row: dict[str, Any], files: list[dict[str, Any]]) -> str:
 def _quality_diff(keep: str, other: str) -> str:
     """Only the words that differ: "1080p vs 1080i", not two full labels."""
     if keep == other:
-        return "same quality"
+        return "same format"
     k, o = keep.split(), other.split()
     only_k = [t for t in k if t not in o]
     only_o = [t for t in o if t not in k]
     if only_k and only_o:
         return f"{' '.join(only_k)} vs {' '.join(only_o)}"
     return f"{keep} vs {other}"
+
+
+def _size_hint(files: list[dict[str, Any]]) -> str:
+    """A size gap of 2x or more between the copies, which the format label alone hides."""
+    ratios = [f["keep"]["size"] / f["delete"]["size"] for f in files if f["keep"]["size"] and f["delete"]["size"]]
+    if not ratios:
+        return ""
+    ratio = median(ratios)
+    if ratio >= 2:
+        return f"kept copy {ratio:.0f}× larger"
+    if ratio <= 0.5:
+        return f"kept copy {1 / ratio:.0f}× smaller"
+    return ""
+
+
+def _audio_diff(keep: str, other: str) -> str:
+    """The audio difference worth a closed-row mention, or ''.
+
+    Summaries list every variant ("cs fre / cs"); when the first variants match, the
+    difference is in another file, so both full summaries are shown. Same languages in a
+    different order still differ in the first audio track.
+    """
+    if not _same_langs(keep, other):
+        k, o = keep.split(" / ")[0], other.split(" / ")[0]
+        return f"{k} vs {o}" if k != o else f"{keep} vs {other}"
+    k_first, o_first = (keep.split() or [""])[0], (other.split() or [""])[0]
+    return f"first audio track {k_first} vs {o_first}" if k_first != o_first else ""
+
+
+def _runtime_part(files: list[dict[str, Any]], always: bool) -> str:
+    """Runtime span of both sides with the usual cause; without ``always`` only a PAL speed-up."""
+    pairs = [(f["keep"]["seconds"], f["delete"]["seconds"]) for f in files
+             if f["keep"]["seconds"] and f["delete"]["seconds"]]
+    if not pairs:
+        return "runtime differs" if always else ""
+    ratio = median(d / k for k, d in pairs)
+    gap = median(abs(d - k) for k, d in pairs)
+    relation = _runtime_relation(ratio, gap)
+    if not always and relation != "PAL speed-up":
+        return ""
+    text = f"{_minute_span([k for k, _ in pairs])} vs {_minute_span([d for _, d in pairs])} min"
+    return text if relation == "different cut" else f"{text} ({relation})"
 
 
 def _diff_text(row: dict[str, Any], files: list[dict[str, Any]]) -> str:
@@ -704,20 +845,18 @@ def _diff_text(row: dict[str, Any], files: list[dict[str, Any]]) -> str:
     """
     keep_q = row["keep_quality"].split(" / ")[0]
     other_q = row["delete_quality"].split(" / ")[0]
-    parts = [("quality", _quality_diff(keep_q, other_q))]
-    if not _same_langs(row["keep_langs"], row["delete_langs"]):
-        parts.append(("audio", f"{row['keep_langs'].split(' / ')[0]} vs {row['delete_langs'].split(' / ')[0]}"))
+    quality = _quality_diff(keep_q, other_q)
+    size = _size_hint(files) if quality == "same format" else ""
+    parts = [("quality", f"{quality}, {size}" if size else quality)]
+    audio = _audio_diff(row["keep_langs"], row["delete_langs"])
+    if audio:
+        parts.append(("audio", audio))
+    runtime = _runtime_part(files, always=row["reason_code"] == "runtime")
+    if runtime:
+        parts.append(("runtime", runtime))
     if row["reason_code"] == "runtime":
-        pairs = [(f["keep"]["seconds"], f["delete"]["seconds"]) for f in files
-                 if f["keep"]["seconds"] and f["delete"]["seconds"]]
-        if pairs:
-            ratio = median(d / k for k, d in pairs)
-            gap = median(abs(d - k) for k, d in pairs)
-            relation = _runtime_relation(ratio, gap)
-            text = f"{_minute_span([k for k, _ in pairs])} vs {_minute_span([d for _, d in pairs])} min"
-            parts.append(("runtime", text if relation == "different cut" else f"{text} ({relation})"))
-        else:
-            parts.append(("runtime", "runtime differs"))
+        if row.get("frame_code"):
+            parts.append(("reason", _SHORT_REASON[row["frame_code"]]))
     else:
         short = _short_reason(row, files)
         if short:

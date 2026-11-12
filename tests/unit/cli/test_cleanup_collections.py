@@ -104,7 +104,6 @@ def test_html_report_groups_a_collection_under_one_header():
         )
     assert html.count('class="collection-head"') == 1
     assert "Collection: <b>Saga Collection</b>" in html
-    assert html.count("badge-collection") >= 2
     assert "1 collection removed as a whole" in html
-    assert "Collection: another part stays" in html
+    assert "in a collection with a part that stays" in html
     assert "Franchise" not in html

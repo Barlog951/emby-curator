@@ -170,7 +170,9 @@ def test_exclude_hint_prefers_the_imdb_id_and_appears_on_every_outcome():
     html = _render([blocked, removed])
     assert html.count('<code class="ids"><span>tt24786748</span></code>') == 2
     assert "Don't want this removed?" in html
-    assert "Checked and they really differ? Add to <code>--exclude-ids</code>" in html
+    assert 'Id for <code class="flag">--exclude-ids</code>: <code class="ids"><span>tt24786748</span></code>' in html, \
+        "a held pair's id sits in its Next step, not in a second paragraph"
+    assert "Checked and they really differ?" not in html
 
 
 def test_numeric_only_ids_come_with_a_collision_warning():
@@ -202,7 +204,8 @@ def test_reconcile_sentence_uses_one_vocabulary():
     html = _render([_pair("success", n=1, delete={"size_gb": 1.0}),
                     _pair("skipped_unsafe", n=2, error="x", delete={"size_gb": 2.0})])
     assert "2 duplicate copies in 2 groups: 1 removed, 1 blocked by the guard, 0 failed." in html
-    assert "(4.00 GB with the copies that remain)" in html, "keepers 2 GB + the blocked 2 GB copy"
+    assert "4.00 GiB stays on disk, kept copies and the copies that remain." in html, "keepers 2 GB + the blocked 2 GB copy"
+    assert "of the pair space" not in html, "the freed share is a tile already"
 
 
 def test_dry_run_with_nothing_to_remove_says_so():
@@ -227,10 +230,10 @@ def test_risky_rows_open_first_in_their_own_section():
     assert 'class="crow risky" id="row-removed-show-s01-1" data-outcome="removed" data-reason="" data-flags="score_inversion" open>' in html
     assert "Removed · 2 files" in html
     assert "1 row above, worth a second look" in html
-    assert "Removed, worth a second look · 1 file · 1 row" in html
+    assert "Removed, worth a second look · 1 file</h2>" in html
     assert "Already removed." in html
     dry = _render([_pair("not_attempted", n=1, keep={"rating": 10.0})])
-    assert "Check first · 1 file · 1 row" in dry
+    assert "Check first · 1 file</h2>" in dry
     assert "before --doit" in dry
 
 
@@ -238,7 +241,7 @@ def test_empty_sections_are_one_line_and_zero_state_has_no_bar():
     html = _render([], {"excluded_ids": [], "excluded_groups_count": 0, "excluded_titles": {}})
     assert "No duplicates found." in html
     assert 'class="run-bar"' not in html
-    assert "No ids excluded." in html
+    assert 'id="excluded"' not in html, "no excluded groups: no empty section"
 
 
 # ---- provenance, anchors, machine readability --------------------------------------
@@ -261,7 +264,7 @@ def test_every_section_and_row_has_an_anchor_and_data_attributes():
     assert 'id="row-removed-show-s01-1"' in html
     assert 'data-keep-id="k11"' in html
     assert 'data-item-id="d11"' in html
-    assert 'rel="noopener"' in html
+    assert 'rel="noopener noreferrer"' in html
     assert 'target="_blank" class' not in html
 
 
@@ -282,11 +285,12 @@ def test_json_island_matches_the_twin_and_carries_no_credential():
 def test_per_file_evidence_is_in_the_row_body():
     """Size, added date, audio codec and the score breakdown lived only in the folded cards."""
     html = _render([_pair("success")])
-    body = html[html.index('class="crow-body"'):]
-    assert "1.00 GB" in body
-    assert '<span class="fact-audio">ac3 5.1 cs</span> · <span class="fact-date">added 2026-10-01</span>' in body
-    assert "score 90.0 = res 1 + bitrate 1" in body
-    assert '<dt>Folder</dt><dd><span class="fact-path">/S/Show/S01</span></dd>' in body
+    body = html[html.index('class="crow-body'):]
+    assert "1.00 GiB" in body
+    assert '<span class="fact-audio">ac3 5.1 cs</span>' in body
+    assert "all added 2026-10-01" in body
+    assert 'title="score 90.0 = res 1 + bitrate 1"' in body, "the score breakdown stays on the file line"
+    assert "folder /S/Show/S01</p>" in body
     assert 'title="/S/Show/S01/Show S01E01 - CZ.mkv">CZ.mkv</span>' in body
     assert 'class="legacy-groups"' not in html
 
@@ -403,19 +407,19 @@ def test_row_body_says_constant_facts_once_and_marks_the_odd_file():
     row = _rows(files, "blocked")[0]
     labels = [line["label"] for line in row["shared"]]
 
-    assert labels == ["Folder", "Kept", "Other", "Next step"], "the closed row already names the reason"
-    assert row["shared"][0]["text"] == "/S/Show/S01"
-    assert row["shared"][1]["text"] == "1080p WEB-DL · ac3 5.1 cs · added 2026-10-01"
-    assert row["shared"][2]["text"] == "1080i WEB-DL · ac3 5.1 cs · added 2026-10-01", "the majority value is the row's fact"
-    assert row["shared"][3]["text"].startswith("compare both in Emby")
+    assert labels == ["Kept", "Other", "Next step"], "the closed row already names the reason"
+    assert row["shared"][0]["text"] == "1080p WEB-DL · ac3 5.1 cs"
+    assert row["shared"][1]["text"] == "1080i WEB-DL · ac3 5.1 cs", "the majority value is the row's fact"
+    assert row["shared"][2]["text"].startswith("Compare both in Emby")
+    assert row["common"] == "runtime 45:00 on every file · all added 2026-10-01 · folder /S/Show/S01"
     odd = [f for f in row["files"] if f["delete"]["vary"]]
     assert len(odd) == 1
     assert odd[0]["episode"] == "S01E05"
     assert odd[0]["delete"]["vary"] == {"video": "1080p WEB-DL"}
     html = _render(files)
     page = html[:html.index('<script type="application/json"')]
-    assert page.count("/S/Show/S01") == 1 + 16, "folder once in the shared block, then only in title tooltips"
-    assert '<span class="pf-vary vary-video" title="video differs from the rest of the row">1080p WEB-DL</span>' in html
+    assert page.count("/S/Show/S01") == 1 + 16, "folder once under the pairs, then only in title tooltips"
+    assert '<span class="pair-extra">1080p WEB-DL</span>' in html
 
 
 def test_short_file_names_drop_the_episode_prefix():
@@ -432,7 +436,7 @@ def test_mixed_statuses_in_a_row_are_shown_per_file():
     row = _rows([a, b], "removed")[0]
     assert row["per_file_status"] is True
     html = _render([a, b])
-    assert '<span class="pf-reason">Deleted (file only, over SSH)</span>' in html
+    assert "Deleted (file only, over SSH)</span>" in html
 
 
 def test_closed_row_second_line_says_only_what_differs():
@@ -442,7 +446,7 @@ def test_closed_row_second_line_says_only_what_differs():
 
     assert _quality_diff("1080p H264 HDTV", "1080i H264 HDTV") == "1080p vs 1080i"
     assert _quality_diff("4K Dolby Vision HEVC BluRay", "1080p H264 HDTV") == "4K Dolby Vision HEVC BluRay vs 1080p H264 HDTV"
-    assert _quality_diff("1080p H264 HDTV", "1080p H264 HDTV") == "same quality"
+    assert _quality_diff("1080p H264 HDTV", "1080p H264 HDTV") == "same format"
     files = [_pair("would_block", n=n, error="duration-mismatch (x)",
                    keep={"res": "1080p", "secs": 3127}, delete={"res": "1080i" if n != 5 else "1080p", "secs": 3506, "langs": ("eng",)})
              for n in range(1, 9)]
@@ -458,18 +462,18 @@ def test_facts_carry_their_kind_so_each_gets_one_colour():
               delete={"res": "1080i", "secs": 3506, "langs": ("eng",)})
     row = _rows([d], "would_block")[0]
     assert [p["kind"] for p in row["diff_parts"]] == ["quality", "audio", "runtime"]
-    assert [p["kind"] for p in row["shared"][1]["parts"]] == ["quality", "audio", "date"]
+    assert [p["kind"] for p in row["shared"][1]["parts"]] == ["quality", "audio"], "the shared date moved under the pairs"
     html = _render([d])
     assert '<span class="fact-quality">1080p vs 1080i</span> · <span class="fact-audio">cs vs eng</span>' in html
-    assert '<td class="pf-num fact-size" data-l="Size">1.00 GB</td>' in html
+    assert '<span class="pair-size">1.00 GiB</span><span class="pair-size-word">held</span>' in html
 
 
 def test_stats_row_holds_only_facts_the_headline_and_legend_do_not_give():
     """Fuki kept the tile row (10-12) but only for new facts (11-12): counts by outcome live in the legend."""
     html = _render([_pair("success", n=1, delete={"size_gb": 1.0}),
                     _pair("skipped_unsafe", n=2, error="x", delete={"size_gb": 2.0})])
-    for label, value in (("Duplicate groups", "2"), ("Copies found", "2"), ("Keepers on disk", "2.00 GB"),
-                         ("Space saved", "20.0%")):
+    for label, value in (("Duplicate groups", "2"), ("Copies found", "2"), ("Size of the kept copies", "2.00 GiB"),
+                         ("Share of duplicate space freed", "20.0%")):
         assert f'<div class="stat-value">{value}</div><div class="stat-label">{label}</div>' in html, label
     for gone in ("Removed", "Blocked by guard", "Failed", "Freed"):
         assert f'<div class="stat-label">{gone}</div>' not in html, gone

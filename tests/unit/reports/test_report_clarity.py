@@ -32,7 +32,7 @@ def test_every_held_pair_gets_a_next_step_and_unproven_pairs_are_not_excluded():
     row = _rows([_held(UNAVAILABLE)], "blocked")[0]
     lines = {line["label"]: line["text"] for line in row["shared"]}
     assert "Guard" not in lines, "the closed row names the reason; the body gives only the next step"
-    assert lines["Next step"] == "run again with the frame check; don't exclude yet"
+    assert lines["Next step"] == "Run again with the frame check. Don't exclude yet."
     assert row["reason"] == UNAVAILABLE, "the raw message stays in the data"
     differ = {line["label"]: line["text"] for line in _rows([_held(DIFFERENT)], "blocked")[0]["shared"]}
     assert "exclude the pair" in differ["Next step"]
@@ -56,7 +56,7 @@ def test_hdr10_is_not_named_twice_and_dolby_vision_loss_is_named():
     html = _render([_pair("success", keep=keep, delete=delete)])
     assert "HDR 10 HEVC HDR10" not in html
     assert ">loses Dolby Vision</span>" in html
-    assert '<span class="score-note">DV P5 penalty</span>' in html
+    assert "score 0.0 · Dolby Vision profile 5, scored down" in html, "the near-zero score says why"
 
 
 def test_warning_line_asks_for_a_check_in_emby_not_on_disk_now():
@@ -94,9 +94,10 @@ def test_bar_counts_second_look_files_once_and_pills_show_only_in_the_mixed_sect
 
 def test_kept_copy_link_is_a_labelled_target_and_equal_runtimes_are_marked():
     html = _render([_pair("skipped_unsafe", error=DIFFERENT)])
-    assert ">Kept copy</a>" in html
-    assert ">Other copy</a>" in html
-    assert 'class="pf-num fact-runtime same-as-kept"' in html, "same runtime on both sides is hidden on a phone"
+    assert 'aria-label="Open the kept copy of S01E01 in Emby">Emby</a>' in html
+    assert 'aria-label="Open the other copy of S01E01 in Emby">Emby</a>' in html
+    assert "runtime 45:00 on every file" in html, "an equal runtime is said once, not per file"
+    assert "(kept 45:00)" not in html
 
 
 def test_fact_colours_are_neutral_so_amber_only_means_check():
@@ -109,17 +110,33 @@ def test_fact_colours_are_neutral_so_amber_only_means_check():
     assert ".run-stats .stat-value { font-size: 1.5rem; color: var(--text-color); }" in css
 
 
-def test_same_languages_in_another_track_order_are_not_a_difference():
+def test_same_languages_in_another_track_order_name_only_the_default_track():
+    """Same languages in another order are no language loss, but the default track changed."""
     html = _render([_pair("success", keep={"langs": ("eng", "cze")}, delete={"langs": ("cze", "eng")})])
     assert "eng cs vs cs eng" not in html
-    assert '<span class="fact-audio">' not in html.split('class="crow-line2"')[1].split("</span>\n")[0]
+    assert '<span class="fact-audio">first audio track eng vs cs</span>' in html
 
 
-def test_runtime_next_step_agrees_with_the_exclude_hint():
+def test_audio_line_never_shows_two_identical_values():
+    """One of two removed copies has fewer tracks: the first variants match, so show both summaries."""
+    files = [_pair("success", n=1, keep={"langs": ("cze", "fre")}, delete={"langs": ("cze", "fre")}),
+             _pair("success", n=2, keep={"langs": ("cze", "fre")}, delete={"langs": ("cze",)})]
+    row = _rows(files, "removed")[0]
+    audio = next(p["text"] for p in row["diff_parts"] if p["kind"] == "audio")
+    left, right = audio.split(" vs ")
+    assert left != right
+
+
+def test_runtime_gap_with_unsure_pictures_is_never_offered_for_excluding():
+    """The frame check could not prove the copies differ, so excluding would hide a real duplicate."""
     row = _rows([_held(RUNTIME_UNSURE)], "blocked")[0]
     step = {line["label"]: line["text"] for line in row["shared"]}["Next step"]
-    assert "a different cut or episode: exclude the pair" in step
-    assert "really are the same" not in step
+    assert step == "Compare both in Emby before deciding. Don't exclude yet."
+    assert row["excludable"] is False
+    assert "pictures unclear" in row["diff_text"]
+    proven = _rows([_held("duration-mismatch (x); frame-check different (0.10)")], "blocked")[0]
+    assert proven["excludable"] is True
+    assert "exclude the pair" in {line["label"]: line["text"] for line in proven["shared"]}["Next step"]
 
 
 def test_a_multi_file_row_keeps_the_plain_reason_when_scores_differ():
@@ -163,3 +180,55 @@ def test_one_blocked_delete_is_not_called_all_1():
     html = _render([_pair("would_block", error=UNAVAILABLE)])
     assert "The safety guard would block the only delete." in html
     assert "all 1 delete" not in html
+
+
+def test_same_format_names_a_large_size_gap():
+    """A 12x size gap behind an identical format label must not read as "same quality"."""
+    row = _rows([_pair("success", keep={"size_gb": 72.98}, delete={"size_gb": 6.21})], "removed")[0]
+    assert row["diff_parts"][0]["text"] == "same format, kept copy 12× larger"
+    close = _rows([_pair("success", keep={"size_gb": 7.0}, delete={"size_gb": 6.0})], "removed")[0]
+    assert close["diff_parts"][0]["text"] == "same format"
+
+
+def test_removed_row_names_a_pal_speed_up():
+    """A PAL pair passes the guard; the closed row still says why the runtimes differ."""
+    row = _rows([_pair("success", keep={"secs": 6279}, delete={"secs": 6019})], "removed")[0]
+    assert "(PAL speed-up)" in row["diff_text"]
+    plain = _rows([_pair("success", keep={"secs": 2700}, delete={"secs": 2690})], "removed")[0]
+    assert "min" not in plain["diff_text"]
+
+
+def test_excluded_group_links_to_the_provider_that_owns_the_id():
+    """A bare number is a TMDb or TVDB id; only the item's own ProviderIds say which."""
+    from emby_dedupe.api.deduplication import _provider_link
+
+    film = {"Type": "Movie", "ProviderIds": {"Imdb": "tt0111", "Tmdb": "42"}}
+    assert _provider_link(film, "tt0111") == "https://www.imdb.com/title/tt0111"
+    assert _provider_link(film, "42") == "https://www.themoviedb.org/movie/42"
+    show = {"Type": "Series", "ProviderIds": {"Tmdb": "77"}}
+    assert _provider_link(show, "77") == "https://www.themoviedb.org/tv/77"
+    episode = {"Type": "Episode", "ProviderIds": {"Tvdb": "2548471"}}
+    assert _provider_link(episode, "2548471") == "", "a TVDB episode id has no TMDb page"
+    tmdb_episode = {"Type": "Episode", "ProviderIds": {"Tmdb": "5"}}
+    assert _provider_link(tmdb_episode, "5") == "", "a TMDb episode id is not a show id"
+    assert _provider_link({"ProviderIds": {"Tmdb": "6"}}, "6") == "", "no type, no guess"
+
+
+def test_a_kept_file_shared_by_two_removed_copies_is_shown_once():
+    """Two copies of one episode removed: the second line says "same kept file", not a second keeper."""
+    a = _pair("success", n=1)
+    b = _pair("success", n=1, delete={"size_gb": 2.0})
+    b["delete"][0]["id"] = "d-second"
+    b["delete"][0]["path"] = b["delete"][0]["path"].replace("HDTV", "WEB")
+    html = _render([{"keep": a["keep"], "delete": a["delete"] + b["delete"]}])
+    assert html.count('class="pair-line pair-keep"') == 1, "the kept file is shown once for both copies"
+    assert html.count('class="pair-line pair-other"') == 2
+    assert 'class="pair pair-cont"' in html
+
+
+def test_identical_sides_are_described_once():
+    """Two copies with the same format and audio: one "Both" line, not the same text twice."""
+    row = _rows([_held(DIFFERENT)], "blocked")[0]
+    labels = [line["label"] for line in row["shared"]]
+    assert labels[0] == "Both"
+    assert "Kept" not in labels

@@ -520,19 +520,19 @@ class TestMetadataHelpers:
     def test_format_file_size_kb(self):
         """Test formatting kilobytes."""
         result = _format_file_size(2048)  # 2 KB
-        assert "KB" in result
+        assert "KiB" in result
         assert "2.00" in result
 
     def test_format_file_size_mb(self):
         """Test formatting megabytes."""
         result = _format_file_size(5242880)  # 5 MB
-        assert "MB" in result
+        assert "MiB" in result
         assert "5.00" in result
 
     def test_format_file_size_gb(self):
         """Test formatting gigabytes."""
         result = _format_file_size(5368709120)  # 5 GB
-        assert "GB" in result
+        assert "GiB" in result
         assert "5.00" in result
 
     def test_parse_iso_date_with_time(self):

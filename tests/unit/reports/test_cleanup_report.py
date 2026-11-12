@@ -157,9 +157,7 @@ class TestSaveCleanupHtmlReport:
 
     def test_html_file_created_in_report_dir(self):
         """HTML file is saved to the report directory (never the shared temp directory)."""
-        with patch("emby_dedupe.reports.cleanup.shutil.copy2"), \
-             patch("emby_dedupe.reports.cleanup.os.path.exists", return_value=True), \
-             patch("emby_dedupe.reports.cleanup.webbrowser.open"):
+        with patch("emby_dedupe.reports.cleanup.webbrowser.open"):
             path = _save_cleanup_html_report("<html><body>test</body></html>", no_open=True)
             assert path.startswith(report_dir())
             assert path.endswith(".html")
@@ -167,31 +165,23 @@ class TestSaveCleanupHtmlReport:
 
     def test_html_file_content_written(self):
         """HTML content is written to the file."""
-        with patch("emby_dedupe.reports.cleanup.shutil.copy2"), \
-             patch("emby_dedupe.reports.cleanup.os.path.exists", return_value=True), \
-             patch("emby_dedupe.reports.cleanup.webbrowser.open"):
+        with patch("emby_dedupe.reports.cleanup.webbrowser.open"):
             path = _save_cleanup_html_report("<html><body>hello world</body></html>", no_open=True)
             with open(path) as f:
                 content = f.read()
             assert "hello world" in content
             os.unlink(path)  # cleanup
 
-    def test_css_copied_alongside_html(self):
-        """report.css is copied to the same temp directory as the HTML file."""
-        with patch("emby_dedupe.reports.cleanup.os.path.exists", return_value=True), \
-             patch("emby_dedupe.reports.cleanup.shutil.copy2") as mock_copy, \
+    def test_no_stylesheet_copied_beside_the_report(self, tmp_path):
+        """The stylesheet is embedded in the page, so saving writes the HTML file only."""
+        with patch("emby_dedupe.reports.cleanup.report_dir", return_value=str(tmp_path)), \
              patch("emby_dedupe.reports.cleanup.webbrowser.open"):
             path = _save_cleanup_html_report("<html/>", no_open=True)
-            assert mock_copy.called
-            copy_dst = mock_copy.call_args[0][1]
-            assert copy_dst == os.path.join(report_dir(), "report.css")
-            os.unlink(path)  # cleanup
+        assert os.listdir(tmp_path) == [os.path.basename(path)]
 
     def test_returns_file_path(self):
         """Return value is the path string of the saved file."""
-        with patch("emby_dedupe.reports.cleanup.shutil.copy2"), \
-             patch("emby_dedupe.reports.cleanup.os.path.exists", return_value=True), \
-             patch("emby_dedupe.reports.cleanup.webbrowser.open"):
+        with patch("emby_dedupe.reports.cleanup.webbrowser.open"):
             result = _save_cleanup_html_report("<html/>", no_open=True)
             assert isinstance(result, str)
             assert os.path.basename(result).startswith("emby_cleanup_report_")
@@ -199,9 +189,7 @@ class TestSaveCleanupHtmlReport:
 
     def test_no_open_flag_prevents_browser_open(self):
         """no_open=True prevents webbrowser.open() call."""
-        with patch("emby_dedupe.reports.cleanup.shutil.copy2"), \
-             patch("emby_dedupe.reports.cleanup.os.path.exists", return_value=True), \
-             patch("emby_dedupe.reports.cleanup.webbrowser.open") as mock_open:
+        with patch("emby_dedupe.reports.cleanup.webbrowser.open") as mock_open:
             path = _save_cleanup_html_report("<html/>", no_open=True)
             mock_open.assert_not_called()
             os.unlink(path)  # cleanup
@@ -210,7 +198,6 @@ class TestSaveCleanupHtmlReport:
         """Regression: the name had 1-second resolution, so two reports in the same second
         (e.g. parallel test workers) shared one file and overwrote each other."""
         with patch("emby_dedupe.reports.common.time.time", return_value=1234567890), \
-             patch("emby_dedupe.reports.cleanup.shutil.copy2"), \
              patch("emby_dedupe.reports.cleanup.webbrowser.open"):
             first = _save_cleanup_html_report("<html>first</html>", no_open=True)
             second = _save_cleanup_html_report("<html>second</html>", no_open=True)
@@ -223,9 +210,7 @@ class TestSaveCleanupHtmlReport:
 
     def test_browser_opened_when_no_open_false(self):
         """no_open=False triggers webbrowser.open()."""
-        with patch("emby_dedupe.reports.cleanup.shutil.copy2"), \
-             patch("emby_dedupe.reports.cleanup.os.path.exists", return_value=True), \
-             patch("emby_dedupe.reports.cleanup.webbrowser.open") as mock_open:
+        with patch("emby_dedupe.reports.cleanup.webbrowser.open") as mock_open:
             path = _save_cleanup_html_report("<html/>", no_open=False)
             mock_open.assert_called_once()
             os.unlink(path)  # cleanup
@@ -551,7 +536,7 @@ class TestConsoleNearMissSections:
         captured = capsys.readouterr().out
         assert "=== Next 1 Movie Candidates (protected only by rating) ===" in captured
         assert "Almost Gone" in captured
-        assert "1.86 GB" in captured
+        assert "1.86 GiB" in captured
 
     def test_series_near_miss_section_printed(self, capsys, default_config):
         """Series near-miss list prints its own header with days-left values."""
@@ -586,7 +571,7 @@ class TestCandidateToDictHelpers:
         assert d["critic_rating_str"] == "40%"
         assert d["threshold_str"] == "7.00"
         assert d["age_years"] == 5.0
-        assert d["size_human"] == "1.00 GB"
+        assert d["size_human"] == "1.00 GiB"
         assert d["image_url"] == (
             "http://emby/Items/m1/Images/Primary?maxWidth=200"
         )
@@ -655,7 +640,7 @@ class TestGenerateCleanupHtmlReport:
         }
 
     def test_renders_movie_candidates(self, default_config):
-        """Rendered HTML contains title, candidate name, total size and poster URL."""
+        """A dry run leads with what would go and how much space it frees."""
         html = _generate_cleanup_html_report(
             "http://emby",
             [_make_movie_candidate(name="Dead Movie", size_bytes=4_000_000_000)],
@@ -664,13 +649,16 @@ class TestGenerateCleanupHtmlReport:
             doit=False,
             api_key="KEY",
         )
-        assert "Library Cleanup Report" in html
+        assert "Dry run · nothing deleted" in html
+        assert 'add its id to <code class="flag">--exclude-ids</code>' in html  # markup, not escaped text
+        assert "1 film would be removed, 3.73 GiB to free." in html
         assert "Dead Movie" in html
-        assert "3.73 GB" in html  # total_size_human for 4 GB candidate
-        assert "Items/m1/Images/Primary" in html  # poster image URL
+        # The poster fetch fails here, so the row shows the placeholder, never a remote URL.
+        assert "Items/m1/Images/Primary" not in html
+        assert '<span class="thumb" aria-hidden="true"></span>' in html
 
     def test_renders_series_section(self, default_config):
-        """Series candidates render their own section with name and size."""
+        """Series candidates share the outcome section with films."""
         html = _generate_cleanup_html_report(
             "http://emby",
             [],
@@ -680,12 +668,15 @@ class TestGenerateCleanupHtmlReport:
             series_candidates=[_make_series_cleanup_candidate(name="Dead Series")],
             series_stats=self._series_stats(),
         )
-        assert "Series Cleanup Candidates" in html
+        assert "1 series would be removed, 7.45 GiB to free." in html
+        assert "Would be removed · 1 title</h2>" in html, "the headline gives the size; the heading only the count"
         assert "Dead Series" in html
-        assert "7.45 GB" in html  # series_total_size_human for 8 GB candidate
+        assert "no new episode for 5.0 years · 12 episodes" in html
+        assert "2021-03-01" in html  # last episode added, not the raw timestamp
+        assert "2021-03-01T00:00:00Z" not in html
 
     def test_renders_near_miss_sections_with_days_left(self, default_config):
-        """Near-miss sections show days_left_str badges for movies and series."""
+        """Next-in-line rows say when each title goes; the first dated one leads the subline."""
         html = _generate_cleanup_html_report(
             "http://emby",
             [],
@@ -695,44 +686,208 @@ class TestGenerateCleanupHtmlReport:
             movie_near_miss=[_make_movie_candidate(name="Almost Movie", days_left=15)],
             series_near_miss=[_make_series_cleanup_candidate(name="Almost Series", days_left=None)],
         )
-        assert "Almost Movie" in html
-        assert "15d left" in html
+        assert "Next to go: Almost Movie in 15 days, 3.73 GiB." in html
+        assert "goes in 15 days" in html
         assert "Almost Series" in html
-        assert "never left" in html
+        assert "no date: its rating keeps it" in html
+        assert "Next in line · 1 film and 1 series" in html
 
     def test_no_candidates_message(self, default_config):
-        """Empty candidate list renders the clean-library message."""
+        """An empty run says so in the headline and renders no empty outcome section."""
         html = _generate_cleanup_html_report(
             "http://emby", [], self._movie_stats(), default_config, doit=False,
         )
-        assert "No cleanup candidates found" in html
+        assert "Nothing to clean up." in html
+        assert 'class="out-section"' not in html
+        assert 'class="run-bar"' not in html
 
     def test_protection_stats_in_funnel(self, default_config):
-        """Filter funnel shows the protection stat counts."""
+        """The folded rules list each protection count once and skip the zero ones."""
+        stats = {**self._movie_stats(), "interest_protected": 0}
+        html = _generate_cleanup_html_report("http://emby", [], stats, default_config, doit=False)
+        assert "How titles were chosen" in html
+        assert "100 checked, 1 picked for removal." in html
+        assert "<dt>30</dt><dd>watched by someone</dd>" in html
+        assert "first reason that applies" in html
+        assert "favourited or started" not in html
+        assert "films: 12 years and more" in html  # the masterpiece rule is films only
+        assert "7 years and more" in html  # the decay cap
+        assert "so 3.8 years needs 6.4" in html  # the rating rises evenly between rows
+        assert "Filter Funnel" not in html
+
+    def test_decay_rows_for_a_short_config(self):
+        """A one-year minimum and a quick cap read as plain years, then the masterpiece rule."""
+        from emby_dedupe.reports.cleanup import _rules
+
+        cfg = CleanupConfig(min_age_years=1, base_rating=6.0, decay_step=1.0, max_rating=7.0)
+        decay = _rules(cfg, {}, None)["decay"]
+        assert [d["age"] for d in decay] == ["at 1 year", "2 years and more", "films: 12 years and more"]
+        assert [d["need"] for d in decay] == ["6.0", "7.0", "9.0"]
+
+    def test_real_run_counts_only_successful_deletes(self, default_config):
+        """Freed space and the headline count successful deletes; held ones are named."""
+        films = [
+            _make_movie_candidate(item_id="ok", name="Gone", size_bytes=1024**3),
+            _make_movie_candidate(item_id="bad", name="Stuck", size_bytes=2 * 1024**3),
+            _make_movie_candidate(item_id="held", name="Kept", size_bytes=4 * 1024**3),
+        ]
+        films[0].deletion_result = {"status": "success", "error": None}
+        films[1].deletion_result = {"status": "failed", "error": "HTTP 500"}
+        films[2].deletion_result = {"status": "skipped_unsafe", "error": "keeper co-located in a dedicated folder"}
+        html = _generate_cleanup_html_report("http://emby", films, self._movie_stats(), default_config, doit=True)
+        assert "1 film removed, 1.00 GiB freed." in html
+        assert "1 blocked by the safety guard, 1 failed." in html
+        for section in ("removed", "blocked", "failed"):
+            assert f'id="{section}"' in html
+        assert "Emby did not delete it (HTTP 500)." in html
+        assert "Its folder also holds media you keep, and Emby would delete the whole folder." in html
+        removed = html[html.index('id="removed"'):html.index('id="blocked"')]
+        assert "Open in Emby" not in removed, "a deleted title has no Emby page any more"
+        assert 'data-reason="keeper co-located in a dedicated folder"' in html
+
+    def test_real_run_with_nothing_deleted(self, default_config):
+        """When every delete was held or failed the headline does not claim space."""
+        film = _make_movie_candidate()
+        film.deletion_result = {"status": "failed", "error": None}
+        html = _generate_cleanup_html_report("http://emby", [film], self._movie_stats(), default_config, doit=True)
+        assert "Nothing removed." in html
+        assert "freed" not in html
+
+    def test_report_is_self_contained_and_links_are_safe(self, default_config):
+        """The stylesheet is embedded and every new-tab link carries rel=noopener."""
+        import re
+
         html = _generate_cleanup_html_report(
-            "http://emby", [], self._movie_stats(), default_config, doit=False,
+            "http://emby", [_make_movie_candidate()], self._movie_stats(), default_config, doit=False,
+            movie_near_miss=[_make_movie_candidate(item_id="n1", days_left=3)],
         )
-        assert "100" in html  # total_analyzed
-        assert "Filter Funnel" in html
+        assert "<link" not in html
+        assert ".crow" in html
+        blank = re.findall(r"<a [^>]*target=\"_blank\"[^>]*>", html)
+        assert blank
+        assert all('rel="noopener noreferrer"' in a for a in blank)
+        assert "emby-curator" in html
+        assert "emby-dedupe" not in html
+
+    def test_exclude_hint_prefers_imdb(self, default_config):
+        """Rows that can still be kept show the id to pass to --exclude-ids."""
+        imdb = _make_movie_candidate(item_id="a", name="With Imdb", days_left=5)
+        imdb.provider_ids = {"Tmdb": "5", "Imdb": "tt0123"}
+        tmdb = _make_movie_candidate(item_id="b", name="Tmdb Only", days_left=9)
+        tmdb.provider_ids = {"Tmdb": "48121"}
+        html = _generate_cleanup_html_report(
+            "http://emby", [], self._movie_stats(), default_config, doit=False, movie_near_miss=[imdb, tmdb],
+        )
+        assert '<code class="ids">tt0123</code>' in html
+        assert '<code class="ids">48121</code>' in html
+        assert html.count("a bare number matches TMDB and TVDB alike") == 1
 
 
-# ---------------------------------------------------------------------------
-# TestSaveCleanupHtmlReportCssMissing
-# ---------------------------------------------------------------------------
+class TestCleanupHtmlHelpers:
+    """Plain-language helpers behind the cleanup report rows."""
+
+    def test_rating_text_shows_the_compared_value(self):
+        from emby_dedupe.reports.cleanup import _rating_text
+
+        assert _rating_text(5.1, 31.0, 7.5) == "rated 4.1 (users 5.1, critics 3.1), needs 7.5"
+        assert _rating_text(None, None, 9.0) == "no rating, needs 9.0"
+        assert _rating_text(None, 62.0, 6.0) == "rated 6.2 (critics 6.2), needs 6.0"
+        assert _rating_text(3.8, None, 6.0) == "rated 3.8, needs 6.0"
+        # Equal after rounding: the deciding digits are shown, so the two numbers never look equal.
+        assert _rating_text(5.3, 75.0, 6.4033) == "rated 6.400 (users 5.3, critics 7.5), needs 6.403"
+        assert _rating_text(6.5, None, 6.49) == "rated 6.50, needs 6.49"
+        assert _rating_text(7.0, None, 7.0) == "rated 7.000, exactly the 7.000 it needs"
+
+    def test_when_text(self):
+        from emby_dedupe.reports.cleanup import _when_text
+
+        assert _when_text(None) == ""
+        assert _when_text(0) == "on the next run"
+        assert _when_text(1) == "in 1 day"
+        assert _when_text(40) == "in about 1 month"
+        assert _when_text(57) == "in about 2 months"
+        assert _when_text(500) == "in about 1.4 years"
+
+    def test_date_text(self):
+        from emby_dedupe.reports.cleanup import _date_text
+
+        assert _date_text("2023-02-09T15:20:30.0000000Z") == "2023-02-09"
+        assert _date_text(None) == ""
+        assert _date_text("someday") == "someday"
+
+    def test_titles_phrase(self):
+        from emby_dedupe.reports.cleanup import _titles_phrase
+
+        assert _titles_phrase(2, 1) == "2 films and 1 series"
+        assert _titles_phrase(1, 0) == "1 film"
+        assert _titles_phrase(0, 3) == "3 series"
+
+    def test_collection_reasons_are_plain(self):
+        from emby_dedupe.reports.cleanup import _reason_lines
+
+        for raw in ("collection kept: deleting 'A' failed, the other parts stay",
+                    "collection kept whole: the safety guard holds 'A'"):
+            why, step = _reason_lines("blocked", raw)
+            assert why.startswith("Another part of its collection")
+            assert step
+        why, _ = _reason_lines("blocked", "delete path unknown — cannot verify fold safety, refusing")
+        assert "no file path" in why
 
 
-class TestSaveCleanupHtmlReportCssMissing:
-    """CSS-missing branch of _save_cleanup_html_report."""
+    def test_collection_hold_names_the_other_part(self):
+        from emby_dedupe.reports.cleanup import _reason_lines
 
-    def test_missing_css_logs_warning_and_skips_copy(self):
-        """When report.css is absent, a warning is logged and no copy happens."""
-        with patch("emby_dedupe.reports.cleanup.os.path.exists", return_value=False), \
-             patch("emby_dedupe.reports.cleanup.shutil.copy2") as mock_copy, \
-             patch("emby_dedupe.reports.cleanup.webbrowser.open"), \
-             patch("emby_dedupe.reports.cleanup.logger") as mock_logger:
-            path = _save_cleanup_html_report("<html/>", no_open=True)
-            mock_copy.assert_not_called()
-            mock_logger.warning.assert_called_once()
-            warn_msg = mock_logger.warning.call_args[0][0]
-            assert "CSS file not found" in warn_msg
-            os.unlink(path)  # cleanup
+        why, step = _reason_lines("blocked", "collection kept: deleting 'Duo One' failed, the other parts stay")
+        assert why == "Another part of its collection (Duo One) could not be deleted, so the whole collection stays."
+        assert step.startswith("Sort out Duo One first")
+
+    def test_large_counts_carry_thousands_separators(self):
+        from emby_dedupe.reports.cleanup import _rules
+
+        rules = _rules(CleanupConfig(), {"total_analyzed": 7304, "age_filtered": 4854}, None)
+        assert rules["funnels"][0]["checked"] == "7,304"
+        assert rules["funnels"][0]["steps"][0]["count"] == "4,854"
+
+
+class TestCleanupPolish:
+    """Copy-paste ids, the collection sibling link and the bar rule."""
+
+    STATS = {"total_analyzed": 10, "final_candidates": 2}
+
+    def _film(self, item_id, name, ids=None, days=None, result=None, collection=None):
+        c = _make_movie_candidate(item_id=item_id, name=name, days_left=days)
+        c.provider_ids = ids or {}
+        c.deletion_result = result
+        c.collection = collection
+        c.collection_size = 2 if collection else 0
+        return c
+
+    def test_dry_run_offers_the_ids_to_keep_in_one_line(self, default_config):
+        films = [self._film("a", "A", {"Imdb": "tt01"}), self._film("b", "B", {"Tmdb": "22"})]
+        near = [self._film("n", "N", {"Imdb": "tt09"}, days=3)]
+        html = _generate_cleanup_html_report("http://emby", films, self.STATS, default_config, doit=False,
+                                             movie_near_miss=near)
+        assert "Next steps: copy-paste values" in html
+        assert "<code>tt01,22</code>" in html
+        assert "<code>tt09</code>" in html
+
+    def test_a_held_collection_part_links_to_the_part_it_waits_for(self, default_config):
+        failed = self._film("one", "Duo One", result={"status": "failed", "error": "HTTP 500"}, collection="Duo")
+        held = self._film("two", "Duo Two", collection="Duo",
+                          result={"status": "skipped_unsafe",
+                                  "error": "collection kept: deleting 'Duo One' failed, the other parts stay"})
+        html = _generate_cleanup_html_report("http://emby", [failed, held], self.STATS, default_config, doit=True)
+        assert '<a href="#item-one">Go to Duo One</a>' in html
+        assert 'id="item-one"' in html
+
+    def test_a_single_outcome_draws_no_bar(self, default_config):
+        html = _generate_cleanup_html_report("http://emby", [self._film("a", "A")], self.STATS, default_config,
+                                             doit=False)
+        assert 'class="run-bar"' not in html
+        assert "Would be removed <strong>1</strong>" in html
+
+    def test_one_title_reads_as_one(self, default_config):
+        from emby_dedupe.reports.cleanup import _decide
+
+        one = [{"outcome": "would_remove", "exclude_id": "tt01"}]
+        assert _decide(one, [], doit=False)[0]["label"].startswith("To keep the title that would be removed")

@@ -109,43 +109,54 @@ def _compute_days_until_candidate(
     effective_rating: float,
     current_age_years: float,
     config: CleanupConfig,
+    masterpiece: bool = True,
 ) -> int | None:
     """Compute how many days until a near-miss item becomes a cleanup candidate.
 
+    An item stays while its rating is at least the threshold, so it becomes a candidate
+    on the first whole day the threshold is above its rating. Ages are counted in whole
+    days (:func:`_compute_age_years`), so the answer is found on that day grid.
+
     Considers two thresholds:
       1. Normal decay: threshold rises with age until it exceeds effective_rating.
-      2. Masterpiece gate: at masterpiece_only_after_years (12yr), only 9.0+ survives.
+      2. Masterpiece gate (films only): from masterpiece_only_after_years, only
+         masterpiece_rating and above survives.
 
     Args:
         effective_rating: Combined rating on 0-10 scale.
         current_age_years: Current age/staleness in years.
         config: Cleanup configuration with decay parameters.
+        masterpiece: Whether the masterpiece gate applies (films yes, series no).
 
     Returns:
-        Days until the item becomes a candidate, or None if it will never become one
-        (effective_rating >= masterpiece_rating).
+        Days until the item becomes a candidate, or None if it never will.
     """
-    if effective_rating >= config.masterpiece_rating:
-        return None  # Protected forever
+    if effective_rating >= (config.masterpiece_rating if masterpiece else config.max_rating):
+        return None  # Protected forever: no threshold ever rises above this rating
 
-    # Age at which normal decay threshold crosses effective_rating
-    if effective_rating <= config.max_rating:
-        crossing_age = (
-            (effective_rating - config.base_rating) / config.decay_step
-            + config.min_age_years
-        )
-    else:
-        crossing_age = float("inf")  # Threshold caps at max_rating
+    def fails(day: int) -> bool:
+        age = day / 365.25
+        if masterpiece and age >= config.masterpiece_only_after_years:
+            return effective_rating < config.masterpiece_rating
+        return effective_rating < _compute_rating_threshold(age, config)
 
-    # Age at which masterpiece gate applies (if rating < 9.0)
-    masterpiece_age = config.masterpiece_only_after_years
+    crossing = float("inf")
+    if effective_rating < config.max_rating:
+        crossing = (effective_rating - config.base_rating) / config.decay_step + config.min_age_years
+    if masterpiece:
+        crossing = min(crossing, config.masterpiece_only_after_years)
+    today = round(current_age_years * 365.25)
+    # Start just before the estimated crossing and step to the first failing day; the
+    # threshold only rises with age, so the walk ends within a few days.
+    day = max(today, int(crossing * 365.25) - 2)
+    for _ in range(400):
+        if fails(day):
+            return day - today
+        day += 1
+    return None
 
-    target_age = min(crossing_age, masterpiece_age)
-    days_left = (target_age - current_age_years) * 365.25
-    return max(0, int(days_left))
 
-
-def _finalize_near_miss(near_miss: list, config: CleanupConfig, age_of) -> list:
+def _finalize_near_miss(near_miss: list, config: CleanupConfig, age_of, masterpiece: bool = True) -> list:
     """Set days-until-removal on each near-miss item, sort soonest-first, and slice
     to ``config.near_miss_count``.
 
@@ -154,13 +165,14 @@ def _finalize_near_miss(near_miss: list, config: CleanupConfig, age_of) -> list:
         config: Cleanup config (rating decay + near_miss_count).
         age_of: Callable returning a candidate's current age in years
             (``age_years`` for movies, ``stale_years`` for series).
+        masterpiece: Whether the films-only masterpiece gate applies.
 
     Returns:
         The sorted, sliced near-miss list.
     """
     for nm in near_miss:
         eff = _compute_effective_rating(nm.rating, nm.critic_rating)
-        nm.days_left = _compute_days_until_candidate(eff, age_of(nm), config)
+        nm.days_left = _compute_days_until_candidate(eff, age_of(nm), config, masterpiece)
     near_miss.sort(key=lambda c: c.days_left if c.days_left is not None else float("inf"))
     if config.near_miss_count > 0:
         near_miss = near_miss[:config.near_miss_count]
@@ -1194,6 +1206,7 @@ def _apply_movie_filters(
                         library=movie.get("_library_name", "Unknown"),
                         size_bytes=movie.get("Size") or 0,
                         path=movie.get("Path", ""),
+                        provider_ids=movie.get("ProviderIds") or {},
                     )
                 )
             continue
@@ -1214,6 +1227,7 @@ def _apply_movie_filters(
                 library=movie.get("_library_name", "Unknown"),
                 size_bytes=movie.get("Size") or 0,
                 path=movie.get("Path", ""),
+                provider_ids=movie.get("ProviderIds") or {},
             )
         )
 
@@ -1409,6 +1423,7 @@ def _build_series_candidates(
                 library=series.get("_library_name", "Unknown"),
                 size_bytes=size_map.get(item_id, 0),
                 path=series.get("Path", ""),
+                provider_ids=series.get("ProviderIds") or {},
             )
         )
 
@@ -1523,7 +1538,7 @@ def _run_series_cleanup_pipeline(
     # 8. Build final candidate objects
     candidates = _build_series_candidates(pre_size_candidates, size_map, config)
     near_miss = _build_series_candidates(pre_near_miss, size_map, config)
-    near_miss = _finalize_near_miss(near_miss, config, lambda c: c.stale_years)
+    near_miss = _finalize_near_miss(near_miss, config, lambda c: c.stale_years, masterpiece=False)
     stats["final_candidates"] = len(candidates)
 
     logger.info(f"Series cleanup candidates: {len(candidates)}, near-miss: {len(near_miss)}")

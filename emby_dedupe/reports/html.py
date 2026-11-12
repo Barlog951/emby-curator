@@ -442,11 +442,9 @@ def _reconcile_line(stats: dict[str, Any], totals: dict[str, int], dry: bool) ->
                  f"{totals['failed']} failed"]
     if totals["other"]:
         parts.append(f"{totals['other']} with an unknown status")
-    kept = _fmt_size(stats["total_size_to_keep"])
     stays = _fmt_size(_stays_on_disk(stats, dry))
-    return (f"{copies} in {groups}: {', '.join(parts)}. "
-            f"{kept} of keepers stay on disk ({stays} with the copies that remain); "
-            f"{stats['percentage_saved']:.1f}% of the pair space {'would be' if dry else 'was'} freed.")
+    # Counts, keeper size and the freed share are in the verdict card; only this total is new.
+    return f"{copies} in {groups}: {', '.join(parts)}. {stays} stays on disk, kept copies and the copies that remain."
 
 
 def _bar_segments(totals: dict[str, int], dry: bool, clusters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -479,14 +477,19 @@ def _legend(segments: list[dict[str, Any]], clusters: dict[str, Any], excluded_g
             dry: bool) -> list[dict[str, Any]]:
     """The bar's legend doubles as the page navigation: one link per section, with its count."""
     legend = []
-    if clusters["check"]:
-        legend.append({"href": "#check", "label": "Check first" if dry else "Second look", "count": clusters["check_files"],
-                       "css": "seg-check", "emphasis": True})
     totals = clusters["totals"]
-    legend += [{"href": f"#{s['key']}", "label": s["label"], "count": totals[s["key"]], "css": s["css"], "emphasis": False}
-               for s in segments if s["key"] != "check"]
+    deleting = "would_remove" if dry else "removed"
+    for s in segments:
+        if s["key"] == "check":
+            continue
+        legend.append({"href": f"#{s['key']}", "label": s["label"], "count": totals[s["key"]], "css": s["css"],
+                       "emphasis": False, "part_of": False})
+        if s["key"] == deleting and clusters["check"]:
+            # A subset of the entry before it, so it reads "of them 3 …", never as a peer count.
+            legend.append({"href": "#check", "label": "to check first" if dry else "worth a second look",
+                           "count": clusters["check_files"], "css": "seg-check", "emphasis": True, "part_of": True})
     legend.append({"href": "#excluded", "label": "Excluded groups", "count": excluded_groups, "css": "seg-excluded",
-                   "emphasis": False})
+                   "emphasis": False, "part_of": False})
     return legend
 
 
@@ -541,13 +544,14 @@ def _language_line(template_data: dict[str, Any]) -> str:
     return f"Language priority {', '.join(lang)} changed {_plural(decisions, 'decision')}."
 
 
-def _stats_tiles(stats: dict[str, Any]) -> list[dict[str, str]]:
+def _stats_tiles(stats: dict[str, Any], dry: bool = False) -> list[dict[str, str]]:
     """The statistics row under the legend: only facts the headline and the legend don't give."""
+    share = "Share of duplicate space to free" if dry else "Share of duplicate space freed"
     return [
         {"label": "Duplicate groups", "value": str(stats["total_groups"])},
         {"label": "Copies found", "value": str(stats["total_items_to_delete"])},
-        {"label": "Keepers on disk", "value": stats["formatted_size_to_keep"]},
-        {"label": "Space saved", "value": f"{stats['percentage_saved']:.1f}%"},
+        {"label": "Size of the kept copies", "value": stats["formatted_size_to_keep"]},
+        {"label": share, "value": f"{stats['percentage_saved']:.1f}%"},
     ]
 
 
@@ -578,12 +582,14 @@ def _build_run_summary(stats: dict[str, Any], clusters: dict[str, Any], template
     segments = _bar_segments(totals, dry, clusters)
     return {
         "sizes_text": {name: _fmt_size(size) for name, size in clusters["sizes"].items()},
-        "stats_tiles": _stats_tiles(stats),
+        "stats_tiles": _stats_tiles(stats, dry),
         "dry": dry, "headline": headline, "subline": subline, "reconcile": reconcile,
         "warning": _warning(dry, clusters),
         "risky": len(clusters["check"]), "risky_files": clusters["check_files"], "segments": segments,
         "aria": ", ".join(f"{s['count']} {s['label'].lower()}" for s in segments),
         "has_files": clusters["total_files"] > 0,
+        # One outcome only: a single-colour bar says nothing the headline does not.
+        "has_bar": sum(1 for s in segments if s["count"]) > 1,
         "stays": _fmt_size(_stays_on_disk(stats, dry)),
         "legend": _legend(segments, clusters, excluded_groups, dry),
         "decide": _decide_block(clusters, dry, template_data.get("run") or {}),

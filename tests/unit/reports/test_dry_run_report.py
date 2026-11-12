@@ -78,9 +78,9 @@ def test_dry_run_report_shows_the_blocked_pair_and_the_real_numbers():
     with patch("emby_dedupe.reports.images.inline_poster_urls", side_effect=lambda urls, *a, **k: {}):
         html = format_html_report(BASE, _dry_run_decisions())
 
-    assert "Dry run: 1 file would be removed, 2.00 GB would be freed." in html
+    assert "Dry run: 1 file would be removed, 2.00 GiB would be freed." in html
     assert "Would be blocked by the safety guard · 1 file" in html
-    assert "2.00 GB would be freed." in html, "space to free must exclude the blocked delete"
+    assert "2.00 GiB would be freed." in html, "space to free must exclude the blocked delete"
     assert "GB freed.</h1>" not in html
     assert "Dry run · nothing deleted" in html
 

@@ -1439,15 +1439,15 @@ class TestExtractedHelperFunctions:
 
     def test_format_file_size_kilobytes(self):
         """Test file size formatting for kilobytes."""
-        assert _format_file_size(2048) == "2.00 KB"
+        assert _format_file_size(2048) == "2.00 KiB"
 
     def test_format_file_size_megabytes(self):
         """Test file size formatting for megabytes."""
-        assert _format_file_size(5242880) == "5.00 MB"
+        assert _format_file_size(5242880) == "5.00 MiB"
 
     def test_format_file_size_gigabytes(self):
         """Test file size formatting for gigabytes."""
-        assert _format_file_size(5368709120) == "5.00 GB"
+        assert _format_file_size(5368709120) == "5.00 GiB"
 
     def test_format_file_size_zero(self):
         """Test file size formatting for zero bytes."""

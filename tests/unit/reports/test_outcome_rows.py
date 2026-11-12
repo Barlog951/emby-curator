@@ -40,7 +40,7 @@ def test_rows_show_each_files_paths_and_scores():
 
     assert 'data-outcome="removed"' in html
     assert "Removed · 2 files" in html
-    assert '<dt>Folder</dt><dd><span class="fact-path">/S/Show/S01</span></dd>' in html, "the shared folder is said once"
+    assert "folder /S/Show/S01</p>" in html, "the shared folder is said once, under the pairs"
     assert 'title="/S/Show/S01/Show S01E01 - CZ.mkv">CZ.mkv</span>' in html
     assert 'title="/S/Show/S01/Show S01E02 - HDTV.mkv">HDTV.mkv</span>' in html
     assert "90.0 vs 50.0" in html
@@ -48,7 +48,7 @@ def test_rows_show_each_files_paths_and_scores():
 
 def test_deleted_copy_has_no_dead_emby_link():
     html = _render([_ep(1, "success")])
-    body = html[html.index('id="removed" data-outcome="removed"'):html.index('id="excluded"')]
+    body = html[html.index('id="removed" data-outcome="removed"'):html.index("</main>")]
 
     assert body.count('class="url-link"') == 1, "only the kept copy still exists in Emby"
     assert "Open the other copy" not in body
@@ -92,7 +92,7 @@ def test_old_group_cards_are_gone_and_their_facts_live_in_the_row():
 
     assert '<details class="legacy-groups">' not in html
     assert "Group 1:" not in html
-    body = html[html.index('class="crow-body"'):]
-    assert "1.00 GB" in body
+    body = html[html.index('class="crow-body'):]
+    assert "1.00 GiB" in body
     assert "2026-10-01" in body
     assert "aac 2.0" in body

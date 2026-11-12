@@ -70,6 +70,7 @@ class CleanupCandidate:
         collection: Name of the TMDb collection (franchise) this movie belongs to, if any.
             A collection is only ever removed whole, so every owned part is a candidate.
         collection_size: Number of owned parts of that collection (0 when not in one).
+        provider_ids: ProviderIds from Emby (IMDb/TMDb/TVDB), for the report's exclude hint.
     """
 
     item_id: str
@@ -86,6 +87,7 @@ class CleanupCandidate:
     days_left: int | None = None
     collection: str | None = None
     collection_size: int = 0
+    provider_ids: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -108,6 +110,7 @@ class SeriesCleanupCandidate:
         size_bytes: Total size of all episodes in bytes.
         path: Series root path on the Emby server.
         deletion_result: Result dict from delete_item() if --doit was used.
+        provider_ids: ProviderIds from Emby (IMDb/TMDb/TVDB), for the report's exclude hint.
     """
 
     item_id: str
@@ -124,3 +127,4 @@ class SeriesCleanupCandidate:
     path: str
     deletion_result: dict | None = None
     days_left: int | None = None
+    provider_ids: dict[str, str] = field(default_factory=dict)

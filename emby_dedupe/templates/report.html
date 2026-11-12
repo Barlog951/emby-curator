@@ -30,11 +30,16 @@
 <code class="cpath">{% if side.dir %}<span class="dir">{{ side.dir }}/</span>{% endif %}<b>{{ side.base or side.path or "unknown" }}</b></code>
 {%- endmacro %}
 
-{% macro cell(f, side, role, name, r) -%}
-<td class="pf-file{% if role == 'other' %} pf-second{% endif %}" data-l="{{ 'Kept' if role == 'keep' else ('Removed' if name in deleting else 'Other') }}"><span class="pf-name" title="{{ side.path }}">{{ side.short }}</span>{% if role == "other" and not f.episode %}{% if f.status_text and r.per_file_status %}<span class="pf-reason">{{ f.status_text }}</span>{% endif %}{% if r.per_file_reason and f.reason %}<span class="pf-reason">{{ f.reason }}</span>{% endif %}{% endif %}{% for k, v in side.vary.items() %}<span class="pf-vary vary-{{ k }}" title="{{ k }} differs from the rest of the row">{{ v }}</span>{% endfor %}{% if role == "other" and side.image_class and side.image_class != f.keep.image_class %}<span class="thumb thumb-xs poster {{ side.image_class }}" role="img" aria-label="Poster of the other copy differs from the kept one"></span>{% endif %}</td>
-<td class="pf-num fact-runtime{% if role == 'other' and side.runtime == f.keep.runtime %} same-as-kept{% endif %}" data-l="Runtime">{{ side.runtime or "—" }}</td>
-<td class="pf-num fact-size" data-l="Size">{{ side.size_text }}</td>
-<td class="pf-num fact-score" data-l="Score"><span class="score"{% if side.score_summary %} title="{{ side.score_summary }}"{% endif %}>{{ side.score_text or "—" }}</span>{% if side.score_note %}<span class="score-note">{{ side.score_note }}</span>{% endif %}</td>
+{% set other_word = {"removed": "removed", "would_remove": "would go", "failed": "not removed"} %}
+
+{#- One file of a pair: role, short name, what differs, size and its Emby link. -#}
+{% macro pairline(r, f, side, role, name) -%}
+<div class="pair-line pair-{{ role }}"{% if side.score_summary %} title="{{ side.score_summary }}"{% endif %}>
+    <span class="pair-ep">{% if r.is_episode and role == "keep" %}{{ f.episode or f.title }}{% endif %}</span>
+    <span class="pair-role">{% if role == "keep" %}{{ "kept" if name in deleting else "keeper" }}{% else %}{{ other_word.get(name, "other") }}{% endif %}</span>
+    <span class="pair-file"><span class="pf-name" title="{{ side.path }}">{{ side.short }}</span>{% set extra = f.keep_extra if role == "keep" else f.other_extra %}{% if extra %}<span class="pair-extra">{{ extra }}</span>{% endif %}{% if role == "other" and side.image_class and side.image_class != f.keep.image_class %}<span class="thumb thumb-xs poster {{ side.image_class }}" role="img" aria-label="Poster of the other copy differs from the kept one"></span>{% endif %}</span>
+    <span class="pair-meta"><span class="pair-size">{{ side.size_text }}</span><span class="pair-size-word">{% if role == "other" %}{{ f.size_word }}{% endif %}</span><span class="pair-link">{% if role == "keep" or name != "removed" %}<a class="url-link" href="{{ side.url }}" target="_blank" rel="noopener noreferrer" aria-label="Open the {{ 'kept' if role == 'keep' else 'other' }} copy of {{ f.episode or f.title }} in Emby">Emby</a>{% endif %}</span></span>
+</div>
 {%- endmacro %}
 
 {% macro row(r, name, show_pill=false) -%}
@@ -42,7 +47,7 @@
     <summary>
         <span class="crow-line1">
             {% if r.image_class %}<span class="thumb poster {{ r.image_class }}" aria-hidden="true"></span>{% else %}<span class="thumb" aria-hidden="true"></span>{% endif %}
-            <span class="crow-title"><strong>{{ r.name }}</strong><span class="crow-sub">{{ r.sub }} · {{ r.size_text }}{% if r.blocked_runs > 1 %} · blocked in {{ r.blocked_runs }} runs{% endif %}</span></span>
+            <span class="crow-title"><strong>{{ r.name }}</strong><span class="crow-sub">{{ r.sub }} · {{ r.size_text }} {{ {"removed": "freed", "would_remove": "to free", "failed": "not freed"}.get(name, "on hold") }}{% if r.blocked_runs > 1 %} · blocked in {{ r.blocked_runs }} runs{% endif %}</span></span>
             {% if show_pill %}<span class="pill pill-{{ name }}">{{ pill_text[name] }}</span>{% endif %}
         </span>
         <span class="crow-line2">{% for p in r.diff_parts %}<span class="fact-{{ p.kind }}">{{ p.text }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</span>
@@ -53,31 +58,25 @@
         </span>
         {% endif %}
     </summary>
-    <div class="crow-body">
+    <div class="crow-body on-pairs">
         {% if r.shared %}
         <dl class="shared">
-            {% for line in r.shared %}<div><dt>{{ line.label }}</dt><dd>{% for p in line.parts %}<span class="fact-{{ p.kind }}">{{ p.text }}</span>{% if not loop.last %} · {% endif %}{% endfor %}</dd></div>{% endfor %}
+            {% for line in r.shared %}<div><dt>{{ line.label }}</dt><dd>{% for p in line.parts %}<span class="fact-{{ p.kind }}">{{ p.text }}</span>{% if not loop.last %} · {% endif %}{% endfor %}{% if line.label == "Next step" and r.exclude_ids and r.excludable and name in ["blocked", "would_block"] %} Id{{ "s" if r.exclude_ids|length > 1 }} for <code class="flag">--exclude-ids</code>: {{ ids(r.exclude_ids) }}{% if r.exclude_numeric %} <span class="muted">(a bare number matches TMDB and TVDB alike)</span>{% endif %}{% endif %}</dd></div>{% endfor %}
         </dl>
         {% endif %}
-        <div class="pairs-wrap">
-        <table class="pairs">
-            <thead><tr>{% if r.is_episode %}<th class="pf-ep">Episode</th>{% endif %}<th class="pf-file">Kept</th><th class="pf-num fact-runtime">Runtime</th><th class="pf-num fact-size">Size</th><th class="pf-num fact-score">Score</th><th class="pf-file pf-second">{{ "Removed" if name in deleting else "Other" }}</th><th class="pf-num fact-runtime">Runtime</th><th class="pf-num fact-size">Size</th><th class="pf-num fact-score">Score</th><th class="pf-links">Emby</th></tr></thead>
-            <tbody>
+        <div class="pair-list{% if not r.is_episode %} pair-list-film{% endif %}">
             {% for f in r.files %}
-            <tr data-status="{{ f.status }}" data-item-id="{{ f.delete.id }}" data-keep-id="{{ f.keep.id }}">
-                {% if r.is_episode %}<td class="pf-ep" data-l="Episode"><strong>{{ f.episode or f.title }}</strong>{% if r.per_file_status %}<span class="pf-reason">{{ f.status_text }}</span>{% endif %}{% if r.per_file_reason and f.reason %}<span class="pf-reason">{{ f.reason }}</span>{% endif %}</td>{% endif %}
-                {{ cell(f, f.keep, "keep", name, r) }}
-                {{ cell(f, f.delete, "other", name, r) }}
-                <td class="pf-links" data-l="Emby"><a class="url-link" href="{{ f.keep.url }}" target="_blank" rel="noopener" aria-label="Open the kept copy of {{ f.episode or f.title }} in Emby">Kept copy</a>{% if name != "removed" %} <a class="url-link" href="{{ f.delete.url }}" target="_blank" rel="noopener" aria-label="Open the other copy of {{ f.episode or f.title }} in Emby">Other copy</a>{% endif %}</td>
-            </tr>
+            <div class="pair{% if f.same_keep %} pair-cont{% endif %}" data-status="{{ f.status }}" data-item-id="{{ f.delete.id }}" data-keep-id="{{ f.keep.id }}">
+                {% if not f.same_keep %}{{ pairline(r, f, f.keep, "keep", name) }}{% endif %}
+                {{ pairline(r, f, f.delete, "other", name) }}
+            </div>
             {% endfor %}
-            </tbody>
-        </table>
         </div>
+        {% if r.common %}<p class="pair-common">{{ r.common }}</p>{% endif %}
         {% set notes = r.files|map(attribute="keep_note")|reject("equalto", "")|unique|list %}
         {% for note in notes %}<p class="cfile-note">Why this copy: {{ note }}.</p>{% endfor %}
-        {% if r.exclude_ids and r.excludable and name in ["would_remove", "blocked", "would_block"] %}
-        <p class="exclude-hint">{% if name == "would_remove" %}Don't want this removed? Add to <code>--exclude-ids</code> before --doit:{% else %}Checked and they really differ? Add to <code>--exclude-ids</code> to stop pairing them:{% endif %} {{ ids(r.exclude_ids) }}{% if r.exclude_numeric %} <span class="muted">(a bare number matches TMDB and TVDB alike; this title has no IMDb id)</span>{% endif %}</p>
+        {% if r.exclude_ids and name == "would_remove" %}
+        <p class="exclude-hint">Don't want this removed? Add to <code class="flag">--exclude-ids</code> before <code class="flag">--doit</code>: {{ ids(r.exclude_ids) }}{% if r.exclude_numeric %} <span class="muted">(a bare number matches TMDB and TVDB alike; this title has no IMDb id)</span>{% endif %}</p>
         {% endif %}
     </div>
 </details>
@@ -90,6 +89,7 @@
     <p class="run-line">{{ run.mode_short }} · {{ run.generated_human }}{% if run.libraries %} · librar{{ "y" if run.libraries|length == 1 else "ies" }} {{ run.libraries|join(", ") }}{% endif %}</p>
 </header>
 
+<main>
 <section class="run-summary" aria-labelledby="verdict">
     <p class="run-pills"><span class="run-mode{% if run_summary.dry %} dry{% endif %}">{{ run.mode }}</span></p>
     <h1 id="verdict" class="run-headline">{{ run_summary.headline }}</h1>
@@ -97,13 +97,13 @@
     {% if run_summary.warning %}
     <p class="run-warning"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3 2 21h20L12 3z"/><path d="M12 10v5"/><circle cx="12" cy="18" r="0.6"/></svg><span class="sr-only">Warning: </span>{{ run_summary.warning }}</p>
     {% endif %}
-    {% if run_summary.has_files %}
+    {% if run_summary.has_bar %}
     <div class="run-bar" role="img" aria-label="{{ run_summary.aria }}">
         {% for s in run_summary.segments if s.count %}<span class="run-seg {{ s.css }}" style="flex-grow: {{ s.count }}"></span>{% endfor %}
     </div>
     {% endif %}
     <ul class="run-legend" aria-label="Sections">
-        {% for s in run_summary.legend %}<li>{% if s.count %}<a href="{{ s.href }}"{% if s.emphasis %} class="emphasis"{% endif %}>{% else %}<span class="zero-entry">{% endif %}<span class="run-swatch {{ s.css }}{% if not s.count %} zero{% endif %}"></span>{{ s.label }} <strong>{{ s.count }}</strong>{% if s.count %}</a>{% else %}</span>{% endif %}</li>{% endfor %}
+        {% for s in run_summary.legend %}<li>{% if s.count %}<a href="{{ s.href }}"{% if s.emphasis %} class="emphasis"{% endif %}>{% else %}<span class="zero-entry">{% endif %}<span class="run-swatch {{ s.css }}{% if not s.count %} zero{% endif %}"></span>{% if s.part_of %}of them <strong>{{ s.count }}</strong> {{ s.label }}{% else %}{{ s.label }} <strong>{{ s.count }}</strong>{% endif %}{% if s.count %}</a>{% else %}</span>{% endif %}</li>{% endfor %}
     </ul>
     {% if run_summary.has_files %}
     <div class="stats-grid run-stats">
@@ -114,7 +114,7 @@
     <details class="run-decide">
         <summary>Next steps: copy-paste values</summary>
         <dl>
-            {% for a in run_summary.decide %}<div><dt>{{ a.label }}</dt>{% if a.command %}<dd><code>{{ a.command }}</code></dd>{% endif %}</div>{% endfor %}
+            {% for a in run_summary.decide %}<div><dt{% if not a.command %} class="note"{% endif %}>{{ a.label }}</dt>{% if a.command %}<dd><code>{{ a.command }}</code></dd>{% endif %}</div>{% endfor %}
         </dl>
     </details>
     {% endif %}
@@ -124,9 +124,10 @@
    Risky deletions come first in their own section; rows never merge across season
    folders, guard reasons or risk flags. Opening a row shows every file's evidence. #}
 <section class="outcomes" id="outcomes" aria-label="Outcomes">
+<p class="out-lead outcomes-lead">Open a row to compare the copies. Score adds up picture, bitrate and audio; the higher score is kept unless a language rule decides.</p>
 {% if clusters.check %}
 <div class="out-section out-check" id="check" data-outcome="check">
-    <h2 class="out-title"><span class="run-swatch seg-check"></span>{{ "Check first" if run_summary.dry else "Removed, worth a second look" }} · {{ clusters.check_files }} file{{ "" if clusters.check_files == 1 else "s" }} · {{ clusters.check|length }} row{{ "" if clusters.check|length == 1 else "s" }}</h2>
+    <h2 class="out-title"><span class="run-swatch seg-check"></span>{{ "Check first" if run_summary.dry else "Removed, worth a second look" }} · {{ clusters.check_files }} file{{ "" if clusters.check_files == 1 else "s" }}</h2>
     <p class="out-lead">{% if run_summary.dry %}One signal says the wrong copy may go. Open the row and verify on disk before --doit.{% else %}Already removed. Each row has one warning sign: open it to see the kept copy, then check that copy in Emby.{% endif %}</p>
     {% for r in clusters.check %}{{ row(r, r.outcome, true) }}{% endfor %}
 </div>
@@ -136,7 +137,7 @@
 {% set risky_here = clusters.sections[name]|selectattr("risk")|list|length %}
 {% if clusters.totals[name] %}
 <div class="out-section" id="{{ name }}" data-outcome="{{ name }}">
-    <h2 class="out-title"><span class="run-swatch {{ out_css[name] }}{% if not clusters.totals[name] %} zero{% endif %}"></span>{{ out_titles[name] }} · {{ clusters.totals[name] }} file{{ "" if clusters.totals[name] == 1 else "s" }}{% if clusters.sizes[name] and name in deleting %} · {{ run_summary.sizes_text[name] }}{% endif %}{% if risky_here %} · {{ risky_here }} row{{ "" if risky_here == 1 else "s" }} {{ "in Check first" if run_summary.dry else "above, worth a second look" }}{% endif %}</h2>
+    <h2 class="out-title"><span class="run-swatch {{ out_css[name] }}{% if not clusters.totals[name] %} zero{% endif %}"></span>{{ out_titles[name] }} · {{ clusters.totals[name] }} file{{ "" if clusters.totals[name] == 1 else "s" }}{% if clusters.sizes[name] and name == "failed" %} · {{ run_summary.sizes_text[name] }}{% endif %}{% if risky_here %} · {{ risky_here }} row{{ "" if risky_here == 1 else "s" }} {{ "in Check first" if run_summary.dry else "above, worth a second look" }}{% endif %}</h2>
     {% if name in ["blocked", "would_block"] and rows %}<p class="out-lead">Both copies stay. Each row says what to do next.</p>{% endif %}
     {% for r in rows %}{{ row(r, name) }}{% endfor %}
 </div>
@@ -145,15 +146,15 @@
 
 {# One line per duplicate group an excluded ID actually skipped this run, folded; ids
    that matched nothing are counted, not listed one by one. #}
+{% if excluded_groups_count %}
 <div class="out-section" id="excluded" data-outcome="excluded">
     <h2 class="out-title"><span class="run-swatch seg-excluded{% if not excluded_groups_count %} zero{% endif %}"></span>Skipped because you excluded them · {{ excluded_groups_count }} group{{ "" if excluded_groups_count == 1 else "s" }}</h2>
-    {% if not has_excluded_ids %}<p class="out-empty">No ids excluded.</p>{% endif %}
     {% if excluded_titles %}
     <details class="excluded-groups">
         <summary><span class="when-closed">Show</span><span class="when-open">Hide</span> the {{ excluded_titles|length }} skipped group{{ "" if excluded_titles|length == 1 else "s" }}</summary>
         <ul class="excluded-list">
         {% for id, item in excluded_titles.items() %}
-            <li>{% if item.image_class %}<span class="thumb poster {{ item.image_class }}" aria-hidden="true"></span>{% else %}<span class="thumb" aria-hidden="true"></span>{% endif %}<span><strong>{{ item.title }}</strong>{% if item.year %} ({{ item.year }}){% endif %} · <code>{{ id }}</code>{% if id.startswith('tt') %} · <a class="url-link" href="https://www.imdb.com/title/{{ id }}" target="_blank" rel="noopener">IMDb</a>{% elif id.isdigit() %} · <a class="url-link" href="https://www.themoviedb.org/movie/{{ id }}" target="_blank" rel="noopener">TMDB</a>{% endif %}</span></li>
+            <li>{% if item.image_class %}<span class="thumb poster {{ item.image_class }}" aria-hidden="true"></span>{% else %}<span class="thumb" aria-hidden="true"></span>{% endif %}<span><strong>{{ item.title }}</strong>{% if item.year %} ({{ item.year }}){% endif %} · <code>{{ id }}</code>{% if item.link %} · <a class="url-link" href="{{ item.link }}" target="_blank" rel="noopener noreferrer">{{ "IMDb" if "imdb.com" in item.link else "TMDB" }}</a>{% endif %}</span></li>
         {% endfor %}
         </ul>
     </details>
@@ -165,7 +166,9 @@
     </details>
     {% endif %}
 </div>
+{% endif %}
 </section>
+</main>
 
 <footer>
     <p>emby-curator {{ run.version }} · run {{ run.run_id }}{% if run.host %} · host {{ run.host }}{% endif %} · {{ run.generated_at }}{% if run.json_name %} · facts: <code>{{ run.json_name }}</code>{% endif %} · sha256 <code>{{ report_sha[:12] }}</code></p>

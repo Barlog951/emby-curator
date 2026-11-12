@@ -755,6 +755,45 @@ class TestRunCleanupPipeline:
         assert stats["final_candidates"] == 1
         assert candidates[0].item_id == "bad_m"
 
+    def test_days_left_is_the_day_the_pipeline_picks_the_title(self):
+        """Run the pipeline again n-1 and n days later: still kept, then picked."""
+        def movie(days_old, rating):
+            added = (date.today() - timedelta(days=days_old)).isoformat() + "T00:00:00Z"
+            return _make_movie(item_id="m", date_created=added, rating=rating)
+
+        # Mid-decay, close to the crossing, and an 8.5 film before the 12-year gate.
+        for start, rating in ((1200, 6.6), (1290, 6.6), (4300, 8.5)):
+            _, _, near = self._pipeline([movie(start, rating)])
+            assert near, start
+            n = near[0].days_left
+            assert n is not None
+            assert n >= 1
+            _, _, still_near = self._pipeline([movie(start + n - 1, rating)])
+            assert still_near, (start, n)
+            picked, _, _ = self._pipeline([movie(start + n, rating)])
+            assert [c.item_id for c in picked] == ["m"], (start, n)
+
+    def test_candidates_and_near_miss_carry_provider_ids(self):
+        """The report's exclude hint needs each title's provider ids."""
+        movies = [
+            _make_movie(item_id="bad_m", date_created=_date_years_ago(4), rating=4.0,
+                        provider_ids={"Imdb": "tt0111"}),
+            _make_movie(item_id="near_m", date_created=_date_years_ago(4), rating=7.0,
+                        provider_ids={"Tmdb": "42"}),
+        ]
+        candidates, _, near_miss = self._pipeline(movies)
+        assert candidates[0].provider_ids == {"Imdb": "tt0111"}
+        assert near_miss[0].provider_ids == {"Tmdb": "42"}
+
+    def test_series_candidates_carry_provider_ids(self):
+        """Series candidates keep their ProviderIds for the report's exclude hint."""
+        from emby_dedupe.api.cleanup_pipeline import _build_series_candidates
+
+        series = {**_make_series(item_id="s9", provider_ids={"Tvdb": "777"}), "_stale_years": 5.0,
+                  "_last_episode_added": "2021-01-01T00:00:00Z"}
+        built = _build_series_candidates([series], {"s9": 10}, CleanupConfig())
+        assert built[0].provider_ids == {"Tvdb": "777"}
+
     def test_unrated_treated_as_zero(self):
         """CommunityRating=None is treated as 0.0 — always below threshold (DA fix #6)."""
         movie = _make_movie(item_id="unrated_m", date_created=_date_years_ago(4), rating=None)
@@ -2121,3 +2160,46 @@ class TestCollectionGrouping:
             result = _fetch_tmdb_collections(MagicMock(), "http://emby")
         assert result == {"10": ("Saga Collection", ["m1", "m2"])}
         assert all(call.kwargs["params"].get("ParentId") != "b2" for call in req.call_args_list)
+
+
+class TestComputeDaysUntilCandidate:
+    """Days until a near-miss title fails the keep rule (rating >= threshold), on the whole-day grid."""
+
+    @staticmethod
+    def _simulate(eff, today, config, masterpiece):
+        """Walk day by day with the pipeline's own rule: the first day the title would be picked."""
+        from emby_dedupe.api.cleanup_pipeline import _compute_rating_threshold
+
+        for day in range(today, today + 40 * 366):
+            age = day / 365.25
+            if masterpiece and age >= config.masterpiece_only_after_years:
+                if eff < config.masterpiece_rating:
+                    return day - today
+            elif eff < _compute_rating_threshold(age, config):
+                return day - today
+        return None
+
+    def test_matches_a_day_by_day_walk(self):
+        from emby_dedupe.api.cleanup_pipeline import _compute_days_until_candidate
+
+        config = CleanupConfig()
+        for eff in (6.0, 6.25, 6.4, 6.5, 6.75, 7.2, 7.99, 8.4, 8.99):
+            for today in (1096, 1300, 1461, 1460, 2200, 4000, 4382):
+                for masterpiece in (True, False):
+                    expected = self._simulate(eff, today, config, masterpiece)
+                    got = _compute_days_until_candidate(eff, today / 365.25, config, masterpiece)
+                    assert got == expected, (eff, today, masterpiece)
+
+    def test_a_title_exactly_on_its_threshold_still_stays_that_day(self):
+        """Rating 6.5 at 4.0 years meets the 6.5 it needs: it goes the next day, not today."""
+        from emby_dedupe.api.cleanup_pipeline import _compute_days_until_candidate
+
+        assert _compute_days_until_candidate(6.5, 1461 / 365.25, CleanupConfig()) == 1
+
+    def test_series_never_reach_the_films_only_masterpiece_gate(self):
+        from emby_dedupe.api.cleanup_pipeline import _compute_days_until_candidate
+
+        config = CleanupConfig()
+        assert _compute_days_until_candidate(8.4, 11.0, config, masterpiece=True) is not None
+        assert _compute_days_until_candidate(8.4, 11.0, config, masterpiece=False) is None
+        assert _compute_days_until_candidate(9.1, 11.0, config, masterpiece=True) is None

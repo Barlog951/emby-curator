@@ -8,17 +8,17 @@ class TestFormatFileSize:
         assert format_file_size(512) == "512.00 B"
 
     def test_kilobytes(self):
-        assert format_file_size(2048) == "2.00 KB"
+        assert format_file_size(2048) == "2.00 KiB"
 
     def test_megabytes(self):
-        assert format_file_size(5 * 1024 * 1024) == "5.00 MB"
+        assert format_file_size(5 * 1024 * 1024) == "5.00 MiB"
 
     def test_gigabytes(self):
-        assert format_file_size(5 * 1024**3) == "5.00 GB"
+        assert format_file_size(5 * 1024**3) == "5.00 GiB"
 
     def test_terabytes_and_petabytes(self):
-        assert format_file_size(3 * 1024**4) == "3.00 TB"
-        assert format_file_size(2 * 1024**5) == "2.00 PB"
+        assert format_file_size(3 * 1024**4) == "3.00 TiB"
+        assert format_file_size(2 * 1024**5) == "2.00 PiB"
 
     def test_zero_uses_zero_label(self):
         assert format_file_size(0) == "0 B"  # default zero_label
