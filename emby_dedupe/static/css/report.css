@@ -17,6 +17,8 @@ body {
     line-height: 1.6;
     max-width: 1200px;
     margin: 0 auto;
+    /* Titles, file names and paths can be one unbroken word; break it rather than widen the page. */
+    overflow-wrap: anywhere;
     padding: 20px;
 }
 

@@ -892,3 +892,16 @@ class TestCleanupPolish:
 
         one = [{"outcome": "would_remove", "exclude_id": "tt01"}]
         assert _decide(one, [], doit=False)[0]["label"].startswith("To keep the title that would be removed")
+
+
+def test_failed_delete_reason_cuts_a_long_server_error():
+    from emby_dedupe.reports.cleanup import _reason_lines
+    from emby_dedupe.reports.common import short_error
+
+    why, step = _reason_lines("failed", "HTTP 500: " + "Internal   Server\nError " * 50)
+    assert why.startswith("Emby did not delete it (HTTP 500: Internal Server Error")
+    assert why.endswith("…).")
+    assert len(why) < 280
+    assert step == "Run again, or delete it in Emby."
+    assert short_error("  short  \n text ") == "short text"
+    assert short_error("x" * 10, limit=5) == "xxxx…"

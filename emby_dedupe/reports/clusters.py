@@ -26,7 +26,7 @@ from statistics import median
 from typing import Any
 
 from emby_dedupe.api.deletion_guard import folder_season
-from emby_dedupe.reports.common import DELETED_STATUSES, format_size
+from emby_dedupe.reports.common import DELETED_STATUSES, format_size, short_error
 from emby_dedupe.utils.constants import ISO_639_2_B_TO_T, LANGUAGE_NORMALIZATION_MAP
 
 # Report section per deletion status. Anything unknown goes to "other" so no file is dropped.
@@ -442,7 +442,7 @@ def _guard_lines(row: dict[str, Any], files: list[dict[str, Any]]) -> list[dict[
     if not guard:
         return []
     if row["outcome"] in DELETING_OUTCOMES:
-        return [_fact_line("Error", [("reason", guard)])]
+        return [_fact_line("Error", [("reason", short_error(guard))])]
     step = _next_step(row)
     if step:
         return [_fact_line("Next step", [("reason", step)])]

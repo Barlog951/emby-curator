@@ -254,3 +254,20 @@ def test_header_time_is_local_like_the_cleanup_report(monkeypatch):
     finally:
         monkeypatch.undo()
         time.tzset()
+
+
+def test_a_long_server_error_is_cut_on_the_row_but_kept_whole_in_the_data():
+    body = "HTTP 500: " + "<html><body>Internal Server Error</body></html>\n" * 40
+    d = _pair("failed", error=body)
+    row = _rows([d], "failed")[0]
+    shown = {line["label"]: line["text"] for line in row["shared"]}["Error"]
+    assert len(shown) <= 240
+    assert shown.endswith("…")
+    assert "\n" not in shown
+    assert row["reason"] == body, "the raw message stays in the data"
+
+
+def test_unbroken_names_wrap_instead_of_widening_the_page():
+    html = _render([_pair("success", series="A" * 180)])
+    body_rule = html[html.index("body {"):html.index("}", html.index("body {"))]
+    assert "overflow-wrap: anywhere;" in body_rule

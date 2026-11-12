@@ -26,7 +26,7 @@ from emby_dedupe.models.cleanup import (
     CleanupConfig,
     SeriesCleanupCandidate,
 )
-from emby_dedupe.reports.common import format_size, report_dir, write_temp_report
+from emby_dedupe.reports.common import format_size, report_dir, short_error, write_temp_report
 from emby_dedupe.reports.images import inline_images_in_place, inline_poster_urls
 from emby_dedupe.utils.logging import logger
 
@@ -500,7 +500,7 @@ def _reason_lines(outcome: str, error: str | None) -> tuple[str, str]:
     """Plain (why, next step) for a title that is still on disk after a --doit run."""
     text = (error or "").lower()
     if outcome == "failed":
-        why = f"Emby did not delete it ({error})." if error else "Emby did not delete it."
+        why = f"Emby did not delete it ({short_error(error)})." if error else "Emby did not delete it."
         return why, "Run again, or delete it in Emby."
     if outcome == "other":
         return "The run did not try to delete it.", "Run again."

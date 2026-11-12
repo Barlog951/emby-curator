@@ -666,8 +666,9 @@ def _attach_json_twin(template_data: dict[str, Any], stats: dict[str, Any]) -> N
 
     payload = json.dumps(_json_payload(template_data, stats), indent=1, sort_keys=True, ensure_ascii=False)
     template_data["report_json"] = payload
-    # Inside <script> only "</" can end the island; "<\/" is the same JSON string.
-    template_data["report_json_island"] = payload.replace("</", "<\\/")
+    # No "<" may reach the <script> island: "</script" would end it and "<!--<script" would keep the
+    # parser from seeing its real end. "\u003c" is the same JSON string.
+    template_data["report_json_island"] = payload.replace("<", "\\u003c")
     template_data["report_sha"] = hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

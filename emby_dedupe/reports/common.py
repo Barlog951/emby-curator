@@ -136,6 +136,19 @@ def calculate_report_statistics(decisions: list[dict[str, Any]]) -> dict[str, An
     return stats
 
 
+ERROR_TEXT_LIMIT = 240
+
+
+def short_error(text: str, limit: int = ERROR_TEXT_LIMIT) -> str:
+    """An error message fit for a report line: whitespace collapsed, cut at ``limit`` characters.
+
+    A server error can carry a whole HTML page; the full message stays in ``data-reason`` and the
+    JSON twin.
+    """
+    flat = " ".join((text or "").split())
+    return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
+
+
 def format_size(size_bytes: int) -> str:
     """Format a size in bytes to a human-readable string (e.g. "4.20 GiB").
 

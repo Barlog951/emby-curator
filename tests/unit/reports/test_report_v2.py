@@ -291,6 +291,18 @@ def test_json_island_matches_the_twin_and_carries_no_credential():
     assert "</" not in island
 
 
+def test_json_island_survives_markup_in_titles():
+    hostile = '<!--<script>alert(1)</script>-->'
+    d = _pair("success", series=hostile)
+    ctx = build_report_context(BASE, [d], {})
+    island = ctx["report_json_island"]
+    assert "<" not in island, "no markup can open or close anything inside the script element"
+    assert json.loads(island) == json.loads(ctx["report_json"]), "the escaped island is the same data"
+    html = _render([d])
+    assert html.count("</script>") == html.count("<script"), "every script element still closes"
+    assert "<!--<script>" not in html
+
+
 def test_per_file_evidence_is_in_the_row_body():
     """Size, added date, audio codec and the score breakdown lived only in the folded cards."""
     html = _render([_pair("success")])
