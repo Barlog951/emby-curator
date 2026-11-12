@@ -7,6 +7,8 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.8] — 2026-11-12
+
 ### Added
 
 - **Deletion journal.** After every `--doit` run, `dedupe` and `cleanup` append one JSON line per deleted copy to
@@ -16,12 +18,42 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
   the lines are also delivered over SSH to a command on another host that appends its stdin; lines a failed
   delivery missed go out with the next run. A journal failure is logged and never stops the
   run. Lines are written once the deletion pass ends, so a run that crashes during it records nothing.
+- **`numbering` command.** A read-only audit of episodes whose Emby season/episode numbers disagree with
+  their file names (shadowed, unmatched, mixed, mismatch, remapped). It takes an allowlist for series numbered
+  differently on purpose, can show per-user watched marks and writes JSON with `--json-out`.
+- **`ratings fill` and `ratings undo`.** Fills an empty, unlocked OfficialRating on items older than 48 hours:
+  the Slovak certificate, else the US one, else an age from the CZ, DE, AT, PL, HU and GB certificates on the
+  Slovak scale (SK-7, SK-12, SK-15, SK-18), rounded up. Nothing is written when no certificate exists. Each
+  write is re-read and journaled to `~/.emby-dedupe/ratings-journal.jsonl`; `ratings undo --run <id>` clears
+  what a run wrote where the value is still unchanged.
 
 ### Changed
 
 - **Reports are saved to `~/.emby-dedupe/reports/`** (`DEDUPE_REPORT_DIR`) instead of the system temp directory,
   which the OS may purge. The temp directory remains the fallback when that folder cannot be written.
 - The test suite no longer leaves report files in the user's temp directory.
+- **Dedupe report.** Each held pair names its guard rule in plain words and gives one next step. The bulk
+  `--exclude-ids` advice offers only pairs the frame check showed to differ; pairs whose check was unsure or
+  did not run are listed as not for excluding. An open row lists one line per file (kept copy first) with
+  size, space freed or held and an "Open in Emby" link, and shows only the facts that differ. The verdict
+  card has four tiles, and closed-line facts name a changed first audio track, a large size gap in the same
+  format and a PAL speed-up. Excluded groups link to IMDb, or to TMDb for films and shows. On a phone the
+  rows start closed.
+- **Cleanup report rebuilt on the dedupe report's design.** A self-contained page with a verdict card counted
+  from each title's own deletion result, compact rows with plain blocked and failed reasons, a folded "How
+  titles were chosen", a next-in-line forecast with the id that keeps a title, and a copy-paste ids panel.
+- **Report sizes are labelled KiB/MiB/GiB.** The values were already 1024-based.
+- **Dedupe keeps a watched copy** when the kept copy shares no IMDb, TMDb or TVDB id with it. An unreadable
+  watched state holds the delete.
+- **Job failures are visible.** `descriptions fill`, `csfd fill` and `csfd people` exit 1 when Emby refused a
+  write or lookups failed beyond a small share.
+- **Webhook listener** binds to 127.0.0.1 only, caps request bodies at 1 MB, runs one batch at a time and
+  retries a failed chunk up to three times.
+- **Descriptions.** `--update-title` replaces a title only when it is confidently in another language and
+  records each change in `~/.emby-dedupe/title-changes.tsv`. An existing Slovak or Czech overview or tagline
+  is left alone, and an episode whose name does not match TMDB's title at the same numbers is skipped.
+- **ČSFD.** A strict match needs the item's year and never takes an episode or season page; empty search
+  results are trusted for 30 days before a re-check.
 
 ### Security
 
@@ -41,6 +73,12 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
   report, so the dry run promised fewer deletions than the real run made. Such a file now appears under
   "Would be removed" with a "file only (SSH)" chip and counts toward the space to free. A preview that fails
   the host checks (keeper missing, needs review) still reads as blocked.
+- **The genre and ČSFD jobs no longer erase item metadata.** They wrote items built from list responses, which
+  lack most fields and every field lock, and Emby clears whatever a full update omits: ratings, premiere
+  dates, original titles and locks were lost. Both now re-read the full item before writing.
+- **Cleanup: the days until a near-miss title becomes a candidate** were one or two days early. The forecast
+  is now the first whole day the keep rule fails. Series no longer get the films-only 12-year gate.
+- Writes pick the first administrator user, and the descriptions and ČSFD Emby clients wait 120 s instead of 5 s.
 
 ## [3.4.7] — 2026-11-08
 
