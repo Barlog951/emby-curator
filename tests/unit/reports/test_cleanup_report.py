@@ -737,7 +737,8 @@ class TestGenerateCleanupHtmlReport:
         films[2].deletion_result = {"status": "skipped_unsafe", "error": "keeper co-located in a dedicated folder"}
         html = _generate_cleanup_html_report("http://emby", films, self._movie_stats(), default_config, doit=True)
         assert "1 film removed, 1.00 GiB freed." in html
-        assert "1 blocked by the safety guard, 1 failed." in html
+        assert "Blocked and failed titles are still on disk; each row says what to do." in html
+        assert "1 blocked by the safety guard" not in html, "the legend and the headings carry the counts"
         for section in ("removed", "blocked", "failed"):
             assert f'id="{section}"' in html
         assert "Emby did not delete it (HTTP 500)." in html
@@ -781,7 +782,8 @@ class TestGenerateCleanupHtmlReport:
         )
         assert '<code class="ids">tt0123</code>' in html
         assert '<code class="ids">48121</code>' in html
-        assert html.count("a bare number matches TMDB and TVDB alike") == 1
+        assert html.count("A bare number matches TMDB and TVDB alike.") == 1, "said once, in the copy-paste panel"
+        assert "a bare number matches" not in html, "rows no longer repeat it"
 
 
 class TestCleanupHtmlHelpers:
@@ -905,3 +907,10 @@ def test_failed_delete_reason_cuts_a_long_server_error():
     assert step == "Run again, or delete it in Emby."
     assert short_error("  short  \n text ") == "short text"
     assert short_error("x" * 10, limit=5) == "xxxx…"
+
+
+def test_failed_section_lead_does_not_repeat_the_row_reason():
+    from emby_dedupe.reports.cleanup import _SECTIONS
+
+    leads = {key: lead for key, _, _, lead in _SECTIONS}
+    assert leads["failed"] == leads["blocked"] == "Still on disk. Each row says why and what to do."

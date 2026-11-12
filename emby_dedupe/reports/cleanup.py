@@ -413,7 +413,7 @@ _SECTIONS = (
      Markup('Nothing is deleted yet. To keep a title, add its id to <code class="flag">--exclude-ids</code> '
             'before <code class="flag">--doit</code>.')),
     ("blocked", "Blocked", "seg-blocked", "Still on disk. Each row says why and what to do."),
-    ("failed", "Failed", "seg-failed", "Still on disk: Emby did not delete them. Each row says what to do."),
+    ("failed", "Failed", "seg-failed", "Still on disk. Each row says why and what to do."),
     ("other", "Not attempted", "seg-other", "Still on disk: the run did not try to delete them."),
 )
 
@@ -610,12 +610,12 @@ def _verdict(rows: list[dict], near_rows: list[dict], doit: bool) -> dict:
                     f"{format_size(deleting['bytes'])} to free.")
     nxt = _next_up(near_rows)
     subline = f"Next to go: {nxt['name']} {nxt['when']}, {nxt['size_human']}." if nxt else ""
-    held = [(key, word) for key, word in (("blocked", "blocked by the safety guard"), ("failed", "failed"),
-                                          ("other", "not attempted")) if key in count]
+    held = [word for key, word in (("blocked", "blocked"), ("failed", "failed"), ("other", "not attempted"))
+            if key in count]
     warning = ""
     if held:
-        parts = [f"{count[k]['film'] + count[k]['series']} {w}" for k, w in held]
-        warning = f"{', '.join(parts)}. Those titles are still on disk; each row says what to do."
+        kinds = ", ".join(held[:-1]) + " and " + held[-1] if len(held) > 1 else held[0]
+        warning = f"{kinds[0].upper()}{kinds[1:]} titles are still on disk; each row says what to do."
     sections: list[dict[str, Any]] = []
     for key, title, css, lead in _SECTIONS:
         if key not in count:
@@ -642,14 +642,18 @@ def _decide(rows: list[dict], near_rows: list[dict], doit: bool) -> list[dict[st
     def which(group: list[dict], what: str) -> str:
         return f"the title {what}" if len(group) == 1 else f"any of the {len(group)} titles {what}"
 
+    def note(group: list[dict]) -> str:
+        bare = any(r["exclude_id"] and not r["exclude_id"].startswith("tt") for r in group)
+        return "A bare number matches TMDB and TVDB alike." if bare else ""
+
     lines = []
     pending = [r for r in rows if r["outcome"] == "would_remove"] if not doit else []
     if ids(pending):
         lines.append({"label": f"To keep {which(pending, 'that would be removed')}, add its id to --exclude-ids "
-                               "before --doit", "command": ids(pending)})
+                               "before --doit", "command": ids(pending), "note": note(pending)})
     if ids(near_rows):
         lines.append({"label": f"To keep {which(near_rows, 'next in line')} for good, add its id to --exclude-ids",
-                      "command": ids(near_rows)})
+                      "command": ids(near_rows), "note": note(near_rows)})
     return lines
 
 

@@ -34,7 +34,7 @@
             <div><dt>Path</dt><dd><code class="cpath">{{ r.path or "unknown" }}</code></dd></div>
         </dl>
         {% if r.exclude_id and r.outcome in ["would_remove", "next"] %}
-        <p class="exclude-hint">To keep it for good, add to <code class="flag">--exclude-ids</code>: <code class="ids">{{ r.exclude_id }}</code>{% if not r.exclude_id.startswith("tt") %} <span class="muted">(a bare number matches TMDB and TVDB alike)</span>{% endif %}</p>
+        <p class="exclude-hint">To keep it for good, add to <code class="flag">--exclude-ids</code>: <code class="ids">{{ r.exclude_id }}</code></p>
         {% endif %}
         {% if r.outcome != "removed" %}<p class="pf-links">{{ emby_link(r) }}</p>{% endif %}
     </div>
@@ -71,7 +71,7 @@
     <details class="run-decide">
         <summary>Next steps: copy-paste values</summary>
         <dl>
-            {% for a in verdict.decide %}<div><dt>{{ a.label }}:</dt><dd><code>{{ a.command }}</code></dd></div>{% endfor %}
+            {% for a in verdict.decide %}<div><dt>{{ a.label }}:</dt><dd><code>{{ a.command }}</code>{% if a.note %}<span class="muted decide-note">{{ a.note }}</span>{% endif %}</dd></div>{% endfor %}
         </dl>
     </details>
     {% endif %}

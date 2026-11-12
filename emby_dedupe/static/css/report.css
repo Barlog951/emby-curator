@@ -802,6 +802,8 @@ code.flag { font-family: var(--mono); white-space: nowrap; }
 .run-swatch.seg-next { background: none; box-shadow: inset 0 0 0 1px var(--muted); }
 .run-rules .decay-table th:first-child, .run-rules .decay-table td:first-child { padding-left: 0; }
 .run-decide dt.note { font-weight: 400; color: var(--muted); }
+/* A note under a copy-paste value sits on its own line, so selecting the value never takes it along. */
+.run-decide .decide-note { display: block; margin-top: 2px; font-size: 0.85rem; }
 .excluded-groups > summary, .exclusion-ids > summary, .run-command > summary { list-style: none; }
 .excluded-groups > summary::-webkit-details-marker, .exclusion-ids > summary::-webkit-details-marker,
 .run-command > summary::-webkit-details-marker { display: none; }
