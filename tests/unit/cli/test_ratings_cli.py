@@ -140,6 +140,6 @@ def test_ratings_commands_are_registered():
 
     from emby_dedupe.cli.app import app
 
-    runner = CliRunner()
+    runner = CliRunner(env={"COLUMNS": "200", "NO_COLOR": "1", "FORCE_COLOR": None, "TERM": "dumb"})
     assert "--min-age-hours" in runner.invoke(app, ["ratings", "fill", "--help"]).output
     assert "--run" in runner.invoke(app, ["ratings", "undo", "--help"]).output

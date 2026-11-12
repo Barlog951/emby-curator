@@ -154,7 +154,7 @@ def test_numbering_command_is_registered():
 
     from emby_dedupe.cli.app import app
 
-    result = CliRunner().invoke(app, ["numbering", "--help"])
+    result = CliRunner().invoke(app, ["numbering", "--help"], env={"COLUMNS": "200", "NO_COLOR": "1", "FORCE_COLOR": None, "TERM": "dumb"})
     assert result.exit_code == 0
     assert "--allow-file" in result.output
     assert "--marks" in result.output
