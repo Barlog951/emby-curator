@@ -752,7 +752,7 @@ code.flag { font-family: var(--mono); white-space: nowrap; }
 /* Fixed slots on every line, so sizes share one right edge whether or not a word or link follows. */
 .pair-meta {
     display: grid;
-    grid-template-columns: 6.5rem 4.5rem 3.8rem;
+    grid-template-columns: 6.5rem 4.5rem 6.6rem;
     column-gap: 6px;
     align-items: baseline;
     white-space: nowrap;

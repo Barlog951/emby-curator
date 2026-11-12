@@ -223,6 +223,15 @@ def test_failures_lead_the_headline_and_the_bar():
     assert "Files were deleted and cannot be restored." in html
 
 
+def test_risky_rows_start_closed_on_a_phone():
+    html = _render([_pair("success", n=1, keep={"rating": 10.0})])
+    script = html[html.index("<script>"):html.index("</script>")]
+    assert 'matchMedia("(max-width: 700px)")' in script
+    assert 'querySelectorAll("details.crow[open]")' in script
+    assert 'removeAttribute("open")' in script
+    assert html.index("<script>") > html.index('id="check"'), "the script runs after the rows exist"
+
+
 def test_risky_rows_open_first_in_their_own_section():
     html = _render([_pair("success", n=1, keep={"rating": 10.0}), _pair("success", n=2)])
     check = html.index('id="check"')

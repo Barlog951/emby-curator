@@ -38,7 +38,7 @@
     <span class="pair-ep">{% if r.is_episode and role == "keep" %}{{ f.episode or f.title }}{% endif %}</span>
     <span class="pair-role">{% if role == "keep" %}{{ "kept" if name in deleting else "keeper" }}{% else %}{{ other_word.get(name, "other") }}{% endif %}</span>
     <span class="pair-file"><span class="pf-name" title="{{ side.path }}">{{ side.short }}</span>{% set extra = f.keep_extra if role == "keep" else f.other_extra %}{% if extra %}<span class="pair-extra">{{ extra }}</span>{% endif %}{% if role == "other" and side.image_class and side.image_class != f.keep.image_class %}<span class="thumb thumb-xs poster {{ side.image_class }}" role="img" aria-label="Poster of the other copy differs from the kept one"></span>{% endif %}</span>
-    <span class="pair-meta"><span class="pair-size">{{ side.size_text }}</span><span class="pair-size-word">{% if role == "other" %}{{ f.size_word }}{% endif %}</span><span class="pair-link">{% if role == "keep" or name != "removed" %}<a class="url-link" href="{{ side.url }}" target="_blank" rel="noopener noreferrer" aria-label="Open the {{ 'kept' if role == 'keep' else 'other' }} copy of {{ f.episode or f.title }} in Emby">Emby</a>{% endif %}</span></span>
+    <span class="pair-meta"><span class="pair-size">{{ side.size_text }}</span><span class="pair-size-word">{% if role == "other" %}{{ f.size_word }}{% endif %}</span><span class="pair-link">{% if role == "keep" or name != "removed" %}<a class="url-link" href="{{ side.url }}" target="_blank" rel="noopener noreferrer" aria-label="Open the {{ 'kept' if role == 'keep' else 'other' }} copy of {{ f.episode or f.title }} in Emby">Open in Emby</a>{% endif %}</span></span>
 </div>
 {%- endmacro %}
 
@@ -175,6 +175,13 @@
     {% if run_summary.reconcile %}<p>{{ run_summary.reconcile }}{% if run_summary.language_line %} {{ run_summary.language_line }}{% endif %}</p>{% endif %}
     {% if run.argv %}<details class="run-command"><summary>Command</summary><code>{{ run.argv }}</code></details>{% endif %}
 </footer>
+{#- Rows that need a check open on wide screens; on a phone they start closed so the list stays in view. -#}
+<script>
+(function () {
+    if (!window.matchMedia || !window.matchMedia("(max-width: 700px)").matches) { return; }
+    document.querySelectorAll("details.crow[open]").forEach(function (row) { row.removeAttribute("open"); });
+})();
+</script>
 <script type="application/json" id="report-data">{{ report_json_island|safe }}</script>
 </body>
 </html>

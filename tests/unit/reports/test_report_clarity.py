@@ -94,8 +94,8 @@ def test_bar_counts_second_look_files_once_and_pills_show_only_in_the_mixed_sect
 
 def test_kept_copy_link_is_a_labelled_target_and_equal_runtimes_are_marked():
     html = _render([_pair("skipped_unsafe", error=DIFFERENT)])
-    assert 'aria-label="Open the kept copy of S01E01 in Emby">Emby</a>' in html
-    assert 'aria-label="Open the other copy of S01E01 in Emby">Emby</a>' in html
+    assert 'aria-label="Open the kept copy of S01E01 in Emby">Open in Emby</a>' in html
+    assert 'aria-label="Open the other copy of S01E01 in Emby">Open in Emby</a>' in html
     assert "runtime 45:00 on every file" in html, "an equal runtime is said once, not per file"
     assert "(kept 45:00)" not in html
 
