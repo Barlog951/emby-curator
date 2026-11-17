@@ -278,7 +278,7 @@ def _connect_and_fetch_libraries(client, base_url, library):
 
 def _run_deduplication_pipeline(client, base_url, all_provider_tables, excluded_ids,
                                 lang_priorities, api_key, doit, username, password,
-                                frame_check=True, frame_check_host=""):
+                                frame_check=True, frame_check_host="", torrent_url=""):
     """
     Run the deduplication pipeline: identify, rationalize, process.
 
@@ -294,6 +294,7 @@ def _run_deduplication_pipeline(client, base_url, all_provider_tables, excluded_
         password: Password for auth.
         frame_check: Compare the pictures of episode pairs before deleting (needs ffmpeg).
         frame_check_host: ``user@host`` to run that ffmpeg on, next to the files.
+        torrent_url: Transmission RPC URL; deletes of data a torrent still seeds are logged.
 
     Returns:
         Tuple of (decisions, exclusion_metadata, markdown_report).
@@ -340,7 +341,7 @@ def _run_deduplication_pipeline(client, base_url, all_provider_tables, excluded_
 
     markdown_report = process_deletion_and_generate_report(
         client, base_url, decisions, doit, username, password, api_key,
-        report_metadata, library_paths, frames,
+        report_metadata, library_paths, frames, torrent_url or None,
     )
 
     dump_object_to_file(decisions, "testing/deletions") if logger.isEnabledFor(

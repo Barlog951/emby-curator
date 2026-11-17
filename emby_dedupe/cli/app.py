@@ -296,6 +296,17 @@ def dedupe_cmd(
             "Without it the copies are streamed from Emby (~0.5 GB per 1080p pair)."
         ),
     ),
+    torrent_url: str = typer.Option(
+        "",
+        "--transmission-url",
+        envvar="DEDUPE_TRANSMISSION_URL",
+        help=(
+            "Transmission RPC URL (e.g. http://host:9091/transmission/rpc). Each delete that "
+            "removes data a torrent still seeds is named in the log with the torrent and its "
+            "upload ratio; nothing is held. Transmission must see the files under Emby's paths. "
+            "Login, if needed: DEDUPE_TRANSMISSION_USER / DEDUPE_TRANSMISSION_PASSWORD."
+        ),
+    ),
     fold_safe_host: str = typer.Option(
         "",
         "--fold-safe-host",
@@ -364,7 +375,7 @@ def dedupe_cmd(
             client, base_url, all_provider_tables, resolved.excluded_ids,
             resolved.lang_priorities, resolved.api_key, resolved.doit,
             resolved.username, resolved.password, frame_check=frame_check,
-            frame_check_host=frame_check_host,
+            frame_check_host=frame_check_host, torrent_url=torrent_url,
         )
 
         # Fold-safe runs BEFORE the report: it removes guard-refused duplicates over SSH

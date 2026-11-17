@@ -121,3 +121,6 @@ def _isolated_dedupe_history(tmp_path, monkeypatch):
     monkeypatch.setenv("DEDUPE_JOURNAL_FILE", str(tmp_path / "deletions.jsonl"))
     monkeypatch.delenv("DEDUPE_JOURNAL_HOST", raising=False)
     monkeypatch.delenv("DEDUPE_JOURNAL_REMOTE_COMMAND", raising=False)
+    # The seeding check must never query a real Transmission set in a .env file.
+    for name in ("DEDUPE_TRANSMISSION_URL", "DEDUPE_TRANSMISSION_USER", "DEDUPE_TRANSMISSION_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)

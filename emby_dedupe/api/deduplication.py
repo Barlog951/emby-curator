@@ -22,6 +22,7 @@ from emby_dedupe.api.deletion_guard import (
 )
 from emby_dedupe.api.fold_safe_delete import duration_mismatch
 from emby_dedupe.api.metadata import get_image_url, rate_media_items
+from emby_dedupe.api.seeding import annotate_seeding
 from emby_dedupe.api.watch_history import annotate_watched_copies, watched_copy_reason
 from emby_dedupe.models.disjoint_set import DisjointSet
 from emby_dedupe.reports import markdown
@@ -1739,6 +1740,7 @@ def process_deletion_and_generate_report(
     metadata: dict = None,
     library_paths: list = None,
     frames: FrameChecker | None = None,
+    torrent_url: str | None = None,
 ) -> str:
     """
     Processes deletions based on the decisions and generates a markdown report.
@@ -1759,6 +1761,9 @@ def process_deletion_and_generate_report(
             may over-refuse safe deletes. Defaults to None.
         frames (FrameChecker, optional): compares the pictures of episode pairs before a
             delete (and confirms PAL speed-ups). None skips the frame check.
+        torrent_url (str, optional): Transmission RPC URL. Each delete that removes data a
+            torrent still seeds is logged and recorded on the item; it is not held. None
+            skips the seeding check.
 
     Returns:
         str: The generated markdown report.
@@ -1786,6 +1791,9 @@ def process_deletion_and_generate_report(
 
     # Who watched each copy that shares no provider id with its keeper (the guard holds those).
     annotate_watched_copies(client, base_url, decisions)
+
+    # Which copies a live torrent still seeds: logged and recorded, never held.
+    annotate_seeding(torrent_url, decisions, known_paths, delete_paths)
 
     if not doit:
         deletion_progress_bar = tqdm(
