@@ -72,7 +72,9 @@ MIN_KEYFRAMES = 2
 WINDOW_FPS = 4  # the other copy is sampled this densely, so every keyframe has a near twin
 FFMPEG_TIMEOUT_SECONDS = 120
 PARALLEL_PAIRS = 4  # streaming from Emby over the network
-PARALLEL_PAIRS_ON_HOST = 12  # ffmpeg on the media host, next to the files
+# ffmpeg on the media host, next to the files. All of them share one SSH connection, so
+# this stays below sshd's default MaxSessions (10).
+PARALLEL_PAIRS_ON_HOST = 8
 # Saved verdicts are keyed by this: bump it whenever the method or a threshold changes,
 # so every pair is checked again under the new rules.
 CHECK_VERSION = 5
@@ -83,6 +85,9 @@ _SAVED_VERDICTS = frozenset({"same", "different", "unsure"})
 SSH_OPTIONS = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/emby-curator-%r@%h:%p",
                "-o", "ControlPersist=120")
+# The media host usually serves playback too: its ffmpeg runs at the lowest CPU and I/O
+# priority (ionice only where the host has it).
+REMOTE_LOW_PRIORITY = "nice -n 19 $(command -v ionice >/dev/null 2>&1 && echo ionice -c3)"
 
 # PAL speed-up: film shot at 23.976 or 24 fps played at 25 fps runs 4.2 % shorter.
 SPEEDUP_RATIOS = (25 / (24000 / 1001), 25 / 24)
@@ -425,7 +430,7 @@ class FrameChecker:
             "-vf", f"{rate}scale={FRAME_WIDTH}:{FRAME_HEIGHT},format=gray,showinfo", "-f", "rawvideo", "-",
         ]
         if self._ssh_host:
-            cmd = ["ssh", *SSH_OPTIONS, self._ssh_host, shlex.join(cmd)]
+            cmd = ["ssh", *SSH_OPTIONS, self._ssh_host, f"{REMOTE_LOW_PRIORITY} {shlex.join(cmd)}"]
         try:
             run = subprocess.run(cmd, capture_output=True, timeout=FFMPEG_TIMEOUT_SECONDS, check=False)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -441,6 +446,20 @@ class FrameChecker:
             logger.warning(f"Frame check: item {item_id} gave {len(times)} frame times for "
                            f"{len(run.stdout) // (FRAME_WIDTH * FRAME_HEIGHT)} frames; treated as unreadable.")
         return keyframes
+
+    def _open_connection(self) -> None:
+        """Open the shared SSH connection before the parallel checks start.
+
+        Without it every worker that starts before the first login finishes opens a
+        connection of its own.
+        """
+        if not self._ssh_host:
+            return
+        try:
+            subprocess.run(["ssh", *SSH_OPTIONS, self._ssh_host, "true"], capture_output=True,
+                           timeout=FFMPEG_TIMEOUT_SECONDS, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning(f"Frame check: could not open the SSH connection to {self._ssh_host}: {exc}")
 
     def _known(self, keeper: dict, other: dict, kind: str = "compare") -> FrameVerdict | None:
         """The verdict already measured for this pair, this run or a saved earlier one."""
@@ -501,6 +520,7 @@ class FrameChecker:
             return
         where = f"on {self._ssh_host}" if self._ssh_host else "streamed from Emby"
         logger.info(f"Frame check: comparing {len(todo)} pair(s), {self._parallel} at a time, {where}...")
+        self._open_connection()
         counts: Counter[str] = Counter()
         with ThreadPoolExecutor(max_workers=self._parallel) as pool:
             futures = {pool.submit(self._run, kind, keeper, other): (kind, keeper, other)

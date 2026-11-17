@@ -19,6 +19,8 @@ import os
 import shlex
 import subprocess
 
+from emby_dedupe.api.content_check import SSH_OPTIONS
+
 logger = logging.getLogger(__name__)
 
 # Marker key set on a delete item by the deletion code when the guard refuses it (in both
@@ -182,13 +184,11 @@ def _build_remote_script(keeper: str, delete: str, doit: bool) -> str:
 def _ssh_runner(ssh_host: str, remote_script: str) -> tuple[int, str, str]:
     """Run ``remote_script`` on ``ssh_host`` via SSH. Returns (rc, stdout, stderr).
 
-    ``BatchMode=yes`` fails fast instead of hanging on an auth/host-key prompt.
+    ``BatchMode=yes`` fails fast instead of hanging on an auth/host-key prompt. Calls reuse
+    one shared connection (the frame check's options), so a batch logs in once.
     """
     proc = subprocess.run(
-        [
-            "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
-            "-o", "StrictHostKeyChecking=accept-new", ssh_host, remote_script,
-        ],
+        ["ssh", *SSH_OPTIONS, "-o", "StrictHostKeyChecking=accept-new", ssh_host, remote_script],
         capture_output=True, text=True, timeout=60,
     )
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()

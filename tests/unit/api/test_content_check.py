@@ -607,3 +607,40 @@ def test_frame_rates_are_read_as_the_picture_rate():
 def test_snapped_rates_still_tell_a_speed_up_from_equal_speed():
     assert expected_speed(_ep("k", 2400, 25.0), _ep("o", 2400, 25.0)) == 1.0
     assert abs(expected_speed(_ep("k", 2400, 25.0), _ep("o", 2500, 23.976)) - 0.95904) < 1e-4
+
+
+# --- load on the media host -------------------------------------------------------------
+
+def test_on_the_media_host_ffmpeg_runs_at_the_lowest_priority():
+    """The media host serves playback: its frame-check ffmpeg must never compete with Emby."""
+    checker = FrameChecker("http://emby", "k", ssh_host="me@media")
+    with patch("emby_dedupe.api.content_check.subprocess.run") as run:
+        run.return_value = MagicMock(stdout=b"", stderr=b"", returncode=0)
+        checker._keyframes({"id": "9", "path": "/Movies/a.mkv"}, 0, 30)
+    remote = run.call_args.args[0][-1]
+    assert remote.startswith("nice -n 19 ")
+    assert "ionice -c3" in remote
+    assert "ffmpeg" in remote.split("ionice -c3", 1)[1]
+
+
+def test_prefetch_opens_one_shared_connection_before_the_workers():
+    """65 logins in 5 minutes hit sshd's MaxSessions: the workers share one connection."""
+    import emby_dedupe.api.content_check as cc
+
+    checker = FrameChecker("http://emby", "k", ssh_host="me@media")
+    order = []
+    with patch("emby_dedupe.api.content_check.subprocess.run",
+               side_effect=lambda cmd, **kw: order.append(cmd) or MagicMock(returncode=0)), \
+         patch.object(checker, "_compare", side_effect=lambda *a: order.append("pair") or FrameVerdict("same", (0.9,) * 3)):
+        checker.prefetch([(_ep("k", 2400, 25), _ep("o", 2400, 25))])
+    assert order[0][-1] == "true"
+    assert "ControlMaster=auto" in order[0]
+    assert order[1] == "pair"
+    assert cc.PARALLEL_PAIRS_ON_HOST < 10
+
+
+def test_streaming_from_emby_opens_no_ssh_connection():
+    checker = FrameChecker("http://emby", "k", ffmpeg_path="ffmpeg")
+    with patch("emby_dedupe.api.content_check.subprocess.run") as run:
+        checker._open_connection()
+    run.assert_not_called()

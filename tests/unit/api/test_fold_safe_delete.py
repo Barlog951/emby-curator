@@ -292,3 +292,16 @@ def test_execute_survives_runner_exception():
     )
     assert results[0]["status"] == "failed"
     assert "ssh unreachable" in results[0]["detail"]
+
+
+def test_ssh_runner_reuses_the_shared_connection():
+    """A batch of file removals logs in to the media host once, not once per file."""
+    from emby_dedupe.api import fold_safe_delete as fsd
+
+    with mock.patch.object(fsd.subprocess, "run") as run:
+        run.return_value = mock.MagicMock(returncode=0, stdout="OK\n", stderr="")
+        assert fsd._ssh_runner("me@media", "echo OK") == (0, "OK", "")
+    cmd = run.call_args.args[0]
+    assert "ControlMaster=auto" in cmd
+    assert "BatchMode=yes" in cmd
+    assert cmd[-2:] == ["me@media", "echo OK"]
