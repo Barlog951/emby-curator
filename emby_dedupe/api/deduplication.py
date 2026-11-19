@@ -1173,21 +1173,43 @@ def determine_items_to_delete(duplicate_ids: list, all_items_details: list, lang
 
     # Step 5: language priority must not delete the best-quality copy when that copy's
     # audio language is unknown: it may be the priority language, just untagged. Neither
-    # answer is knowable, so the group is left alone.
+    # answer is knowable, so every copy is kept, and the group is reported as held.
     if (lang_priorities and default_top_item is not None
             and rated_items[0]["id"] != default_top_item["id"]
             and not _get_clean_languages(default_top_item)):
-        logger.warning(
-            f"Skipping group {duplicate_ids}: language priority would delete the best copy "
-            f"(id={default_top_item['id']}), whose audio language is unknown. Both kept."
-        )
-        return {"keep": {}, "delete": []}
+        return _hold_for_untagged_best_copy(rated_items, default_top_item, lang_priorities, duplicate_ids)
 
     # The first item in the sorted list is the one to keep; the rest are duplicates
     item_to_keep = rated_items[0]
     items_to_delete = rated_items[1:]
 
     return {"keep": item_to_keep, "delete": items_to_delete}
+
+
+def _hold_for_untagged_best_copy(rated_items: list, best_copy: dict, lang_priorities: list,
+                                 duplicate_ids: list) -> dict:
+    """Keep the best-quality copy and hold every other copy of the group.
+
+    Language priority prefers another copy, but the best copy's audio has no language tag,
+    so it may be a priority language itself. Each other copy carries the hold reason under
+    ``UNTAGGED_BEST_COPY_HOLD``; ``_refusal_reason`` returns it, so the guard refuses the
+    delete on the dry-run and the ``--doit`` path alike and the report lists the group as
+    held. The hold never sets the fold-safe marker, so ``--fold-safe-delete`` keeps the
+    files too.
+    """
+    best_copy["selected_by_language_priority"] = False
+    best_copy["changed_by_language_priority"] = False
+    best_copy["language_priority_list"] = lang_priorities
+    reason = (f"{MERGE_AUDIO_FIRST}: the kept copy has the better quality but untagged audio that may be a "
+              "--lang-prio language; check its language (Whisper) and tag it first, then re-run")
+    held = [item for item in rated_items if item["id"] != best_copy["id"]]
+    for item in held:
+        item[UNTAGGED_BEST_COPY_HOLD] = reason
+    logger.warning(
+        f"Holding group {duplicate_ids}: language priority would delete the best copy "
+        f"(id={best_copy['id']}), whose audio language is unknown. All copies kept."
+    )
+    return {"keep": best_copy, "delete": held}
 
 
 
@@ -1406,6 +1428,9 @@ def _unknown_runtime(item: dict, keeper: dict) -> str | None:
 
 
 MERGE_AUDIO_FIRST = "merge-audio-first"
+# Delete-item key holding the reason a group was held because its best copy's audio is
+# untagged (set by ``_hold_for_untagged_best_copy``, read by ``_refusal_reason``).
+UNTAGGED_BEST_COPY_HOLD = "untagged_best_copy_hold"
 _ENGLISH_CODES = {"eng": "en", "english": "en"}
 _CLASS_DISPLAY = {"2160p": "4K"}   # the report and log wording of the top class
 
@@ -1505,10 +1530,11 @@ def merge_audio_first_reason(item: dict, keeper: dict) -> str | None:
 
 
 def _refusal_reason(item: dict, keeper: dict, frames: FrameChecker | None = None) -> str | None:
-    """Every reason the guard keeps both copies: different content first, then an audio merge,
-    then watch history the delete would lose."""
-    return (_different_content_reason(item, keeper, frames) or merge_audio_first_reason(item, keeper)
-            or watched_copy_reason(item, keeper))
+    """Every reason the guard keeps both copies: different content first, then a group held
+    because its best copy's audio is untagged, then an audio merge, then watch history the
+    delete would lose."""
+    return (_different_content_reason(item, keeper, frames) or item.get(UNTAGGED_BEST_COPY_HOLD)
+            or merge_audio_first_reason(item, keeper) or watched_copy_reason(item, keeper))
 
 
 def _refuse_different_content(item: dict, keeper: dict, frames: FrameChecker | None = None) -> str | None:

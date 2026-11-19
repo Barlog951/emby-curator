@@ -142,22 +142,139 @@ def test_same_runtime_copy_is_still_deleted(monkeypatch):
 
 # --- language: never delete the best copy just because its language is untagged ---
 
-def _episode(item_id, path, width, height, size, language):
-    audio = {"Type": "Audio", "Codec": "aac", "Channels": 2}
-    if language is not None:
-        audio["Language"] = language
-    return {"Id": item_id, "Name": "All in a Fog", "SeriesName": "Count Duckula", "Path": path, "Size": size,
-            "MediaStreams": [{"Type": "Video", "Codec": "h264", "Width": width, "Height": height}, audio]}
+def _episode(item_id, path, width, height, size, language, runtime_ticks=None, series="Count Duckula"):
+    languages = language if isinstance(language, list) else [language]
+    tracks = []
+    for code in languages:
+        audio = {"Type": "Audio", "Codec": "aac", "Channels": 2}
+        if code is not None:
+            audio["Language"] = code
+        tracks.append(audio)
+    item = {"Id": item_id, "Name": "All in a Fog", "SeriesName": series, "Path": path, "Size": size,
+            "MediaStreams": [{"Type": "Video", "Codec": "h264", "Width": width, "Height": height}, *tracks]}
+    if runtime_ticks is not None:
+        item["RunTimeTicks"] = runtime_ticks
+    return item
+
+
+LANG_PRIO = ["sk", "cs", "eng"]  # what the CLI makes of --lang-prio "slo,sk,cze,ces,eng"
+DUCKULA_BLURAY = "/tv/Duckula/S01/Duckula S01E09 - 720p BluRay CZ.mkv"
+DUCKULA_X264 = "/tv/Duckula/S01/Duckula S01E09 - 480p x264.mp4"
+
+
+def _duckula(bluray_language, runtime_ticks=int(22.5 * MIN)):
+    return [_episode("1", DUCKULA_BLURAY, 1280, 720, 383_000_000, bluray_language, runtime_ticks),
+            _episode("2", DUCKULA_X264, 640, 480, 159_000_000, "eng", runtime_ticks)]
+
+
+def _assert_held(decision, keep_id, held_ids):
+    """The best copy is the keeper and every other copy carries the untagged-best-copy hold,
+    which is the reason the guard gives for it."""
+    keep = decision["keep"]
+    assert keep["id"] == keep_id
+    assert sorted(d["id"] for d in decision["delete"]) == sorted(held_ids)
+    for item in decision["delete"]:
+        hold = item[dd.UNTAGGED_BEST_COPY_HOLD]
+        assert hold.startswith(dd.MERGE_AUDIO_FIRST)
+        assert "untagged audio" in hold
+        assert dd._refusal_reason(item, keep) == hold
 
 
 @pytest.mark.parametrize("bluray_language", [None, "und"])
 def test_untagged_better_copy_is_not_deleted_for_a_tagged_worse_one(bluray_language):
     """Count Duckula: the 720p BluRay (Czech, but untagged) was deleted to keep a tagged
-    English 480p. Now the group is left alone."""
-    items = [_episode("1", "/tv/Duckula/S01/Duckula S01E09 - 720p BluRay CZ.mkv", 1280, 720, 383_000_000, bluray_language),
-             _episode("2", "/tv/Duckula/S01/Duckula S01E09 - 480p x264.mp4", 640, 480, 159_000_000, "eng")]
-    decision = dd.determine_items_to_delete(["1", "2"], items, ["sk", "cs", "eng"])
-    assert decision == {"keep": {}, "delete": []}
+    English 480p. Now the BluRay is the keeper and the group is held, not deleted."""
+    decision = dd.determine_items_to_delete(["1", "2"], _duckula(bluray_language), ["sk", "cs", "eng"])
+    _assert_held(decision, "1", ["2"])
+    assert decision["keep"]["selected_by_language_priority"] is False
+    assert decision["keep"]["changed_by_language_priority"] is False
+
+
+@pytest.mark.parametrize("bluray_language", [None, "und"])
+def test_held_group_is_never_deleted_under_doit(monkeypatch, bluray_language):
+    calls: list = []
+    monkeypatch.setattr(dd, "delete_item", lambda *a, **k: calls.append(a) or {"status": "success"})
+    decision = dd.determine_items_to_delete(["1", "2"], _duckula(bluray_language), ["sk", "cs", "eng"])
+    keep, held = decision["keep"], decision["delete"][0]
+    assert dd._different_content_reason(held, keep) is None  # the hold, not another guard, refuses it
+    dd._execute_one_deletion(MagicMock(), "http://emby", held, keep["path"], decision,
+                             [keep["path"], held["path"]], [held["path"]], "u", "p", "k", MagicMock())
+    assert calls == []
+    assert held["deletion_result"] == {"id": "2", "status": "skipped_unsafe", "error": held[dd.UNTAGGED_BEST_COPY_HOLD]}
+    assert "fold_safe_candidate" not in held  # --fold-safe-delete must not remove it file-only
+
+
+def test_held_group_shows_as_would_block_in_a_dry_run():
+    decision = dd.determine_items_to_delete(["1", "2"], _duckula(None), ["sk", "cs", "eng"])
+    keep = decision["keep"]
+    dd._warn_unsafe_deletions([decision], [keep["path"], DUCKULA_X264], [DUCKULA_X264])
+    dd._mark_items_as_not_attempted([decision], MagicMock())
+    held = decision["delete"][0]
+    assert held["deletion_result"]["status"] == "would_block"
+    assert held["deletion_result"]["error"] == held[dd.UNTAGGED_BEST_COPY_HOLD]
+    assert "fold_safe_candidate" not in held
+
+
+def test_held_group_reaches_the_report_decisions(monkeypatch):
+    """The held group used to vanish: an empty decision never reached the report."""
+    items = _duckula(None)
+    monkeypatch.setattr(dd, "fetch_items_details", lambda *a, **k: items)
+    decisions, _ = dd.process_duplicate_groups(MagicMock(), "http://emby", [["1", "2"]], lang_priorities=["sk", "cs", "eng"])
+    assert len(decisions) == 1
+    _assert_held(decisions[0], "1", ["2"])
+
+
+def test_held_group_is_a_merge_audio_row_that_is_never_excludable():
+    from emby_dedupe.reports.clusters import EXCLUDABLE_REASONS, _reason_code
+    decision = dd.determine_items_to_delete(["1", "2"], _duckula(None), ["sk", "cs", "eng"])
+    code = _reason_code(decision["delete"][0][dd.UNTAGGED_BEST_COPY_HOLD])
+    assert code == "merge_audio"
+    assert code not in EXCLUDABLE_REASONS
+
+
+def test_every_other_copy_of_a_held_group_is_held():
+    """A third, worse copy in a language outside --lang-prio passes every other guard against
+    the untagged keeper; the hold keeps it as well, as the whole group was kept before."""
+    items = [*_duckula(None),
+             _episode("3", "/tv/Duckula/S01/Duckula S01E09 - 360p.avi", 480, 360, 90_000_000, "ger", int(22.5 * MIN))]
+    decision = dd.determine_items_to_delete(["1", "2", "3"], items, ["sk", "cs", "eng"])
+    _assert_held(decision, "1", ["2", "3"])
+    third = next(d for d in decision["delete"] if d["id"] == "3")
+    assert dd._different_content_reason(third, decision["keep"]) is None
+    assert dd.merge_audio_first_reason(third, decision["keep"]) is None  # only the hold refuses it
+
+
+def test_untagged_best_copy_is_held_against_a_same_class_copy_with_every_language():
+    """Same picture class, and the tagged copy carries every --lang-prio language: no merge
+    reason fires for the untagged copy, so only the hold keeps it."""
+    items = [_episode("1", "/tv/Show/S01/Show S01E01 - 1080p WEB-DL.mkv", 1920, 1080, 2_000_000_000, None, int(50 * MIN)),
+             _episode("2", "/tv/Show/S01/Show S01E01 - 1080p HDTV.mkv", 1920, 1080, 1_900_000_000,
+                      ["slo", "cze", "eng"], int(50 * MIN))]
+    decision = dd.determine_items_to_delete(["1", "2"], items, LANG_PRIO)
+    _assert_held(decision, "1", ["2"])
+    assert dd.merge_audio_first_reason(decision["keep"], decision["delete"][0]) is None
+
+
+def _true_detective(item_id, path, codec, width, height, video_bitrate, channels, language, size):
+    audio = {"Type": "Audio", "Codec": "ac3", "BitRate": 384_000, "Channels": channels}
+    if language:
+        audio["Language"] = language
+    return {"Id": item_id, "Name": "Night Finds You", "SeriesName": "True Detective", "Path": path, "Size": size,
+            "RunTimeTicks": 34_610_000_000, "MediaStreams": [
+                {"Type": "Video", "Codec": codec, "Width": width, "Height": height, "BitRate": video_bitrate}, audio]}
+
+
+def test_true_detective_pack_with_untagged_czech_audio_is_held_and_reported():
+    """True Detective S02E01: the 1080p WEB-DL "CZ" copy has one untagged audio track, the old
+    720p copy a tagged Czech one, and language priority prefers the old copy. The pair was
+    skipped without a report row; stream values are the real ones."""
+    folder = "/Movies/Serials/--- PREBIEHAJUCE ---/True Detective/S02"
+    items = [_true_detective("21582574", f"{folder}/True Detective S02E01 - 1080p WEB-DL CZ.mkv",
+                             "hevc", 1920, 1080, 3_111_751, 2, None, 1_346_205_888),
+             _true_detective("21430853", f"{folder}/True Detective S02E01 - 480p.mkv",
+                             "h264", 1280, 720, 4_085_884, 6, "cze", 1_767_716_963)]
+    decision = dd.determine_items_to_delete(["21430853", "21582574"], items, LANG_PRIO)
+    _assert_held(decision, "21582574", ["21430853"])
 
 
 def test_tagged_priority_language_still_decides_normally():
