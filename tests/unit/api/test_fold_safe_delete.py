@@ -2,7 +2,10 @@
 import importlib
 import os
 import pathlib
+import shutil
 from unittest import mock
+
+import pytest
 
 from emby_dedupe.api.fold_safe_delete import (
     _build_remote_script,
@@ -232,6 +235,87 @@ def test_remote_script_sweeps_subtitle_sidecars(tmp_path):
     assert not (tmp_path / "S01E07.1080i.HDTV.CZ.nfo").exists()
     assert keeper.exists()          # keeper untouched
     assert bystander.exists()       # unrelated episode's sidecar untouched
+
+
+_SHELLS = [sh for sh in ("sh", "bash", "dash") if shutil.which(sh)]
+
+
+def _run_sweep(shell, folder, keeper, delete):
+    import subprocess
+
+    script = _build_remote_script(str(folder / keeper), str(folder / delete), doit=True)
+    proc = subprocess.run([shell, "-c", script], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "OK"
+    return sorted(p.name for p in folder.iterdir())
+
+
+def _touch(folder, *names):
+    for name in names:
+        (folder / name).write_text(name)
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_sweep_keeps_the_sidecars_of_a_keeper_whose_name_extends_the_deleted_one(tmp_path, shell):
+    _touch(tmp_path, "X - 576p.mkv", "X - 576p.nfo", "X - 576p.cs.srt",
+           "X - 576p CZ.mkv", "X - 576p CZ.nfo", "X - 576p CZ.cs.srt")
+    left = _run_sweep(shell, tmp_path, "X - 576p CZ.mkv", "X - 576p.mkv")
+    assert left == ["X - 576p CZ.cs.srt", "X - 576p CZ.mkv", "X - 576p CZ.nfo"]
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_sweep_keeps_a_dot_named_keepers_subtitles(tmp_path, shell):
+    # "X.*.srt" would also match "X.CZ.cs.srt", which belongs to "X.CZ.mkv".
+    _touch(tmp_path, "X.mkv", "X.en.srt", "X.CZ.mkv", "X.CZ.cs.srt", "X.CZ.nfo")
+    left = _run_sweep(shell, tmp_path, "X.CZ.mkv", "X.mkv")
+    assert left == ["X.CZ.cs.srt", "X.CZ.mkv", "X.CZ.nfo"]
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_sweep_keeps_sidecars_shared_with_a_same_stem_keeper(tmp_path, shell):
+    _touch(tmp_path, "X.mkv", "X.MP4", "X.nfo", "X.cs.srt")
+    left = _run_sweep(shell, tmp_path, "X.MP4", "X.mkv")
+    assert left == ["X.MP4", "X.cs.srt", "X.nfo"]
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_sweep_keeps_sidecars_of_a_same_stem_keeper_in_another_container(tmp_path, shell):
+    _touch(tmp_path, "X.avi", "X.mkv", "X.nfo", "X.sk.srt")
+    left = _run_sweep(shell, tmp_path, "X.mkv", "X.avi")
+    assert left == ["X.mkv", "X.nfo", "X.sk.srt"]
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_failed_rm_is_not_reported_as_removed(tmp_path, shell):
+    import os
+    import subprocess
+
+    if os.geteuid() == 0:
+        pytest.skip("root ignores folder permissions")
+    _touch(tmp_path, "X.mkv", "X.nfo", "X CZ.mkv")
+    tmp_path.chmod(0o555)
+    try:
+        script = _build_remote_script(str(tmp_path / "X CZ.mkv"), str(tmp_path / "X.mkv"), doit=True)
+        proc = subprocess.run([shell, "-c", script], capture_output=True, text=True)
+    finally:
+        tmp_path.chmod(0o755)
+    assert proc.returncode == 13
+    assert "OK" not in proc.stdout
+    assert (tmp_path / "X.mkv").exists()
+    assert (tmp_path / "X.nfo").exists()
+    results = execute_fold_safe_deletes(
+        [{"keeper": "k", "delete": "d", "status": "ok"}], "h", doit=True,
+        runner=lambda host, script: (proc.returncode, proc.stdout.strip(), proc.stderr.strip()),
+    )
+    assert results[0]["status"] == "failed"
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_sweep_still_removes_the_deleted_files_own_sidecars(tmp_path, shell):
+    _touch(tmp_path, "Show S01E01.mkv", "Show S01E01.nfo", "Show S01E01.sk.srt", "Show S01E01.idx",
+           "Show S01E01 - 1080p.mkv", "Show S01E02.cs.srt")
+    left = _run_sweep(shell, tmp_path, "Show S01E01 - 1080p.mkv", "Show S01E01.mkv")
+    assert left == ["Show S01E01 - 1080p.mkv", "Show S01E02.cs.srt"]
 
 
 # ---- execute_fold_safe_deletes ----------------------------------------------

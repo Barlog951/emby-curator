@@ -22,7 +22,10 @@ EP_KEEP_IN_SEASON = "/Movies/Serials/Reacher/S03/Reacher S03E02 - DoVi [HDR10].m
 EP_KEEP_COLOCATED = "/Movies/Serials/Reacher/S03/Reacher S03E02 - DoVi/Reacher S03E02 - DoVi [HDR10].mkv"
 
 EP_LOOSE_P5 = "/Movies/Serials/Reacher/S03/Reacher S03E01 - DoVi.mkv"
-EP_LOOSE_KEEP = "/Movies/Serials/Reacher/S03/Reacher S03E01 - DoVi [HDR10].mkv"
+# The keeper's name must not start with the duplicate's stem: Emby would also delete the
+# keeper's sidecars, which the name-prefix rule refuses (tests at the end of this file).
+EP_LOOSE_KEEP = "/Movies/Serials/Reacher/S03/Reacher S03E01 - HDR10.mkv"
+EP_PREFIX_KEEP = "/Movies/Serials/Reacher/S03/Reacher S03E01 - DoVi [HDR10].mkv"
 EP_SIBLING = "/Movies/Serials/Reacher/S03/Reacher S03E03 - DoVi [HDR10].mkv"
 
 
@@ -444,3 +447,125 @@ def test_unprobed_copy_is_never_deleted():
     assert result["status"] == "skipped_unsafe"
     assert "runtime-unknown" in result["error"]
     assert "delete" in result["error"]
+
+
+# --- name prefix: Emby's file-only delete takes every file starting with the name -----
+# Deleting "X.mkv" through Emby also removes "X CZ.nfo" and "X CZ.cs.srt" beside it
+# (proven against a disposable Emby 4.10.2.0), so a surviving file whose name starts with
+# the duplicate's stem loses its metadata and subtitles. The guard refuses; fold-safe
+# delete then removes the single file.
+def test_keeper_named_with_the_duplicate_prefix_is_refused():
+    known = [EP_PREFIX_KEEP, EP_LOOSE_P5, EP_SIBLING]
+    safe, reason = is_delete_safe(EP_PREFIX_KEEP, EP_LOOSE_P5, known)
+    assert safe is False
+    assert reason.startswith("name-prefix")
+    assert "co-located" not in reason  # the report would advise moving a copy out
+
+
+def test_name_prefix_ignores_case():
+    keeper = "/Movies/Serials/Reacher/S03/reacher s03e01 - dovi CZ.mkv"
+    safe, reason = is_delete_safe(keeper, EP_LOOSE_P5, [keeper, EP_LOOSE_P5, EP_SIBLING])
+    assert safe is False
+    assert "name-prefix" in reason
+
+
+def test_reverse_prefix_is_safe():
+    # The keeper's name is a prefix of the duplicate's: Emby's delete matches only names
+    # starting with the duplicate's stem, so the keeper's sidecars are untouched.
+    known = [EP_PREFIX_KEEP, EP_LOOSE_P5, EP_SIBLING]
+    safe, reason = is_delete_safe(EP_LOOSE_P5, EP_PREFIX_KEEP, known)
+    assert safe is True
+    assert "shared folder" in reason
+
+
+def test_prefix_neighbour_that_is_not_the_keeper_is_refused():
+    delete = "/S/Show/S01/Show S01E1.mkv"
+    keeper = "/S/Show/S01/Show - S01E01 - 1080p.mkv"
+    neighbour = "/S/Show/S01/Show S01E10.mkv"
+    safe, reason = is_delete_safe(keeper, delete, [keeper, delete, neighbour])
+    assert safe is False
+    assert "Show S01E10.mkv" in reason
+
+
+def test_prefix_neighbour_refused_when_the_keeper_is_elsewhere():
+    delete = "/S/Show/S01/Show S01E1.mkv"
+    keeper = "/S/Show/S01 other/Show S01E01 - 1080p.mkv"
+    neighbour = "/S/Show/S01/Show S01E10.mkv"
+    safe, reason = is_delete_safe(keeper, delete, [keeper, delete, neighbour])
+    assert safe is False
+    assert "name-prefix" in reason
+
+
+def test_prefix_neighbour_deleted_in_the_same_run_still_refuses():
+    # The neighbour's own delete can still be refused or fail later in the run; it would
+    # then survive without its .nfo and subtitles.
+    delete = "/S/Show/S01/Show S01E01.mkv"
+    also_deleted = "/S/Show/S01/Show S01E01 (2).mkv"
+    keeper = "/S/Show/S01 other/Show S01E01 - 1080p.mkv"
+    known = [keeper, delete, also_deleted, "/S/Show/S01/Show S01E02.mkv"]
+    safe, reason = is_delete_safe(keeper, delete, known, [delete, also_deleted])
+    assert safe is False
+    assert "Show S01E01 (2).mkv" in reason
+
+
+def test_prefix_neighbour_refused_without_a_keeper_path():
+    delete = "/S/Show/S01/Show S01E01.mkv"
+    known = [delete, "/S/Show/S01/Show S01E01 CZ.mkv", "/S/Show/S01/Show S01E02.mkv"]
+    safe, reason = is_delete_safe(None, delete, known)
+    assert safe is False
+    assert "name-prefix" in reason
+    assert is_delete_safe(None, delete, [delete, "/S/Show/S01/Show S01E02.mkv"]) == (
+        True, "no keeper path to protect")
+
+
+def test_prefix_neighbour_in_a_subfolder_does_not_count():
+    known = [EP_LOOSE_KEEP, EP_LOOSE_P5, EP_SIBLING,
+             "/Movies/Serials/Reacher/S03/extras/Reacher S03E01 - DoVi featurette.mkv"]
+    safe, reason = is_delete_safe(EP_LOOSE_KEEP, EP_LOOSE_P5, known)
+    assert safe is True
+    assert "shared folder" in reason
+
+
+def test_per_title_folder_with_keeper_elsewhere_still_goes_whole():
+    # Emby fold-deletes a per-title folder on any delete, extras included; with the keeper
+    # in another folder that is the intended outcome, so a prefixed extra does not refuse.
+    delete = "/Movies/HD/Film (2020)/Film (2020).mkv"
+    trailer = "/Movies/HD/Film (2020)/Film (2020)-trailer.mkv"
+    keeper = "/Movies/4K/Film (2020) - 2160p/Film (2020) - 2160p.mkv"
+    safe, reason = is_delete_safe(keeper, delete, [keeper, delete, trailer])
+    assert safe is True
+    assert "different folder" in reason
+
+
+def test_process_deletion_hands_a_prefix_pair_to_fold_safe():
+    decisions = _probed([{
+        "keep": {"id": "k", "name": "ep", "path": EP_PREFIX_KEEP},
+        "delete": [{"id": "d", "name": "ep dup", "path": EP_LOOSE_P5}],
+    }])
+    with patch("emby_dedupe.api.deduplication.delete_item") as mock_del, \
+         patch("emby_dedupe.reports.markdown.format_markdown_table", return_value="RPT"), \
+         patch("emby_dedupe.api.deduplication.tqdm"):
+        process_deletion_and_generate_report(
+            MagicMock(), "http://emby", decisions, True, "u", "p", "k",
+            None, [EP_PREFIX_KEEP, EP_LOOSE_P5, EP_SIBLING],
+        )
+    mock_del.assert_not_called()
+    item = decisions[0]["delete"][0]
+    assert item["deletion_result"]["status"] == "skipped_unsafe"
+    assert item["fold_safe_candidate"]["keeper"] == EP_PREFIX_KEEP
+    assert "name-prefix" in item["fold_safe_candidate"]["reason"]
+
+
+def test_cleanup_refuses_a_delete_whose_name_prefixes_a_survivor():
+    from emby_dedupe.api.deletion_guard import is_cleanup_delete_safe
+
+    delete = "/Movies/Kolekcia/Shrek (2001).mkv"
+    sequel = "/Movies/Kolekcia/Shrek (2001) CZ.mkv"
+    others = ["/Movies/Kolekcia/Madagascar (2005).mkv", "/Movies/Kolekcia/Zootopia (2016).mkv"]
+    known = [delete, sequel, *others]
+    safe, reason = is_cleanup_delete_safe(delete, known, [delete])
+    assert safe is False
+    assert "name-prefix" in reason
+    # Deleting both still refuses: the second delete may be refused or fail.
+    assert is_cleanup_delete_safe(delete, known, [delete, sequel])[0] is False
+    assert is_cleanup_delete_safe(sequel, known, [delete, sequel])[0] is True

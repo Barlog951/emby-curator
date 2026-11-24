@@ -51,6 +51,12 @@ FOLD_SAFE_DURATION_FLOOR_SECONDS = 15  # ignore sub-15s absolute differences
 
 _TICKS_PER_SECOND = 10_000_000  # Emby RunTimeTicks resolution
 
+# Video extensions that can own a sidecar, as case-insensitive shell globs ("*.[mM][kK][vV]").
+_VIDEO_EXTENSIONS = ("mkv", "mp4", "m4v", "avi", "ts", "m2ts", "mov", "wmv", "mpg", "mpeg", "webm", "iso", "vob")
+_VIDEO_GLOBS = "|".join(
+    "*." + "".join(f"[{c}{c.upper()}]" if c.isalpha() else c for c in ext) for ext in _VIDEO_EXTENSIONS
+)
+
 
 def duration_mismatch(keeper_ticks, delete_ticks) -> str | None:
     """Reason when BOTH durations are known and diverge beyond tolerance, else None.
@@ -161,15 +167,21 @@ def _build_remote_script(keeper: str, delete: str, doit: bool) -> str:
     # After removing the media file, sweep same-stem sidecars (metadata + subtitles) so the
     # server drops them on rescan instead of leaving orphans. `for s in "$dd"/*` uses pathname
     # expansion (space-safe); the quoted "$stem" in each case-pattern is matched literally, so
-    # special characters in the name are handled correctly and only THIS file's sidecars match.
+    # special characters in the name are handled correctly. A sidecar that also matches a
+    # video still in the folder ("X.CZ.cs.srt" beside "X.CZ.mkv", or "X.nfo" beside "X.mp4")
+    # belongs to that video and is kept. POSIX sh only: the host may not run bash.
     sidecar_sweep = (
         'dd=$(dirname -- "$d"); stem=$(basename -- "$d"); stem="${stem%.*}"; '
         'for s in "$dd"/*; do [ -f "$s" ] || continue; bs=$(basename -- "$s"); case "$bs" in '
-        '"$stem".nfo|"$stem".srt|"$stem".ass|"$stem".ssa|"$stem".sub|"$stem".idx|"$stem".vtt) rm -- "$s" ;; '
-        '"$stem".*.srt|"$stem".*.ass|"$stem".*.ssa|"$stem".*.sub|"$stem".*.idx|"$stem".*.vtt) rm -- "$s" ;; '
-        'esac; done'
+        '"$stem".nfo|"$stem".srt|"$stem".ass|"$stem".ssa|"$stem".sub|"$stem".idx|"$stem".vtt) ;; '
+        '"$stem".*.srt|"$stem".*.ass|"$stem".*.ssa|"$stem".*.sub|"$stem".*.idx|"$stem".*.vtt) ;; '
+        '*) continue ;; esac; '
+        'owned=; for v in "$dd"/*; do [ -f "$v" ] || continue; vb=${v##*/}; '
+        f'case "$vb" in {_VIDEO_GLOBS}) ;; *) continue ;; esac; '
+        'case "$bs" in "${vb%.*}".*) owned=1; break ;; esac; done; '
+        '[ -n "$owned" ] || rm -- "$s"; done'
     )
-    action = f'rm -- "$d"; {sidecar_sweep}; echo OK' if doit \
+    action = f'rm -- "$d" || {{ echo "FAIL rm"; exit 13; }}; {sidecar_sweep}; echo OK' if doit \
         else 'echo "WOULD-RM $d"'
     return (
         "set -u; "

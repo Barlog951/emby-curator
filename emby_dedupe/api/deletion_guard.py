@@ -141,7 +141,9 @@ def is_delete_safe(
 
     Returns:
         (safe: bool, reason: str). ``safe`` False means: refuse the Emby delete,
-        because it would fold-delete a folder containing the keeper.
+        because it would fold-delete a folder containing the keeper, or because a
+        neighbour's name starts with the deleted file's name and Emby would remove that
+        neighbour's sidecars with it.
     """
     dp, kp = _norm(delete_path), _norm(keeper_path)
     if not _is_usable_path(dp):
@@ -149,48 +151,96 @@ def is_delete_safe(
         # evaluated, so allowing would switch the guard off. A missing Path is transient
         # (an item caught mid-scan); the delete happens on the next run.
         return False, "delete path unknown — cannot verify fold safety, refusing"
-    if not kp:
-        return True, "no keeper path to protect"
-
     ddir = posixpath.dirname(dp)
-    if not _under(kp, ddir):
-        return True, f"keeper is in a different folder than {ddir!r}"
-
-    # Per-title folder: the folder is named for the item being deleted (the file stem
-    # starts with the folder name). Emby fold-deletes the entire directory on any item
-    # delete here, whatever else survives in it, so with the keeper inside there is no
-    # safe delete; refuse without consulting siblings. Same rule as the converter's
-    # dv_common._owns_folder; keep the two in sync.
     folder = posixpath.basename(ddir)
     delete_stem = posixpath.splitext(posixpath.basename(dp))[0]
-    if folder and delete_stem.startswith(folder):
+    # Per-title folder: the folder is named for the item being deleted (the file stem
+    # starts with the folder name). Emby fold-deletes the entire directory on any item
+    # delete here, whatever else survives in it. Same rule as the converter's
+    # dv_common._owns_folder; keep the two in sync.
+    title_folder = bool(folder) and delete_stem.startswith(folder)
+    keeper_here = bool(kp) and _under(kp, ddir)
+
+    # With the keeper inside a per-title folder there is no safe delete; refuse without
+    # consulting siblings.
+    if keeper_here and title_folder:
         return (
             False,
             f"keeper co-located in a dedicated folder named for this title ({ddir!r}); "
             "Emby fold-deletes the whole directory on any delete and destroys the keeper",
         )
 
-    # Not a per-title folder (a season/collection/category container). Deleting here is
-    # safe only if Emby removes just the file, i.e. the folder is shared with other
-    # media that survives the run. Two refinements, both only ever over-refuse:
+    # Not a per-title folder (a season/collection/category container). With the keeper
+    # inside, deleting here is safe only if Emby removes just the file, i.e. the folder is
+    # shared with other media that survives the run. Two refinements, both only ever
+    # over-refuse:
     #   * direct children only: an item nested in a subfolder does not stop Emby
     #     fold-deleting ddir;
     #   * surviving children only: a sibling that is itself deleted this run cannot keep
     #     the folder alive.
+    others = _surviving_siblings(dp, kp, known_paths, delete_paths)
+    if keeper_here and not others:
+        return (
+            False,
+            f"keeper co-located in a dedicated folder ({ddir!r}); Emby would fold-delete it "
+            "and destroy the keeper",
+        )
+
+    # Outside a per-title folder Emby deletes the file plus every file whose name starts
+    # with it. (A per-title folder goes whole, as intended when the keeper lives elsewhere.)
+    if not title_folder:
+        taker = _prefix_neighbour(dp, [kp, *known_paths] if kp else known_paths)
+        if taker:
+            return False, _prefix_reason(dp, taker)
+
+    if not kp:
+        return True, "no keeper path to protect"
+    if not keeper_here:
+        return True, f"keeper is in a different folder than {ddir!r}"
+    return True, f"shared folder ({len(others)} surviving item(s)) → Emby deletes file only"
+
+
+def _surviving_siblings(dp: str, kp: str, known_paths, delete_paths=None) -> list:
+    """Known media files directly beside ``dp`` that are neither the keeper nor deleted this run."""
+    ddir = posixpath.dirname(dp)
     delete_set = {_norm(p) for p in (delete_paths or [])}
-    others = [
+    return [
         p for p in known_paths
         if _norm(p) not in (dp, kp)
         and _norm(p) not in delete_set
         and posixpath.dirname(_norm(p)) == ddir
     ]
-    if others:
-        return True, f"shared folder ({len(others)} surviving item(s)) → Emby deletes file only"
 
+
+def _prefix_neighbour(delete_path: str, candidates) -> str | None:
+    """A media file beside ``delete_path`` whose name starts with its stem, or None.
+
+    Emby's file-only delete also removes every file in the folder whose name starts with
+    the deleted file's name (its own sidecars, but also ``X CZ.nfo`` and ``X CZ.cs.srt``
+    next to ``X.mkv``), so such a neighbour loses its metadata and subtitles. Only direct
+    children of the folder count. A neighbour that is itself a delete target counts too:
+    the guard or the Emby call may still spare it later in the run. The comparison
+    ignores case, so it can only over-refuse.
+    """
+    dp = _norm(delete_path)
+    ddir = posixpath.dirname(dp)
+    stem = posixpath.splitext(posixpath.basename(dp))[0].casefold()
+    for path in candidates or []:
+        p = _norm(path)
+        if p == dp or posixpath.dirname(p) != ddir:
+            continue
+        if posixpath.basename(p).casefold().startswith(stem):
+            return p
+    return None
+
+
+def _prefix_reason(delete_path: str, taker: str) -> str:
+    """Refusal text for :func:`_prefix_neighbour`; the ``name-prefix`` token keys the report."""
+    stem = posixpath.splitext(posixpath.basename(_norm(delete_path)))[0]
     return (
-        False,
-        f"keeper co-located in a dedicated folder ({ddir!r}); Emby would fold-delete it "
-        "and destroy the keeper",
+        f"name-prefix: {posixpath.basename(taker)!r} starts with {stem!r}; Emby's delete also "
+        "removes every file whose name starts with that, so that copy's .nfo and subtitles "
+        "would go too"
     )
 
 

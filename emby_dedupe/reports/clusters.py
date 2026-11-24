@@ -216,6 +216,7 @@ _REASON_CODES = (
     ("runtime-unknown", "runtime_unknown"),
     ("duration-unknown", "runtime_unknown"),
     ("watched-copy", "watched_copy"),
+    ("name-prefix", "name_prefix"),
 )
 
 
@@ -466,6 +467,7 @@ _GUARD_SENTENCE = {
     "different_title": "the two copies carry ids of different titles",
     "runtime_unknown": "Emby hasn't read the runtime of one copy yet, so the same content can't be checked",
     "watched_copy": "someone watched the copy to delete, and the kept copy shares no id that would carry it over",
+    "name_prefix": "another file's name starts with this copy's name, so Emby's delete would take its .nfo and subtitles too",
 }
 
 # What the reader can do about a held pair. Excluding is offered only where the copies
@@ -480,6 +482,7 @@ NEXT_STEP = {
     "different_title": "Fix the wrong id in Emby, or exclude the pair.",
     "runtime_unknown": "Refresh both items' metadata in Emby, then run again.",
     "watched_copy": "Keep both, or move the watch history to the kept copy first.",
+    "name_prefix": "Run with --fold-safe-delete, which removes only this file, or rename one copy.",
 }
 
 # The frame check's verdict as embedded in a guard message, weakest first: one unproven
@@ -768,6 +771,7 @@ _SHORT_REASON = {
     "different_title": "different titles",
     "runtime_unknown": "runtime unknown",
     "watched_copy": "watched copy",
+    "name_prefix": "name prefix",
 }
 
 
