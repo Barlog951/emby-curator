@@ -218,6 +218,8 @@ _REASON_CODES = (
     ("watched-copy", "watched_copy"),
     ("name-prefix", "name_prefix"),
     ("group-too-large", "group_too_large"),
+    ("title-folder-shared", "title_folder_shared"),
+    ("library-incomplete", "library_incomplete"),
 )
 
 
@@ -470,6 +472,8 @@ _GUARD_SENTENCE = {
     "watched_copy": "someone watched the copy to delete, and the kept copy shares no id that would carry it over",
     "name_prefix": "another file's name starts with this copy's name, so Emby's delete would take its .nfo and subtitles too",
     "group_too_large": "the group has more copies than a title has versions, so these are probably different episodes",
+    "title_folder_shared": "Emby would delete the whole folder named for this title, and another video in it would go too",
+    "library_incomplete": "the full library list didn't load, so the guard can't rule out a file this delete would take",
 }
 
 # What the reader can do about a held pair. Excluding is offered only where the copies
@@ -486,6 +490,8 @@ NEXT_STEP = {
     "watched_copy": "Keep both, or move the watch history to the kept copy first.",
     "name_prefix": "Run with --fold-safe-delete, which removes only this file, or rename one copy.",
     "group_too_large": "Compare the files in Emby. Fix the numbering of the distinct ones, then run again.",
+    "title_folder_shared": "Run with --fold-safe-delete, which removes only this file, or move the other video out.",
+    "library_incomplete": "Run again once Emby answers fully, or with --fold-safe-delete.",
 }
 
 # The frame check's verdict as embedded in a guard message, weakest first: one unproven
@@ -776,6 +782,8 @@ _SHORT_REASON = {
     "watched_copy": "watched copy",
     "name_prefix": "name prefix",
     "group_too_large": "too many copies",
+    "title_folder_shared": "shared title folder",
+    "library_incomplete": "library list incomplete",
 }
 
 

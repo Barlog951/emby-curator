@@ -233,7 +233,8 @@ def test_process_deletion_skips_colocated_delete_but_runs_safe_one():
          patch("emby_dedupe.api.deduplication.tqdm"):
         mock_del.return_value = {"id": "dB", "status": "success", "error": None}
         result = process_deletion_and_generate_report(
-            MagicMock(), "http://emby", decisions, True, "u", "p", "k"
+            MagicMock(), "http://emby", decisions, True, "u", "p", "k",
+            None, collect_known_paths(decisions),
         )
 
     assert result == "RPT"
@@ -311,7 +312,8 @@ def test_process_deletion_backstop_protects_multi_version_movie_folder():
          patch("emby_dedupe.api.deduplication.tqdm"):
         mock_del.return_value = {"id": "hd", "status": "success", "error": None}
         process_deletion_and_generate_report(
-            MagicMock(), "http://emby", decisions, True, "u", "p", "k"
+            MagicMock(), "http://emby", decisions, True, "u", "p", "k",
+            None, collect_known_paths(decisions),
         )
     status = {d["id"]: d["deletion_result"]["status"] for d in decisions[0]["delete"]}
     assert status["p5"] == "skipped_unsafe"   # co-located; only sibling (HDR10) is co-deleted
@@ -526,13 +528,10 @@ def test_prefix_neighbour_in_a_subfolder_does_not_count():
     assert "shared folder" in reason
 
 
-def test_per_title_folder_with_keeper_elsewhere_still_goes_whole():
-    # Emby fold-deletes a per-title folder on any delete, extras included; with the keeper
-    # in another folder that is the intended outcome, so a prefixed extra does not refuse.
+def test_per_title_folder_holding_only_the_duplicate_goes_whole():
     delete = "/Movies/HD/Film (2020)/Film (2020).mkv"
-    trailer = "/Movies/HD/Film (2020)/Film (2020)-trailer.mkv"
     keeper = "/Movies/4K/Film (2020) - 2160p/Film (2020) - 2160p.mkv"
-    safe, reason = is_delete_safe(keeper, delete, [keeper, delete, trailer])
+    safe, reason = is_delete_safe(keeper, delete, [keeper, delete, "/Movies/HD/Other (2019)/Other (2019).mkv"])
     assert safe is True
     assert "different folder" in reason
 
@@ -617,3 +616,95 @@ def test_group_at_the_limit_is_not_held():
     decisions, library = _misnamed_season(5)
     mock_del = _run(decisions, library)
     assert mock_del.call_count == 5
+
+
+# --- title folder: Emby deletes it whole, so nothing else may be inside --------------
+TITLE_DIR = "/M/T (2001)"
+TITLE_DEL = f"{TITLE_DIR}/T (2001).mkv"
+TITLE_KEEP = "/M/Collection/T (2001).mkv"
+
+
+def test_title_folder_with_another_video_is_refused():
+    other = f"{TITLE_DIR}/T (2001) CZ.mkv"
+    safe, reason = is_delete_safe(TITLE_KEEP, TITLE_DEL, [TITLE_KEEP, TITLE_DEL, other])
+    assert safe is False
+    assert reason.startswith("title-folder-shared")
+    assert "T (2001) CZ.mkv" in reason
+    assert "co-located" not in reason
+
+
+def test_title_folder_refusal_counts_nested_videos_and_other_delete_targets():
+    nested = f"{TITLE_DIR}/extras/Making of.mkv"
+    assert is_delete_safe(TITLE_KEEP, TITLE_DEL, [TITLE_KEEP, TITLE_DEL, nested])[0] is False
+    also_deleted = f"{TITLE_DIR}/T (2001) - 720p.mkv"
+    known = [TITLE_KEEP, TITLE_DEL, also_deleted]
+    assert is_delete_safe(TITLE_KEEP, TITLE_DEL, known, [TITLE_DEL, also_deleted])[0] is False
+
+
+def test_episode_subfolder_with_another_copy_is_refused():
+    folder = "/S/Show/S01/Show S01E01"
+    delete, other = f"{folder}/Show S01E01.mkv", f"{folder}/Show S01E01 - 576p.mkv"
+    keeper = "/S/Show/S01/Show S01E01 - 1080p.mkv"
+    safe, reason = is_delete_safe(keeper, delete, [keeper, delete, other, "/S/Show/S01/Show S01E02.mkv"])
+    assert safe is False
+    assert "title-folder-shared" in reason
+
+
+def test_process_deletion_keeps_a_held_copy_in_the_title_folder():
+    held = f"{TITLE_DIR}/T (2001) CZ.mkv"
+    decisions = _probed([{
+        "keep": {"id": "k", "name": "T", "path": TITLE_KEEP},
+        "delete": [{"id": "d", "name": "T", "path": TITLE_DEL},
+                   {"id": "h", "name": "T CZ", "path": held, "runtime_ticks": 2 * _HOUR_TICKS}],
+    }])
+    mock_del = _run(decisions, [TITLE_KEEP, TITLE_DEL, held])
+    mock_del.assert_not_called()
+    first, second = decisions[0]["delete"]
+    assert first["deletion_result"]["status"] == "skipped_unsafe"
+    assert "title-folder-shared" in first["fold_safe_candidate"]["reason"]  # removed file-only instead
+    assert "duration-mismatch" in second["deletion_result"]["error"]
+
+
+# --- an incomplete library list clears no Emby delete ---------------------------------
+def _shared_pair():
+    keep = {"id": "k", "name": "E01", "path": "/S/Show/S01/Show S01E01 - 1080p.mkv"}
+    dup = {"id": "d", "name": "E01", "path": "/S/Show/S01/Show - S01E01.mkv"}
+    return _probed([{"keep": keep, "delete": [dup]}]), [keep["path"], dup["path"], "/S/Show/S01/Show S01E02.mkv"]
+
+
+def test_complete_library_list_allows_a_shared_folder_delete():
+    decisions, library = _shared_pair()
+    assert _run(decisions, library).call_count == 1
+
+
+def test_missing_library_list_refuses_every_emby_delete():
+    # Decision paths alone would clear this (keeper elsewhere) and miss a neighbour such
+    # as "Show S01E01 CZ.mkv" whose sidecars Emby's delete would take.
+    keep = {"id": "k", "name": "E01", "path": "/S/Show/S01 1080p/Show S01E01.mkv"}
+    dup = {"id": "d", "name": "E01", "path": "/S/Show/S01/Show S01E01.mkv"}
+    decisions = _probed([{"keep": keep, "delete": [dup]}])
+    mock_del = _run(decisions, None)
+    mock_del.assert_not_called()
+    item = decisions[0]["delete"][0]
+    assert item["deletion_result"]["error"].startswith("library-incomplete")
+    assert item["fold_safe_candidate"]  # fold-safe sees the real folder and may still remove it
+
+
+def test_partial_library_list_refuses_every_emby_delete():
+    decisions, library = _shared_pair()
+    with patch("emby_dedupe.api.deduplication.delete_item") as mock_del, \
+         patch("emby_dedupe.reports.markdown.format_markdown_table", return_value="RPT"), \
+         patch("emby_dedupe.api.deduplication.tqdm"):
+        process_deletion_and_generate_report(
+            MagicMock(), "http://emby", decisions, True, "u", "p", "k", None, library,
+            library_complete=False,
+        )
+    mock_del.assert_not_called()
+    assert "library-incomplete" in decisions[0]["delete"][0]["deletion_result"]["error"]
+
+
+def test_incomplete_list_never_turns_a_refusal_into_a_pass():
+    safe, reason = is_delete_safe(EP_PREFIX_KEEP, EP_LOOSE_P5, [EP_PREFIX_KEEP, EP_LOOSE_P5, EP_SIBLING],
+                                  paths_complete=False)
+    assert safe is False
+    assert reason.startswith("name-prefix")

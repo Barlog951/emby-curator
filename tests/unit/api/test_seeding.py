@@ -8,6 +8,7 @@ import httpx
 from emby_dedupe.api import deduplication as dd
 from emby_dedupe.api import seeding as sd
 from emby_dedupe.api.deduplication import process_deletion_and_generate_report
+from emby_dedupe.api.deletion_guard import collect_known_paths
 
 URL = "http://transmission:9091/transmission/rpc"
 HOUR = 3600 * 10_000_000
@@ -131,7 +132,7 @@ def _run(doit, decisions):
          patch("emby_dedupe.api.deduplication.tqdm"):
         mock_del.side_effect = lambda *a, **k: {"id": a[2], "status": "success", "error": None}
         process_deletion_and_generate_report(MagicMock(), "http://emby", decisions, doit, "u", "p", "k",
-                                             torrent_url=URL)
+                                             library_paths=collect_known_paths(decisions), torrent_url=URL)
     return mock_del
 
 
@@ -168,7 +169,7 @@ def test_pipeline_hands_the_url_to_the_deletion_step():
     with patch.object(main, "identify_duplicates", return_value={}), \
          patch.object(main, "rationalize_duplicates", return_value={}), \
          patch.object(main, "process_duplicate_groups", return_value=(decisions, {})), \
-         patch.object(main, "fetch_all_media_paths", return_value=[]), \
+         patch.object(main, "fetch_library_paths", return_value=([], True)), \
          patch.object(main, "process_deletion_and_generate_report", return_value="RPT") as step:
         main._run_deduplication_pipeline(MagicMock(), "http://emby", {}, [], [], "k", False, "u", "p",
                                          frame_check=False, torrent_url=URL)

@@ -419,7 +419,13 @@ def _fetch_paginated_items(
 
 
 def fetch_all_media_paths(client: httpx.Client, base_url: str) -> list:
-    """Fetch the filesystem ``Path`` of every media item on the server.
+    """Every media item's ``Path``, as :func:`fetch_library_paths`, without the completeness flag."""
+    return fetch_library_paths(client, base_url)[0]
+
+
+def fetch_library_paths(client: httpx.Client, base_url: str) -> tuple[list, bool]:
+    """Fetch the filesystem ``Path`` of every media item on the server, and say whether
+    the list is complete.
 
     The deletion safety guard tells a *dedicated* folder (Emby fold-deletes it when the
     file is removed) from a *shared* one (Emby deletes only the file) by checking which
@@ -445,11 +451,13 @@ def fetch_all_media_paths(client: httpx.Client, base_url: str) -> list:
         base_url: Base URL of the Emby server.
 
     Returns:
-        A flat list of every media item's ``Path``. Degrades to ``[]`` on any fetch
-        failure — the guard then falls back to decision-only paths and may over-refuse
-        (safe), but never under-refuses.
+        ``(paths, complete)``. ``complete`` is True only when every page arrived and the
+        items received reach Emby's ``TotalRecordCount``. On a failure the pages already
+        fetched are returned with ``complete=False``: a missing path can hide a file a
+        delete would take, so the guard then refuses every Emby delete.
     """
     paths: list = []
+    received, total = 0, None
     url = f"{base_url}/Items"
     params = {
         "Limit": str(PAGE_SIZE),
@@ -459,24 +467,22 @@ def fetch_all_media_paths(client: httpx.Client, base_url: str) -> list:
         "IsFolder": "False",
         "EnableImages": "False",
     }
-    # paginate_emby_items handles (and logs) the httpx errors internally, degrading to
-    # the pages already yielded; the outer catch stays for the Path extraction below.
     try:
-        for items, _total in paginate_emby_items(
+        for items, total in paginate_emby_items(
             client, url, params,
-            error_context="fetch full library paths for the deletion safety guard "
-            "(falling back to decision-only folder detection: may over-refuse, never "
-            "under-refuses)",
+            error_context="fetch full library paths for the deletion safety guard",
+            raise_on_error=True,
         ):
+            received += len(items)
             paths.extend(item["Path"] for item in items if item.get("Path"))
-    except (KeyError, ValueError) as exc:
+    except (httpx.HTTPStatusError, httpx.RequestError, KeyError, ValueError) as exc:
         logger.warning(
-            "Could not extract full library paths for the deletion safety guard (%s); "
-            "falling back to decision-only folder detection (may over-refuse, never "
-            "under-refuses).",
+            "Could not fetch every library path for the deletion safety guard (%s); "
+            "the list is incomplete, so every Emby delete will be refused.",
             exc,
         )
-    return paths
+        return paths, False
+    return paths, total is not None and received >= total
 
 
 def delete_item(

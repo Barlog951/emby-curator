@@ -1594,7 +1594,7 @@ def _mark_guard_refused(item: dict, keeper_path: str | None, reason: str) -> Non
 
 def _warn_unsafe_deletions(
     decisions: list, known_paths: list, delete_paths: list = None,
-    frames: FrameChecker | None = None,
+    frames: FrameChecker | None = None, paths_complete: bool = True,
 ) -> None:
     """Dry-run visibility: log any deletion the safety guard would refuse under
     ``--doit`` (keeper co-located in a folder Emby would fold-delete), so the user
@@ -1614,7 +1614,7 @@ def _warn_unsafe_deletions(
                 )
                 continue
             safe, reason = is_delete_safe(
-                keeper_path, item.get("path"), known_paths, delete_paths
+                keeper_path, item.get("path"), known_paths, delete_paths, paths_complete
             )
             if not safe:
                 unsafe += 1
@@ -1724,6 +1724,7 @@ def _extract_original_item_data(item: dict) -> dict:
 def _execute_one_deletion(
     client, base_url, item, keeper_path, decision, known_paths, delete_paths,
     username, password, api_key, progress_bar, frames: FrameChecker | None = None,
+    paths_complete: bool = True,
 ) -> None:
     """Delete a single item unless the safety guard refuses it, then restore the item's
     display data (lost during deletion) and advance the progress bar. Extracted from the
@@ -1749,7 +1750,7 @@ def _execute_one_deletion(
     # Safety guard 2: never issue an Emby delete that would fold-delete a folder holding
     # the keeper. Refuse and skip.
     safe, reason = (True, "") if conflict else is_delete_safe(
-        keeper_path, item.get("path"), known_paths, delete_paths
+        keeper_path, item.get("path"), known_paths, delete_paths, paths_complete
     )
     if conflict:
         logger.warning(
@@ -1794,6 +1795,7 @@ def process_deletion_and_generate_report(
     library_paths: list = None,
     frames: FrameChecker | None = None,
     torrent_url: str | None = None,
+    library_complete: bool = True,
 ) -> str:
     """
     Processes deletions based on the decisions and generates a markdown report.
@@ -1810,13 +1812,17 @@ def process_deletion_and_generate_report(
         metadata (dict, optional): Additional metadata such as excluded IDs and language priorities.
         library_paths (list, optional): Every media path in the library, used to give the
             deletion safety guard true folder visibility (so it tells a dedicated folder
-            from a shared one). When omitted, the guard sees only the decision paths and
-            may over-refuse safe deletes. Defaults to None.
+            from a shared one). When omitted, the list counts as incomplete and every
+            Emby delete is refused. Defaults to None.
         frames (FrameChecker, optional): compares the pictures of episode pairs before a
             delete (and confirms PAL speed-ups). None skips the frame check.
         torrent_url (str, optional): Transmission RPC URL. Each delete that removes data a
             torrent still seeds is logged and recorded on the item; it is not held. None
             skips the seeding check.
+        library_complete (bool, optional): whether ``library_paths`` holds every media
+            path in the library. Pass False for a partial fetch. Without ``library_paths``
+            the list counts as incomplete. An incomplete list makes the guard refuse every
+            Emby delete, which leaves them to fold-safe delete.
 
     Returns:
         str: The generated markdown report.
@@ -1837,6 +1843,8 @@ def process_deletion_and_generate_report(
     # vouch that a folder is "shared": it does not survive, so a delete co-located with
     # the keeper is refused when the only neighbours are also going away.
     delete_paths = collect_delete_paths(decisions)
+    # Without the full library list a file beside a delete can be invisible to the guard.
+    paths_complete = library_complete and library_paths is not None
 
     # A group with more copies to delete than a title has versions is held whole.
     _hold_oversized_groups(decisions)
@@ -1855,7 +1863,7 @@ def process_deletion_and_generate_report(
         deletion_progress_bar = tqdm(
             total=total_deletions, desc="Skipping deletion", unit="item"
         )
-        _warn_unsafe_deletions(decisions, known_paths, delete_paths, frames)
+        _warn_unsafe_deletions(decisions, known_paths, delete_paths, frames, paths_complete)
         _mark_items_as_not_attempted(decisions, deletion_progress_bar)
         deletion_progress_bar.close()
         return markdown.format_markdown_table(base_url, decisions, metadata)
@@ -1870,6 +1878,7 @@ def process_deletion_and_generate_report(
             _execute_one_deletion(
                 client, base_url, item, keeper_path, decision, known_paths,
                 delete_paths, username, password, api_key, deletion_progress_bar, frames,
+                paths_complete,
             )
 
     deletion_progress_bar.close()

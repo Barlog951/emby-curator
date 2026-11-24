@@ -119,10 +119,11 @@ def episode_identity_conflict(keeper_path: str | None, delete_path: str | None) 
 
 
 def is_delete_safe(
-    keeper_path: str | None, delete_path: str | None, known_paths, delete_paths=None
+    keeper_path: str | None, delete_path: str | None, known_paths, delete_paths=None,
+    paths_complete: bool = True,
 ) -> tuple[bool, str]:
     """Decide whether deleting the item at ``delete_path`` via Emby can destroy the
-    keeper at ``keeper_path``.
+    keeper at ``keeper_path``, or any other file the run keeps.
 
     Args:
         keeper_path: filesystem path of the item being KEPT for this duplicate group.
@@ -132,19 +133,37 @@ def is_delete_safe(
             so a folder's non-duplicate neighbours are visible. That is what tells a
             *dedicated* folder (Emby fold-deletes it) from a *shared* one (Emby deletes
             only the file). Decision paths alone make a single-duplicate folder look
-            dedicated and over-refuse (safe, but blocks valid deletes).
+            dedicated; they also hide neighbours the name-prefix and title-folder rules
+            must see, so pass ``paths_complete=False`` for anything short of the full list.
         delete_paths: every path being deleted in this run. A same-folder sibling that is
             itself a delete target does not prove the folder is shared, because it is gone
             after the run too. Without it, a movie folder holding a keeper and two
             co-located deletes looks shared and Emby fold-deletes the folder with the
             keeper. None treats all ``known_paths`` as survivors (legacy).
+        paths_complete: whether ``known_paths`` holds every media path in the library.
+            When False, no delete is cleared: a file the list misses could be one the
+            delete takes, so every delete is refused (``library-incomplete``) and left to
+            fold-safe delete, which sees the real folder.
 
     Returns:
         (safe: bool, reason: str). ``safe`` False means: refuse the Emby delete,
-        because it would fold-delete a folder containing the keeper, or because a
-        neighbour's name starts with the deleted file's name and Emby would remove that
-        neighbour's sidecars with it.
+        because it would fold-delete a folder containing the keeper or another video,
+        because a neighbour's name starts with the deleted file's name and Emby would
+        remove that neighbour's sidecars with it, or because the path list is incomplete.
     """
+    safe, reason = _delete_verdict(keeper_path, delete_path, known_paths, delete_paths)
+    if safe and not paths_complete:
+        return False, (
+            "library-incomplete: the full library path list is not available, so a file "
+            f"this delete would take cannot be ruled out ({reason})"
+        )
+    return safe, reason
+
+
+def _delete_verdict(
+    keeper_path: str | None, delete_path: str | None, known_paths, delete_paths=None
+) -> tuple[bool, str]:
+    """The rules of :func:`is_delete_safe` for a path list taken as complete."""
     dp, kp = _norm(delete_path), _norm(keeper_path)
     if not _is_usable_path(dp):
         # Refuse rather than allow: without the delete path none of the rules below can be
@@ -161,14 +180,10 @@ def is_delete_safe(
     title_folder = bool(folder) and delete_stem.startswith(folder)
     keeper_here = bool(kp) and _under(kp, ddir)
 
-    # With the keeper inside a per-title folder there is no safe delete; refuse without
-    # consulting siblings.
-    if keeper_here and title_folder:
-        return (
-            False,
-            f"keeper co-located in a dedicated folder named for this title ({ddir!r}); "
-            "Emby fold-deletes the whole directory on any delete and destroys the keeper",
-        )
+    if title_folder:
+        refusal = _title_folder_refusal(dp, ddir, keeper_here, known_paths)
+        if refusal:
+            return False, refusal
 
     # Not a per-title folder (a season/collection/category container). With the keeper
     # inside, deleting here is safe only if Emby removes just the file, i.e. the folder is
@@ -234,6 +249,40 @@ def _prefix_neighbour(delete_path: str, candidates) -> str | None:
     return None
 
 
+def _title_folder_refusal(dp: str, ddir: str, keeper_here: bool, known_paths) -> str | None:
+    """Why a delete in a per-title folder is unsafe, or None.
+
+    With the keeper inside there is no safe delete; refuse without consulting siblings.
+    With the keeper elsewhere the folder may go whole, but only when nothing else in it,
+    nested or due for deletion later in the run, would go with it.
+    """
+    if keeper_here:
+        return (
+            f"keeper co-located in a dedicated folder named for this title ({ddir!r}); "
+            "Emby fold-deletes the whole directory on any delete and destroys the keeper"
+        )
+    other = _media_under(dp, ddir, known_paths)
+    return _title_folder_reason(ddir, other) if other else None
+
+
+def _media_under(delete_path: str, folder: str, known_paths) -> str | None:
+    """Another known media file anywhere under ``folder``, or None. Delete targets count:
+    a later guard refusal or a failed Emby call may still leave them."""
+    for path in known_paths or []:
+        p = _norm(path)
+        if p != delete_path and _under(p, folder):
+            return p
+    return None
+
+
+def _title_folder_reason(folder: str, other: str) -> str:
+    """Refusal text for a per-title folder that holds another video; keys the report."""
+    return (
+        f"title-folder-shared: Emby deletes the whole folder {folder!r} named for this title, "
+        f"and {posixpath.basename(other)!r} in it would go too"
+    )
+
+
 def _prefix_reason(delete_path: str, taker: str) -> str:
     """Refusal text for :func:`_prefix_neighbour`; the ``name-prefix`` token keys the report."""
     stem = posixpath.splitext(posixpath.basename(_norm(delete_path)))[0]
@@ -248,9 +297,9 @@ def collect_known_paths(decisions) -> list:
     """Gather every keep + delete media path across all decision groups.
 
     This is the *minimal* path set (duplicated items only). For complete folder
-    visibility the caller unions in every library path (``fetch_all_media_paths``);
-    decision paths alone can leave a single-duplicate folder looking "dedicated" and
-    make the guard over-refuse a safe file-only delete.
+    visibility the caller unions in every library path (``fetch_library_paths``);
+    decision paths alone hide the neighbours outside every group, so they are never
+    passed to :func:`is_delete_safe` as a complete list.
     """
     paths = []
     for decision in decisions or []:

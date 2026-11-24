@@ -358,13 +358,36 @@ class TestClient:
 
     @patch('emby_dedupe.api.pagination.make_http_request')
     def test_fetch_all_media_paths_degrades_to_empty_on_failure(self, mock_make_http_request):
-        """A fetch failure must degrade to [] so the guard falls back to over-refusing
-        (safe) rather than ever under-refusing. paginate_emby_items swallows the httpx
-        error internally, yielding no pages → []."""
-        from emby_dedupe.api.client import fetch_all_media_paths
+        """A failed fetch returns no paths; fetch_library_paths also flags it incomplete."""
+        from emby_dedupe.api.client import fetch_all_media_paths, fetch_library_paths
 
         mock_make_http_request.side_effect = httpx.RequestError("boom")
         assert fetch_all_media_paths(Mock(), "http://emby") == []
+        assert fetch_library_paths(Mock(), "http://emby") == ([], False)
+
+    @patch('emby_dedupe.api.pagination.make_http_request')
+    def test_fetch_library_paths_is_complete_when_every_item_arrived(self, mock_make_http_request):
+        from emby_dedupe.api.client import fetch_library_paths
+
+        page = Mock()
+        page.json.return_value = {"Items": [{"Path": "/M/A/A.mkv"}, {"Id": "no path"}, {"Path": "/M/B/B.mkv"}],
+                                  "TotalRecordCount": 3}
+        mock_make_http_request.side_effect = [page]
+        assert fetch_library_paths(Mock(), "http://emby") == (["/M/A/A.mkv", "/M/B/B.mkv"], True)
+
+    @patch('emby_dedupe.api.pagination.make_http_request')
+    def test_fetch_library_paths_flags_a_short_or_broken_listing(self, mock_make_http_request):
+        from emby_dedupe.api.client import fetch_library_paths
+
+        first = Mock()
+        first.json.return_value = {"Items": [{"Path": "/M/A/A.mkv"}], "TotalRecordCount": 3}
+        empty = Mock()
+        empty.json.return_value = {"Items": [], "TotalRecordCount": 3}
+        mock_make_http_request.side_effect = [first, empty]
+        assert fetch_library_paths(Mock(), "http://emby") == (["/M/A/A.mkv"], False)
+
+        mock_make_http_request.side_effect = [first, httpx.RequestError("page 2 failed")]
+        assert fetch_library_paths(Mock(), "http://emby") == (["/M/A/A.mkv"], False)
 
     @patch('emby_dedupe.api.client.make_http_request')
     @patch('emby_dedupe.api.client.ensure_authenticated_for_delete')

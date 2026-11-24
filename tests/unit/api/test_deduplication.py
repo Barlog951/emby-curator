@@ -273,8 +273,11 @@ class TestDeduplication:
                 item.setdefault("runtime_ticks", 3600 * 10_000_000)
 
         # Call the function
+        # The toy library is exactly the decision paths; pass it as the complete list.
+        from emby_dedupe.api.deletion_guard import collect_known_paths
         result = process_deletion_and_generate_report(
-            client, base_url, decisions, doit, username, password, api_key
+            client, base_url, decisions, doit, username, password, api_key,
+            library_paths=collect_known_paths(decisions),
         )
 
         # In simulation mode, delete_item should not be called
