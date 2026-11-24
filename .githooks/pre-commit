@@ -5,6 +5,8 @@
 #
 #   1. gitleaks  — block any secret in the STAGED changes (fast, fails first)
 #   2. SonarQube — quality gate (tests + analysis), only if sonar-scanner exists
+#   3. Formal delete-safety check of the STAGED tree, only where the local
+#      dedupe-delete-safety skill and the project venv exist
 #
 # The gate needs SONAR_TOKEN. It comes from the environment, from the gitignored
 # .sonar-token file (read by the Makefile), or from a secrets-manager command that
@@ -48,6 +50,53 @@ if command -v sonar-scanner >/dev/null 2>&1; then
   echo "✅ Quality gate passed"
 else
   echo "ℹ️  sonar-scanner not found — skipping quality gate (CI still enforces it)."
+fi
+
+# ── 3. Formal delete-safety check (only where the local skill exists) ──
+# A staged change to the delete path runs the full check plus every mutant
+# (--gate); any other staged change under emby_dedupe/ runs the tripwire,
+# which fails when a new delete call is not covered by the check.
+check=".claude/skills/dedupe-delete-safety/scripts/check.py"
+if [ -f "$check" ] && [ -x .venv/bin/python ]; then
+  staged="$(git diff --cached --name-only --no-renames)"
+  delete_path='^emby_dedupe/api/(deletion_guard|fold_safe_delete|deduplication|client)\.py$|^emby_dedupe/cli/(app|main|cleanup)\.py$'
+  mode=""
+  if printf '%s\n' "$staged" | grep -Eq "$delete_path"; then
+    mode="--gate"
+  elif printf '%s\n' "$staged" | grep -q '^emby_dedupe/'; then
+    mode="--tripwire-only"
+  fi
+  if [ -n "$mode" ]; then
+    echo ""
+    echo "🧮 Formal delete-safety check ($mode, staged tree)..."
+    log="$(mktemp -t delete-safety.XXXXXX)"
+    .venv/bin/python -I "$check" "$mode" --rev index </dev/null 2>&1 | tee "$log"
+    rc=${PIPESTATUS[0]}
+    if [ "$rc" -ne 0 ]; then
+      if grep -q '^TRIPWIRE:' "$log"; then
+        kind="tripwire: a delete call in emby_dedupe/ is not covered by the check"
+      elif grep -q '^GATE FAILED: mutant' "$log"; then
+        kind="mutant: the check no longer catches a deliberate break"
+      elif grep -Eq '^(HARNESS ERROR|CONFORMANCE FAILED)' "$log"; then
+        kind="harness: the check itself did not run to completion"
+      else
+        kind="formal check: a delete can destroy a file it did not decide to delete"
+      fi
+      rm -f "$log"
+      echo ""
+      echo "❌ COMMIT BLOCKED — $kind (exit $rc)."
+      echo "   Evidence: .claude/delete-safety-runs/ (skill dedupe-delete-safety)."
+      exit 1
+    fi
+    rm -f "$log"
+    echo "✅ Formal delete-safety check passed"
+  else
+    echo ""
+    echo "ℹ️  No staged change under emby_dedupe/ — formal delete-safety check not needed."
+  fi
+else
+  echo ""
+  echo "ℹ️  dedupe-delete-safety skill or .venv not present — formal check skipped."
 fi
 
 echo ""
