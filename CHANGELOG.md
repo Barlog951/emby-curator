@@ -7,6 +7,53 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.9] — 2026-11-24
+
+### Fixed
+
+- **A delete no longer takes another file's subtitles.** Emby's own delete of `X.mkv` also removes every file
+  whose name starts with `X`, so a kept `X CZ.mkv` lost its `.nfo` and `.cs.srt`. Emby also lists `X.CZ.cs.srt`
+  under `X.mkv`, so deleting `X.CZ.mkv` took a subtitle the kept copy shows. The guard now refuses such an Emby
+  delete (`name-prefix`, `sidecar-owner`). With `--fold-safe-delete` the duplicate is removed as a single file
+  over SSH instead; without it, both copies stay.
+- **A title folder is no longer deleted while it holds another video.** A delete in a folder named for the title,
+  with the kept copy elsewhere, was cleared without looking at the folder. Emby removes an episode's own subfolder
+  whole, a second copy included. The guard now refuses it when any other known video sits under that folder
+  (`title-folder-shared`).
+- **An incomplete library listing no longer clears dedupe deletes.** When fetching every library path failed or
+  came back short, the dedupe guard still cleared deletes it could not check. The fetch now reports whether every
+  page arrived, and an incomplete list refuses every Emby delete in `dedupe` (`library-incomplete`). `cleanup`
+  does not use the flag yet.
+- **A group with more than 5 copies to delete is held whole.** Misnamed episodes (`S01E01`, `S01E01 (2)` …) could
+  lose distinct episodes when the frame check was off: the fold-safe cap counted only the files that reached it,
+  and Emby's own delete had no limit. The count now covers every copy, and the hold applies to both paths
+  (`group-too-large`).
+- **Groups held for an untagged best copy are reported.** They were skipped with only a warning hidden at the
+  default log level; they now show in the report as held (`merge-audio-first`).
+- The fold-safe sweep keeps a sidecar that also belongs to a video still in the folder, and a failed `rm` is
+  reported as failed instead of removed.
+- Reports hold up against hostile and oversized data: the JSON island escapes every `<`, long unbroken names wrap
+  instead of widening the page, and a failed delete shows at most 240 characters of the server's error.
+
+### Added
+
+- **Seeding note:** with `--transmission-url` (`DEDUPE_TRANSMISSION_URL`) every copy to delete whose removal takes
+  a torrent's data is logged and recorded with the torrent's name and ratio. Nothing is held.
+- **`won_by` in the download check.** The result (and its JSON) says why the winning copy won: `quality`,
+  `language` (`--lang-prio` ranked it first over a higher score) or `rule` (the native-BluRay, same-kind margin
+  or PAL speed-up rule reversed the ranking). `reason` keeps its values.
+- `fetch_library_paths()` returns the library paths and whether the list is complete.
+
+### Changed
+
+- The frame check on the media host runs at idle priority (`nice`, `ionice`) over one shared SSH connection, with
+  at most 8 pairs at a time.
+- Both reports say each fact once: warnings, headings and footers no longer repeat counts or the run mode, and the
+  dedupe header shows local time.
+- New guard reasons have their own plain sentence, next step and short label in the report.
+- `cleanup` shares the deletion guard, so it now also holds a delete whose name starts a surviving file's name or
+  extends it after a dot. It has no fold-safe path, so those files stay on disk.
+
 ## [3.4.8] — 2026-11-12
 
 ### Added
