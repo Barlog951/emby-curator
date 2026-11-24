@@ -20,7 +20,7 @@ from emby_dedupe.api.deletion_guard import (
     folder_season,
     is_delete_safe,
 )
-from emby_dedupe.api.fold_safe_delete import duration_mismatch
+from emby_dedupe.api.fold_safe_delete import FOLD_SAFE_MAX_GROUP_DELETES, duration_mismatch
 from emby_dedupe.api.metadata import get_image_url, rate_media_items
 from emby_dedupe.api.seeding import annotate_seeding
 from emby_dedupe.api.watch_history import annotate_watched_copies, watched_copy_reason
@@ -1431,6 +1431,9 @@ MERGE_AUDIO_FIRST = "merge-audio-first"
 # Delete-item key holding the reason a group was held because its best copy's audio is
 # untagged (set by ``_hold_for_untagged_best_copy``, read by ``_refusal_reason``).
 UNTAGGED_BEST_COPY_HOLD = "untagged_best_copy_hold"
+# Delete-item key holding the reason a whole group was held for having more copies to
+# delete than a title has versions (set by ``_hold_oversized_groups``).
+OVERSIZED_GROUP_HOLD = "oversized_group_hold"
 _ENGLISH_CODES = {"eng": "en", "english": "en"}
 _CLASS_DISPLAY = {"2160p": "4K"}   # the report and log wording of the top class
 
@@ -1533,8 +1536,32 @@ def _refusal_reason(item: dict, keeper: dict, frames: FrameChecker | None = None
     """Every reason the guard keeps both copies: different content first, then a group held
     because its best copy's audio is untagged, then an audio merge, then watch history the
     delete would lose."""
-    return (_different_content_reason(item, keeper, frames) or item.get(UNTAGGED_BEST_COPY_HOLD)
-            or merge_audio_first_reason(item, keeper) or watched_copy_reason(item, keeper))
+    return (item.get(OVERSIZED_GROUP_HOLD) or _different_content_reason(item, keeper, frames)
+            or item.get(UNTAGGED_BEST_COPY_HOLD) or merge_audio_first_reason(item, keeper)
+            or watched_copy_reason(item, keeper))
+
+
+def _hold_oversized_groups(decisions: list) -> None:
+    """Hold every copy of a group that has more copies to delete than a title has versions.
+
+    Such a group is a mis-grouping: distinct episodes or films named alike (``S01E01``,
+    ``S01E01 (2)`` … ``(7)``). The count covers every delete candidate, so a member that
+    another rule holds cannot shrink the group below the limit and let the rest through.
+    The hold applies to the Emby delete and, because it sets no fold-safe marker, to
+    ``--fold-safe-delete`` too.
+    """
+    for decision in decisions:
+        items = decision.get("delete") or []
+        if len(items) <= FOLD_SAFE_MAX_GROUP_DELETES:
+            continue
+        reason = (f"group-too-large: {len(items)} copies to delete in one group (more than "
+                  f"{FOLD_SAFE_MAX_GROUP_DELETES}); probably different episodes or films named alike")
+        for item in items:
+            item[OVERSIZED_GROUP_HOLD] = reason
+        logger.warning(
+            f"Holding group {(decision.get('keep') or {}).get('path')!r}: {len(items)} copies to delete. "
+            "All copies kept."
+        )
 
 
 def _refuse_different_content(item: dict, keeper: dict, frames: FrameChecker | None = None) -> str | None:
@@ -1810,6 +1837,9 @@ def process_deletion_and_generate_report(
     # vouch that a folder is "shared": it does not survive, so a delete co-located with
     # the keeper is refused when the only neighbours are also going away.
     delete_paths = collect_delete_paths(decisions)
+
+    # A group with more copies to delete than a title has versions is held whole.
+    _hold_oversized_groups(decisions)
 
     # The frame check streams from Emby; run all pairs up front, a few at a time.
     if frames is not None:

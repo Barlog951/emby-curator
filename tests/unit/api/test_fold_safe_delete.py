@@ -124,6 +124,17 @@ def test_plan_flags_oversized_group_needs_review():
     assert all("group-too-large" in p["review_reason"] for p in plans)
 
 
+def test_plan_group_cap_counts_members_held_by_another_rule():
+    # Six copies to delete, one held by the guard for its better picture (no fold-safe
+    # marker): five plans remain, and the cap must still see a group of six.
+    decision = _incident_shaped_decision(6)
+    del decision["delete"][0]["fold_safe_candidate"]
+    plans = plan_fold_safe_deletes([decision])
+    assert len(plans) == 5
+    assert all(p["status"] == "needs_review" for p in plans)
+    assert all("6 copies to delete" in p["review_reason"] for p in plans)
+
+
 def test_plan_group_cap_does_not_flag_normal_groups():
     # A title with a handful of quality versions stays auto-removable.
     plans = plan_fold_safe_deletes([_incident_shaped_decision(3)])

@@ -569,3 +569,51 @@ def test_cleanup_refuses_a_delete_whose_name_prefixes_a_survivor():
     # Deleting both still refuses: the second delete may be refused or fail.
     assert is_cleanup_delete_safe(delete, known, [delete, sequel])[0] is False
     assert is_cleanup_delete_safe(sequel, known, [delete, sequel])[0] is True
+
+
+# --- group size: more copies to delete than a title has versions ---------------------
+def _misnamed_season(n):
+    """A keeper and ``n`` misnamed copies of one episode in a season folder shared with
+    other episodes, all with the same runtime: without a frame check nothing tells them
+    apart except their number."""
+    folder = "/S/Show/S01"
+    keep = {"id": "k", "name": "E01", "path": f"{folder}/Show S01E01.mkv"}
+    deletes = [{"id": f"d{i}", "name": f"E01 ({i})", "path": f"{folder}/Show S01E01 ({i}).mkv"}
+               for i in range(2, 2 + n)]
+    library = [keep["path"], *(d["path"] for d in deletes), f"{folder}/Show S01E02.mkv"]
+    return _probed([{"keep": keep, "delete": deletes}]), library
+
+
+def _run(decisions, library, doit=True):
+    with patch("emby_dedupe.api.deduplication.delete_item") as mock_del, \
+         patch("emby_dedupe.reports.markdown.format_markdown_table", return_value="RPT"), \
+         patch("emby_dedupe.api.deduplication.tqdm"):
+        mock_del.return_value = {"id": "x", "status": "success", "error": None}
+        process_deletion_and_generate_report(
+            MagicMock(), "http://emby", decisions, doit, "u", "p", "k", None, library,
+        )
+    return mock_del
+
+
+def test_oversized_group_is_held_on_the_emby_path():
+    decisions, library = _misnamed_season(6)
+    mock_del = _run(decisions, library)
+    mock_del.assert_not_called()
+    for item in decisions[0]["delete"]:
+        assert item["deletion_result"]["status"] == "skipped_unsafe"
+        assert item["deletion_result"]["error"].startswith("group-too-large")
+        assert "fold_safe_candidate" not in item  # fold-safe must not remove them either
+
+
+def test_oversized_group_is_shown_as_held_in_the_dry_run():
+    decisions, library = _misnamed_season(6)
+    _run(decisions, library, doit=False)
+    for item in decisions[0]["delete"]:
+        assert item["deletion_result"]["status"] == "would_block"
+        assert "group-too-large" in item["deletion_result"]["error"]
+
+
+def test_group_at_the_limit_is_not_held():
+    decisions, library = _misnamed_season(5)
+    mock_del = _run(decisions, library)
+    assert mock_del.call_count == 5

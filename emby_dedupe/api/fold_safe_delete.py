@@ -103,7 +103,7 @@ def plan_fold_safe_deletes(decisions: list) -> list:
     plans = []
     for decision in decisions or []:
         group_plans = _plans_for_decision(decision)
-        _flag_oversized_group(group_plans)
+        _flag_oversized_group(group_plans, len(decision.get("delete") or []))
         plans.extend(group_plans)
     return plans
 
@@ -136,16 +136,18 @@ def _plans_for_decision(decision: dict) -> list[dict]:
     return group_plans
 
 
-def _flag_oversized_group(group_plans: list[dict]) -> None:
+def _flag_oversized_group(group_plans: list[dict], candidates: int = 0) -> None:
     """Send an implausibly large group ENTIRELY to review, in place.
 
-    A group with more than :data:`FOLD_SAFE_MAX_GROUP_DELETES` planned deletes is a
+    A group with more than :data:`FOLD_SAFE_MAX_GROUP_DELETES` copies to delete is a
     mis-grouping, not a duplicate cleanup, so every plan in it is held, including those
-    that passed the duration gate.
+    that passed the duration gate. ``candidates`` is the group's whole delete list: a
+    member another rule held still counts, so it cannot shrink the group below the limit.
     """
-    if len(group_plans) <= FOLD_SAFE_MAX_GROUP_DELETES:
+    size = max(len(group_plans), candidates)
+    if size <= FOLD_SAFE_MAX_GROUP_DELETES:
         return
-    suspect = f"group-too-large ({len(group_plans)} planned deletes in one group)"
+    suspect = f"group-too-large ({size} copies to delete in one group)"
     for plan in group_plans:
         plan["status"] = "needs_review"
         plan["review_reason"] = (
