@@ -1443,3 +1443,56 @@ def test_a_runtime_without_a_bitrate_lets_the_starvation_check_estimate_one():
     unknown = _create_proposed_as_existing(_inheritance_torrent(bitrate_kbps=None, size_mb=600, duration_minutes=None))
     assert starved.score_breakdown()["starved_demotion"] is True
     assert unknown.score_breakdown()["starved_demotion"] is False
+
+
+# --- won_by: why the winning copy won ----------------------------------------------
+def _owned_1080p(language, size_bytes):
+    return {"Id": f"own-{language}", "Name": f"Owned {language}",
+            "MediaStreams": [{"Type": "Video", "Width": 1920, "Height": 1080},
+                             {"Type": "Audio", "Channels": 6, "Language": language}],
+            "Size": size_bytes}
+
+
+def test_won_by_language_when_the_preferred_language_scores_lower():
+    proposed = ProposedQuality(resolution="1080p", audio_languages=["cze"], size_mb=6000)
+    result = compare_quality(proposed, [_owned_1080p("eng", 12_000_000_000)], ["cze", "eng"])
+    assert result.recommendation == "download"
+    assert result.reason == "better_quality"  # unchanged: the torrents pipeline branches on it
+    assert result.proposed_score < result.existing_score
+    assert result.won_by == "language"
+    assert result.to_dict()["won_by"] == "language"
+
+
+def test_won_by_quality_when_the_new_copy_scores_higher():
+    proposed = ProposedQuality(resolution="2160p", size_mb=15000, bitrate_kbps=20000)
+    existing = [{"Id": "123", "Name": "Existing",
+                 "MediaStreams": [{"Type": "Video", "Width": 1920, "Height": 1080}, {"Type": "Audio", "Channels": 6}],
+                 "Size": 5000000000, "Bitrate": 8_000_000}]
+    result = compare_quality(proposed, existing)
+    assert (result.recommendation, result.won_by) == ("download", "quality")
+
+
+def test_won_by_quality_when_the_owned_copy_is_kept():
+    proposed = ProposedQuality(resolution="720p", size_mb=2000)
+    existing = [{"Id": "123", "Name": "Existing 4K",
+                 "MediaStreams": [{"Type": "Video", "Width": 3840, "Height": 2160}, {"Type": "Audio", "Channels": 8}],
+                 "Size": 20000000000}]
+    result = compare_quality(proposed, existing)
+    assert (result.recommendation, result.reason, result.won_by) == ("skip", "same_or_worse", "quality")
+
+
+def test_won_by_rule_when_the_bluray_exception_reverses_the_ranking():
+    proposed = ProposedQuality(resolution="2160p", audio="5.1", size_mb=15000,
+                               path="/movies/Movie.AI.UPSCALE.2160p.mkv", name="Movie AI Upscaled")
+    existing = [{"Id": "native123", "Name": "Movie BluRay", "Path": "/movies/Movie.BluRay.1080p.mkv",
+                 "MediaStreams": [{"Type": "Video", "Width": 1920, "Height": 1080, "Codec": "h264"},
+                                  {"Type": "Audio", "Channels": 6}],
+                 "Size": 25000000000, "Bitrate": 20000000}]
+    result = compare_quality(proposed, existing)
+    assert (result.recommendation, result.won_by) == ("skip", "rule")
+
+
+def test_won_by_is_absent_when_nothing_was_compared():
+    result = compare_quality(ProposedQuality(resolution="1080p", size_mb=4000), [])
+    assert result.won_by is None
+    assert "won_by" not in result.to_dict()

@@ -988,6 +988,11 @@ class ComparisonResult:
         status: "found" | "not_found" | "excluded" (the item's provider ID was in the
             checker's exclude list — flows through ``status != "not_found"`` branches)
         reason: "not_found" | "better_quality" | "same_or_worse" | "excluded_id"
+        won_by: why the winning copy won, set only when copies were compared:
+            "quality" (it has the best quality score), "language" (``--lang-prio``
+            ranked it first although another copy scores higher) or "rule" (the
+            native-BluRay, same-kind margin or PAL speed-up rule reversed the
+            ranking). ``reason`` keeps its values; consumers branch on it.
     """
 
     recommendation: Literal["download", "skip"]
@@ -998,6 +1003,7 @@ class ComparisonResult:
     existing_score: float = 0.0
     proposed_score: float = 0.0
     score_diff: float = 0.0
+    won_by: Literal["quality", "language", "rule"] | None = None
 
     @property
     def should_download(self) -> bool:
@@ -1011,6 +1017,8 @@ class ComparisonResult:
             "recommendation": self.recommendation,
             "reason": self.reason,
         }
+        if self.won_by is not None:
+            result["won_by"] = self.won_by
 
         if self.existing:
             result["existing"] = self.existing.to_dict()
@@ -1510,6 +1518,7 @@ def compare_quality(
     # (e.g. a large native 1080p BluRay overriding an AI-upscaled 4K); keep ``reason``
     # consistent with the flipped recommendation so a "skip" never reports
     # "better_quality" (and vice-versa).
+    ranked_recommendation = recommendation
     recommendation = _apply_bluray_native_exception(
         proposed_as_existing, best_existing, recommendation
     )
@@ -1534,4 +1543,14 @@ def compare_quality(
         existing_score=best_existing_score,
         proposed_score=proposed_score,
         score_diff=score_diff,
+        won_by=_won_by(best_item, all_items, recommendation != ranked_recommendation),
     )
+
+
+def _won_by(top: ExistingQuality, all_items: list[ExistingQuality],
+            reversed_by_rule: bool) -> Literal["quality", "language", "rule"]:
+    """Why ``top``, the copy ranked first after language priority, decided the result."""
+    if reversed_by_rule:
+        return "rule"
+    best_score = max(item.calculate_score() for item in all_items)
+    return "quality" if top.calculate_score() >= best_score else "language"
