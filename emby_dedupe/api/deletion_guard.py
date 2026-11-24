@@ -400,7 +400,7 @@ def _is_container_delete_safe(dp: str) -> tuple[bool, str]:
 
 def is_cleanup_delete_safe(
     delete_path: str | None, known_paths, delete_paths=None,
-    delete_is_container: bool = False,
+    delete_is_container: bool = False, paths_complete: bool = True,
 ) -> tuple[bool, str]:
     """Decide whether deleting ``delete_path`` can destroy media the run is KEEPING.
 
@@ -421,10 +421,15 @@ def is_cleanup_delete_safe(
             is itself a target does not count as a survivor.
         delete_is_container: True when ``delete_path`` is a FOLDER Emby owns as one item
             (a Series) rather than a media file; see :func:`_is_container_delete_safe`.
+        paths_complete: whether ``known_paths`` holds every media path in the library.
+            When False, no file delete is cleared: a survivor the list misses would make
+            "nothing in this folder survives" wrong, and cleanup has no file-only
+            fallback. Folder-backed items do not read the list and are unaffected.
 
     Returns:
         (safe, reason). ``safe`` False means refuse the Emby delete — it would fold-delete
-        a directory containing media that is meant to survive.
+        a directory containing media that is meant to survive, or the path list is
+        incomplete.
     """
     dp = _norm(delete_path)
     if not _is_usable_path(dp):
@@ -434,6 +439,12 @@ def is_cleanup_delete_safe(
 
     if delete_is_container:
         return _is_container_delete_safe(dp)
+
+    if not paths_complete:
+        return False, (
+            "library-incomplete: the full library path list is not available, so other "
+            "media in this folder cannot be ruled out"
+        )
 
     ddir = posixpath.dirname(dp)
     delete_set = {_norm(p) for p in (delete_paths or [])}

@@ -389,6 +389,19 @@ class TestClient:
         mock_make_http_request.side_effect = [first, httpx.RequestError("page 2 failed")]
         assert fetch_library_paths(Mock(), "http://emby") == (["/M/A/A.mkv"], False)
 
+    @patch('emby_dedupe.api.pagination.make_http_request')
+    def test_fetch_library_paths_never_calls_an_empty_or_uncounted_reply_complete(self, mock_make_http_request):
+        """An empty list would clear every delete as "nothing in this folder survives"."""
+        from emby_dedupe.api.client import fetch_library_paths
+
+        for body in ({}, {"Items": []}, {"Items": [], "TotalRecordCount": 0},
+                     {"Items": [{"Path": "/M/A/A.mkv"}]}):
+            reply = Mock()
+            reply.json.return_value = body
+            mock_make_http_request.side_effect = [reply]
+            paths, complete = fetch_library_paths(Mock(), "http://emby")
+            assert complete is False, body
+
     @patch('emby_dedupe.api.client.make_http_request')
     @patch('emby_dedupe.api.client.ensure_authenticated_for_delete')
     def test_delete_item_success(self, mock_ensure_auth, mock_make_http_request):

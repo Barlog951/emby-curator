@@ -32,7 +32,7 @@ from emby_dedupe.api.cleanup_pipeline import (
 from emby_dedupe.api.client import (
     check_emby_connection,
     delete_item,
-    fetch_all_media_paths,
+    fetch_library_paths,
     handle_host_and_port,
     logout,
 )
@@ -215,11 +215,18 @@ def _perform_deletions(
     # Emby fold-deletes an item's owning directory, so a candidate sharing its folder with
     # media the run is KEEPING can take that media with it. Fetch every library path once
     # and gate each delete on the same guard the dedup path uses.
-    known_paths = fetch_all_media_paths(client, base_url)
+    known_paths, paths_complete = fetch_library_paths(client, base_url)
     # A series candidate's path is a FOLDER Emby owns as one item, not a media file, so it
     # needs the container rule rather than the file one (which refused 100% of series).
     is_series = label == "series"
-    verdicts, held = _guard_verdicts(candidates, known_paths, delete_is_container=is_series)
+    if not paths_complete and not is_series:
+        logger.warning(
+            "The library path list is incomplete (%d paths), so every %s delete is refused "
+            "this run.", len(known_paths), label,
+        )
+    verdicts, held = _guard_verdicts(
+        candidates, known_paths, delete_is_container=is_series, paths_complete=paths_complete,
+    )
 
     logger.info(f"Deleting {len(candidates)} {label} candidates...")
     with tqdm(candidates, desc=f"Deleting {label}", unit=label.rstrip("s")) as progress:
@@ -261,14 +268,15 @@ def _journal_cleanup(candidates: list, series_candidates: list, doit: bool) -> N
         logger.error("Deletion journal: not written (%s).", e)
 
 def _guard_verdicts(
-    candidates: list, known_paths, delete_is_container: bool,
+    candidates: list, known_paths, delete_is_container: bool, paths_complete: bool = True,
 ) -> tuple[dict[str, tuple[bool, str]], dict[str, str]]:
     """Run the fold-delete guard over every candidate, keeping collections whole.
 
     A collection goes whole or not at all, so one part the guard refuses holds every
     part. Held parts then SURVIVE the run, which can make a neighbour's delete unsafe
     (it would fold their shared folder), so the guard is re-run without them until
-    nothing new is held.
+    nothing new is held. ``paths_complete`` False makes the guard refuse every file
+    delete (see :func:`is_cleanup_delete_safe`).
 
     Returns:
         ``({item_id: (safe, reason)}, {collection name: reason it is held})``.
@@ -280,7 +288,7 @@ def _guard_verdicts(
         verdicts = {
             c.item_id: is_cleanup_delete_safe(
                 getattr(c, "path", None), known_paths, delete_paths,
-                delete_is_container=delete_is_container,
+                delete_is_container=delete_is_container, paths_complete=paths_complete,
             )
             for c in candidates
         }

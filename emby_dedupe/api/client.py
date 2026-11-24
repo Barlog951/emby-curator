@@ -451,10 +451,13 @@ def fetch_library_paths(client: httpx.Client, base_url: str) -> tuple[list, bool
         base_url: Base URL of the Emby server.
 
     Returns:
-        ``(paths, complete)``. ``complete`` is True only when every page arrived and the
-        items received reach Emby's ``TotalRecordCount``. On a failure the pages already
-        fetched are returned with ``complete=False``: a missing path can hide a file a
-        delete would take, so the guard then refuses every Emby delete.
+        ``(paths, complete)``. ``complete`` is True only when every page arrived, Emby
+        reported a non-zero ``TotalRecordCount`` and the items received reach it. An empty
+        reply or one without a count is never complete: a library the run deletes from is
+        not empty, and an empty list would make every folder look like nothing survives.
+        On a failure the pages already fetched are returned with ``complete=False``: a
+        missing path can hide a file a delete would take, so the guard then refuses every
+        Emby delete.
     """
     paths: list = []
     received, total = 0, None
@@ -482,7 +485,7 @@ def fetch_library_paths(client: httpx.Client, base_url: str) -> tuple[list, bool
             exc,
         )
         return paths, False
-    return paths, total is not None and received >= total
+    return paths, total is not None and total > 0 and received >= total
 
 
 def delete_item(

@@ -427,6 +427,23 @@ class TestCleanupDeleteGuard:
         assert is_cleanup_delete_safe("", ["/x/y.mkv"], [])[0] is False
         assert is_cleanup_delete_safe("unknown", ["/x/y.mkv"], [])[0] is False
 
+    def test_incomplete_path_list_refuses_a_file_delete(self):
+        """With a short list, "nothing in this folder survives" is not proven."""
+        from emby_dedupe.api.deletion_guard import is_cleanup_delete_safe
+
+        delete = "/Movies/DiViX/Alone (2022) - 1080p/Alone (2022) - 1080p.mkv"
+        assert is_cleanup_delete_safe(delete, [delete], [delete])[0] is True
+        safe, reason = is_cleanup_delete_safe(delete, [delete], [delete], paths_complete=False)
+        assert not safe
+        assert reason.startswith("library-incomplete:")
+
+    def test_incomplete_path_list_does_not_affect_a_series_folder(self):
+        from emby_dedupe.api.deletion_guard import is_cleanup_delete_safe
+
+        show = "/Movies/Serials/--- UKONCENE ---/Some Show (2019)"
+        safe, _ = is_cleanup_delete_safe(show, [], [show], delete_is_container=True, paths_complete=False)
+        assert safe
+
 
 
 def test_unprobed_copy_is_never_deleted():
