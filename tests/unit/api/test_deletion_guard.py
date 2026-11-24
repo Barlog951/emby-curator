@@ -708,3 +708,48 @@ def test_incomplete_list_never_turns_a_refusal_into_a_pass():
                                   paths_complete=False)
     assert safe is False
     assert reason.startswith("name-prefix")
+
+
+# --- sidecar owner: Emby lists "X.CZ.cs.srt" under "X.mkv" too ----------------------
+DOT_DIR = "/M/Collection"
+DOT_KEEP, DOT_DEL = f"{DOT_DIR}/T (2001).mkv", f"{DOT_DIR}/T (2001).CZ.mkv"
+DOT_OTHER = f"{DOT_DIR}/U (2002).mkv"
+
+
+def test_delete_whose_name_extends_the_keeper_after_a_dot_is_refused():
+    safe, reason = is_delete_safe(DOT_KEEP, DOT_DEL, [DOT_KEEP, DOT_DEL, DOT_OTHER])
+    assert safe is False
+    assert reason.startswith("sidecar-owner")
+    assert "T (2001).mkv" in reason
+
+
+def test_sidecar_owner_outside_every_group_or_due_for_deletion_counts():
+    keeper = "/M/Elsewhere/T (2001).mkv"
+    safe, reason = is_delete_safe(keeper, DOT_DEL, [keeper, DOT_DEL, f"{DOT_DIR}/T (2001).mkv", DOT_OTHER])
+    assert (safe, reason.split(":")[0]) == (False, "sidecar-owner")
+    also_deleted = f"{DOT_DIR}/T (2001).mkv"
+    safe, _ = is_delete_safe(keeper, DOT_DEL, [keeper, DOT_DEL, also_deleted, DOT_OTHER], [DOT_DEL, also_deleted])
+    assert safe is False
+
+
+def test_sidecar_owner_ignores_case_and_needs_the_dot():
+    assert is_delete_safe(DOT_KEEP, f"{DOT_DIR}/t (2001).cz.mkv", [DOT_KEEP, DOT_OTHER])[0] is False
+    spaced = f"{DOT_DIR}/T (2001) CZ.mkv"  # no dot after the stem: Emby does not list it under T (2001).mkv
+    assert is_delete_safe(DOT_KEEP, spaced, [DOT_KEEP, spaced, DOT_OTHER]) == (
+        True, "shared folder (1 surviving item(s)) → Emby deletes file only")
+
+
+def test_cleanup_holds_a_delete_whose_subtitles_a_survivor_shows():
+    from emby_dedupe.api.deletion_guard import is_cleanup_delete_safe
+
+    safe, reason = is_cleanup_delete_safe(DOT_DEL, [DOT_KEEP, DOT_DEL, DOT_OTHER], [DOT_DEL])
+    assert safe is False
+    assert "sidecar-owner" in reason
+
+
+def test_process_deletion_hands_a_dot_named_copy_to_fold_safe():
+    decisions = _probed([{"keep": {"id": "k", "name": "T", "path": DOT_KEEP},
+                          "delete": [{"id": "d", "name": "T CZ", "path": DOT_DEL}]}])
+    mock_del = _run(decisions, [DOT_KEEP, DOT_DEL, DOT_OTHER])
+    mock_del.assert_not_called()
+    assert "sidecar-owner" in decisions[0]["delete"][0]["fold_safe_candidate"]["reason"]

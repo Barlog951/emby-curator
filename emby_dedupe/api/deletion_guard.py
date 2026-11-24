@@ -204,9 +204,9 @@ def _delete_verdict(
     # Outside a per-title folder Emby deletes the file plus every file whose name starts
     # with it. (A per-title folder goes whole, as intended when the keeper lives elsewhere.)
     if not title_folder:
-        taker = _prefix_neighbour(dp, [kp, *known_paths] if kp else known_paths)
-        if taker:
-            return False, _prefix_reason(dp, taker)
+        refusal = _neighbour_refusal(dp, kp, known_paths)
+        if refusal:
+            return False, refusal
 
     if not kp:
         return True, "no keeper path to protect"
@@ -280,6 +280,45 @@ def _title_folder_reason(folder: str, other: str) -> str:
     return (
         f"title-folder-shared: Emby deletes the whole folder {folder!r} named for this title, "
         f"and {posixpath.basename(other)!r} in it would go too"
+    )
+
+
+def _neighbour_refusal(dp: str, kp: str, known_paths) -> str | None:
+    """Why Emby's file-only delete of ``dp`` would take a neighbour's sidecars, or None."""
+    neighbours = [kp, *known_paths] if kp else list(known_paths)
+    taker = _prefix_neighbour(dp, neighbours)
+    if taker:
+        return _prefix_reason(dp, taker)
+    owner = _sidecar_owner(dp, neighbours)
+    return _sidecar_owner_reason(dp, owner) if owner else None
+
+
+def _sidecar_owner(delete_path: str, candidates) -> str | None:
+    """A media file beside ``delete_path`` whose stem plus a dot starts its name, or None.
+
+    Emby lists ``X.CZ.cs.srt`` as a subtitle of ``X.mkv`` as well as of ``X.CZ.mkv``, and its
+    delete of ``X.CZ.mkv`` removes every ``X.CZ.*`` file, so ``X.mkv`` loses that subtitle.
+    Fold-safe delete keeps such files. Every direct child counts, keeper, survivor or delete
+    target, and the comparison ignores case, so it can only over-refuse.
+    """
+    dp = _norm(delete_path)
+    ddir = posixpath.dirname(dp)
+    stem = posixpath.splitext(posixpath.basename(dp))[0].casefold()
+    for path in candidates or []:
+        p = _norm(path)
+        if p == dp or posixpath.dirname(p) != ddir:
+            continue
+        if stem.startswith(posixpath.splitext(posixpath.basename(p))[0].casefold() + "."):
+            return p
+    return None
+
+
+def _sidecar_owner_reason(delete_path: str, owner: str) -> str:
+    """Refusal text for :func:`_sidecar_owner`; the ``sidecar-owner`` token keys the report."""
+    stem = posixpath.splitext(posixpath.basename(_norm(delete_path)))[0]
+    return (
+        f"sidecar-owner: Emby lists the {stem!r} subtitles under {posixpath.basename(owner)!r} "
+        "too, and its delete of this file would take them"
     )
 
 

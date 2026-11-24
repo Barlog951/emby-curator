@@ -322,6 +322,14 @@ def test_failed_rm_is_not_reported_as_removed(tmp_path, shell):
 
 
 @pytest.mark.parametrize("shell", _SHELLS)
+def test_sweep_keeps_a_subtitle_emby_lists_under_the_kept_copy(tmp_path, shell):
+    # Emby lists "X.CZ.cs.srt" under "X.mkv" too; deleting "X.CZ.mkv" must leave it.
+    _touch(tmp_path, "X.mkv", "X.CZ.mkv", "X.CZ.cs.srt", "X.CZ.nfo")
+    left = _run_sweep(shell, tmp_path, "X.mkv", "X.CZ.mkv")
+    assert left == ["X.CZ.cs.srt", "X.CZ.nfo", "X.mkv"]
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
 def test_sweep_still_removes_the_deleted_files_own_sidecars(tmp_path, shell):
     _touch(tmp_path, "Show S01E01.mkv", "Show S01E01.nfo", "Show S01E01.sk.srt", "Show S01E01.idx",
            "Show S01E01 - 1080p.mkv", "Show S01E02.cs.srt")
