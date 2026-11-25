@@ -7,6 +7,19 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.10] — 2026-11-25
+
+### Fixed
+
+- **`cleanup` no longer deletes a film folder when the library listing is incomplete.** `cleanup` decides whether
+  a film's folder holds anything else from the list of every library path, but it never asked whether that list
+  was complete. A short list could make a shared folder look empty, and Emby would then delete the whole folder.
+  `cleanup` now refuses every film delete when the list is incomplete (`library-incomplete`) and logs a warning.
+  Series folder deletes do not read the list and are unaffected.
+- **An empty or uncounted library reply is no longer treated as complete.** A reply with no items, or without a
+  total count, was reported as a complete list, which cleared every delete in both `dedupe` and `cleanup`. Such a
+  reply now counts as incomplete.
+
 ## [3.4.9] — 2026-11-24
 
 ### Fixed
