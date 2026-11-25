@@ -129,8 +129,9 @@ def is_delete_safe(
         keeper_path: filesystem path of the item being KEPT for this duplicate group.
         delete_path: filesystem path of the item about to be deleted.
         known_paths: every other media path the run can see — ideally *every* media path
-            in the library (see ``fetch_all_media_paths``), not just the duplicated items,
-            so a folder's non-duplicate neighbours are visible. That is what tells a
+            in the library (see ``fetch_library_paths``, which also reports whether the list
+            is complete), not just the duplicated items, so a folder's non-duplicate
+            neighbours are visible. That is what tells a
             *dedicated* folder (Emby fold-deletes it) from a *shared* one (Emby deletes
             only the file). Decision paths alone make a single-duplicate folder look
             dedicated; they also hide neighbours the name-prefix and title-folder rules
@@ -415,8 +416,9 @@ def is_cleanup_delete_safe(
 
     Args:
         delete_path: filesystem path of the item about to be deleted.
-        known_paths: every media path in the library (``fetch_all_media_paths``). Without
-            full visibility a shared folder can look dedicated and the guard over-refuses.
+        known_paths: every media path in the library (``fetch_library_paths``, whose
+            completeness flag goes in ``paths_complete``). Without full visibility a shared
+            folder can look dedicated and the guard over-refuses.
         delete_paths: every path being deleted in THIS run, so a same-folder sibling that
             is itself a target does not count as a survivor.
         delete_is_container: True when ``delete_path`` is a FOLDER Emby owns as one item
