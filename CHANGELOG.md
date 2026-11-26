@@ -7,6 +7,23 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.11] — 2026-11-26
+
+### Fixed
+
+- **A title folder named in another case is now recognised.** The guard tells a title's own folder (Emby deletes it
+  with the file) from a shared one by whether the file name starts with the folder name, and that test was
+  case-sensitive. A server that matches names case-insensitively treats `show s01e01/` as the folder of
+  `Show S01E01.mkv`, so the guard could clear a delete that takes the folder and other media in it. The names are
+  now compared ignoring case, which can only add refusals.
+- **`--fold-safe-delete` keeps subtitles a kept copy shows, in any letter case.** After removing a duplicate, the
+  sidecar sweep keeps every `.nfo` or subtitle that belongs to a video still in the folder. That ownership test was
+  case-sensitive, so a kept `t (2001).mkv` could lose `T (2001).CZ.cs.srt`, which Emby lists under it. Ownership
+  now also matches ignoring case, for ASCII and non-ASCII letters.
+- **The sweep no longer depends on an external command to keep a kept copy's sidecars.** The exact-name owner test
+  uses only shell built-ins and runs first. A failing `tr` on the media host can only lose the extra
+  case-insensitive matches, never remove the kept copy's subtitles.
+
 ## [3.4.10] — 2026-11-25
 
 ### Fixed
