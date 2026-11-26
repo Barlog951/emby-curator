@@ -351,6 +351,17 @@ def test_converter_and_guard_agree_a_per_title_folder_is_a_trap(tmp_path):
     assert safe is False
     assert "dedicated folder" in reason
 
+    # The same layout with a folder name that differs only in case: both still see a trap.
+    folder2 = tmp_path / "HD" / "marty supreme (2025)"
+    folder2.mkdir(parents=True)
+    p5b, keeperb = folder2 / p5.name, folder2 / keeper.name
+    p5b.touch()
+    keeperb.touch()
+    assert dvc._owns_folder(str(p5b)) is True
+    safe, reason = is_delete_safe(str(keeperb), str(p5b), [str(keeperb), str(p5b)])
+    assert safe is False
+    assert "dedicated folder" in reason
+
 
 class TestCleanupDeleteGuard:
     """The cleanup path had NO fold-delete guard: cli/cleanup.py called delete_item()
@@ -656,6 +667,36 @@ def test_title_folder_refusal_counts_nested_videos_and_other_delete_targets():
     also_deleted = f"{TITLE_DIR}/T (2001) - 720p.mkv"
     known = [TITLE_KEEP, TITLE_DEL, also_deleted]
     assert is_delete_safe(TITLE_KEEP, TITLE_DEL, known, [TITLE_DEL, also_deleted])[0] is False
+
+
+def test_title_folder_named_in_another_case_is_still_a_title_folder():
+    # "show s01e01/" is the folder of "Show S01E01 CZ.mkv" for a server that ignores case;
+    # deleting there would take the held "Show S01E01.mkv" with the folder.
+    folder = "/S/Show/S01/show s01e01"
+    delete, held = f"{folder}/Show S01E01 CZ.mkv", f"{folder}/Show S01E01.mkv"
+    keeper = "/S/Show/S01/Show S01E01 - 1080p.mkv"
+    safe, reason = is_delete_safe(keeper, delete, [keeper, delete, held])
+    assert safe is False
+    assert reason.startswith("title-folder-shared")
+    assert "Show S01E01.mkv" in reason
+
+
+def test_title_folder_case_match_covers_non_ascii_letters():
+    folder = "/M/čert (2001)"
+    delete, other = f"{folder}/Čert (2001).mkv", f"{folder}/Čert (2001) CZ.mkv"
+    keeper = "/M/Collection/Čert (2001).mkv"
+    safe, reason = is_delete_safe(keeper, delete, [keeper, delete, other])
+    assert safe is False
+    assert reason.startswith("title-folder-shared")
+
+
+def test_title_folder_in_another_case_holding_only_the_duplicate_goes_whole():
+    # The wider match must not refuse a folder that really holds nothing else.
+    folder = "/S/Show/S01/show s01e01"
+    delete = f"{folder}/Show S01E01 CZ.mkv"
+    keeper = "/S/Show/S01/Show S01E01 - 1080p.mkv"
+    safe, _ = is_delete_safe(keeper, delete, [keeper, delete])
+    assert safe is True
 
 
 def test_episode_subfolder_with_another_copy_is_refused():

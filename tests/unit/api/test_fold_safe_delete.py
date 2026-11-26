@@ -329,6 +329,46 @@ def test_sweep_keeps_a_subtitle_emby_lists_under_the_kept_copy(tmp_path, shell):
     assert left == ["X.CZ.cs.srt", "X.CZ.nfo", "X.mkv"]
 
 
+def _case_sensitive(folder) -> bool:
+    probe = folder / "case-probe"
+    probe.write_text("")
+    try:
+        return not (folder / "CASE-PROBE").exists()
+    finally:
+        probe.unlink()
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_sweep_keeps_a_subtitle_listed_under_a_kept_copy_in_another_case(tmp_path, shell):
+    # A server that ignores case lists "T (2001).CZ.cs.srt" under the kept "t (2001).mkv".
+    _touch(tmp_path, "t (2001).mkv", "T (2001).CZ.mkv", "T (2001).CZ.cs.srt", "T (2001).CZ.nfo")
+    left = _run_sweep(shell, tmp_path, "t (2001).mkv", "T (2001).CZ.mkv")
+    assert left == ["T (2001).CZ.cs.srt", "T (2001).CZ.nfo", "t (2001).mkv"]
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_sweep_keeps_sidecars_of_a_kept_copy_whose_name_differs_only_in_case(tmp_path, shell):
+    if not _case_sensitive(tmp_path):
+        pytest.skip("needs a case-sensitive file system")
+    _touch(tmp_path, "T (2001).mkv", "t (2001).mkv", "t (2001).nfo", "t (2001).cs.srt")
+    left = _run_sweep(shell, tmp_path, "T (2001).mkv", "t (2001).mkv")
+    assert left == ["T (2001).mkv", "t (2001).cs.srt", "t (2001).nfo"]
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_sweep_case_match_covers_non_ascii_letters(tmp_path, shell):
+    _touch(tmp_path, "Čert (2001).mkv", "čert (2001).CZ.mkv", "čert (2001).CZ.cs.srt")
+    left = _run_sweep(shell, tmp_path, "Čert (2001).mkv", "čert (2001).CZ.mkv")
+    assert left == ["Čert (2001).mkv", "čert (2001).CZ.cs.srt"]
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_sweep_still_removes_a_non_ascii_deleted_files_own_sidecars(tmp_path, shell):
+    _touch(tmp_path, "Čert (2001).mkv", "Čert (2001).nfo", "Čert (2001).sk.srt", "Čert (2001) - 1080p.mkv")
+    left = _run_sweep(shell, tmp_path, "Čert (2001) - 1080p.mkv", "Čert (2001).mkv")
+    assert left == ["Čert (2001) - 1080p.mkv"]
+
+
 @pytest.mark.parametrize("shell", _SHELLS)
 def test_sweep_still_removes_the_deleted_files_own_sidecars(tmp_path, shell):
     _touch(tmp_path, "Show S01E01.mkv", "Show S01E01.nfo", "Show S01E01.sk.srt", "Show S01E01.idx",

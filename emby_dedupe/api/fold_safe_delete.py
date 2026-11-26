@@ -172,15 +172,24 @@ def _build_remote_script(keeper: str, delete: str, doit: bool) -> str:
     # special characters in the name are handled correctly. A sidecar that also matches a
     # video still in the folder ("X.CZ.cs.srt" beside "X.CZ.mkv", or "X.nfo" beside "X.mp4")
     # belongs to that video and is kept. POSIX sh only: the host may not run bash.
+    # The ownership test ignores case, because a server that matches names
+    # case-insensitively lists "T.CZ.cs.srt" under a kept "t.mkv". Folding is done per byte
+    # under LC_ALL=C (no locale needed): ASCII letters are lowered and every non-ASCII byte
+    # becomes "_", so "Č"/"č" compare equal, as do other non-ASCII pairs of the same byte
+    # length. That over-matches on purpose: it can only keep extra sidecars, never remove
+    # one more. Candidate selection above stays exact.
+    fold = 'LC_ALL=C tr "A-Z\\200-\\377" "a-z[_*]"'
     sidecar_sweep = (
         'dd=$(dirname -- "$d"); stem=$(basename -- "$d"); stem="${stem%.*}"; '
         'for s in "$dd"/*; do [ -f "$s" ] || continue; bs=$(basename -- "$s"); case "$bs" in '
         '"$stem".nfo|"$stem".srt|"$stem".ass|"$stem".ssa|"$stem".sub|"$stem".idx|"$stem".vtt) ;; '
         '"$stem".*.srt|"$stem".*.ass|"$stem".*.ssa|"$stem".*.sub|"$stem".*.idx|"$stem".*.vtt) ;; '
         '*) continue ;; esac; '
+        f'lb=$(printf "%s" "$bs" | {fold}); '
         'owned=; for v in "$dd"/*; do [ -f "$v" ] || continue; vb=${v##*/}; '
         f'case "$vb" in {_VIDEO_GLOBS}) ;; *) continue ;; esac; '
-        'case "$bs" in "${vb%.*}".*) owned=1; break ;; esac; done; '
+        f'lv=$(printf "%s" "${{vb%.*}}" | {fold}); '
+        'case "$lb" in "$lv".*) owned=1; break ;; esac; done; '
         '[ -n "$owned" ] || rm -- "$s"; done'
     )
     action = f'rm -- "$d" || {{ echo "FAIL rm"; exit 13; }}; {sidecar_sweep}; echo OK' if doit \

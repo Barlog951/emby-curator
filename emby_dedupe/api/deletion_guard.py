@@ -176,9 +176,11 @@ def _delete_verdict(
     delete_stem = posixpath.splitext(posixpath.basename(dp))[0]
     # Per-title folder: the folder is named for the item being deleted (the file stem
     # starts with the folder name). Emby fold-deletes the entire directory on any item
-    # delete here, whatever else survives in it. Same rule as the converter's
-    # dv_common._owns_folder; keep the two in sync.
-    title_folder = bool(folder) and delete_stem.startswith(folder)
+    # delete here, whatever else survives in it. The names are compared ignoring case,
+    # since a server that matches names case-insensitively treats "show s01e01/" as the
+    # folder of "Show S01E01.mkv"; a wider match only adds refusals. Same rule as the
+    # converter's dv_common._owns_folder; keep the two in sync.
+    title_folder = bool(folder) and delete_stem.casefold().startswith(folder.casefold())
     keeper_here = bool(kp) and _under(kp, ddir)
 
     if title_folder:

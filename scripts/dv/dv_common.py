@@ -96,7 +96,7 @@ def _owns_folder(inp):
     A folder is "owned" (a fold-delete trap) in either of two ways:
 
     1. **Per-title folder** — the folder is named after this movie/episode (the file
-       stem starts with the folder name). Emby removes the ENTIRE directory when any
+       stem starts with the folder name, ignoring case). Emby removes the ENTIRE directory when any
        item in it is deleted, *no matter how many other versions/files sit there*.
        (Proven live 2026-07-01: `/Movies/4K/Marty Supreme (2025)/` held a REMUX keeper
        + a P5 + the HDR10; deleting the P5 fold-deleted the directory and destroyed the
@@ -116,7 +116,8 @@ def _owns_folder(inp):
     stem = os.path.splitext(inp_name)[0]
 
     # (1) per-title folder → always a fold-delete trap, even with co-located versions.
-    if folder and stem.startswith(folder):
+    # Compared ignoring case, the same as the deletion guard's title-folder rule.
+    if folder and stem.casefold().startswith(folder.casefold()):
         return True
 
     # (2) sole-primary-file test — for a movie loose in a shared container.
