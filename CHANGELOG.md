@@ -7,6 +7,24 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.12] — 2026-11-26
+
+### Fixed
+
+- **`cleanup` deletes in a safe order and checks each delete again at its turn.** Emby's delete of one file can take
+  part of another candidate in the same folder: its `.nfo` and subtitles (files whose name starts with the deleted
+  one), subtitles Emby lists under both, or the whole file when the folder is named for the deleted title. Verdicts
+  used to be computed once, as if every delete would succeed, so a candidate whose own delete failed or was held could
+  lose its sidecars to a neighbour's delete. Such a neighbour now goes only after that candidate was deleted, every
+  delete is judged against what is still on disk, and two candidates that would each reach the other are both kept.
+- **A series is deleted only when everything in its folder belongs to it.** Deleting a series removes its whole folder,
+  including nested folders and loose videos, which Emby lists as part of that series. When the folder also holds media
+  Emby lists under another item (a second series record for the same folder, or a library that overlaps it), or when
+  the library listing is incomplete, the series is now kept.
+- **`dedupe` judges every episode pair by its season folders.** Only copies with an `SxxEyy` file name were checked, so
+  an episode named `Show 1x01` or `Show - 101` in another season folder could be removed as a duplicate on an equal
+  running time. When either copy is an episode, the season folders must now agree whatever the names say.
+
 ## [3.4.11] — 2026-11-26
 
 ### Fixed
