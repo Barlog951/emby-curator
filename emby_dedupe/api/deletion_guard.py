@@ -96,22 +96,27 @@ def _season_label(season: int | None) -> str:
     return "flat folder" if season is None else f"S{season:02d}"
 
 
-def episode_identity_conflict(keeper_path: str | None, delete_path: str | None) -> str | None:
+def episode_identity_conflict(
+    keeper_path: str | None, delete_path: str | None, is_episode: bool = False,
+) -> str | None:
     """Why deleting ``delete_path`` as a copy of ``keeper_path`` could delete a DIFFERENT
     episode, or None when the folders agree.
 
-    Only episode files (an SxxEyy name) are judged. Refuses when the two files sit in
-    different season folders (or one flat, one in a season folder), or when the
-    duplicate's own season folder contradicts its file name. A missed duplicate only
-    costs disk space; a wrong one costs an episode.
+    Episodes are judged: either copy known to be one (``is_episode``), or a file with an
+    SxxEyy name. Refuses when the two files sit in different season folders (or one flat,
+    one in a season folder), whatever the file names say ("Show 1x01", "Show - 101"), or
+    when the duplicate's own season folder contradicts its SxxEyy name. A missed duplicate
+    only costs disk space; a wrong one costs an episode.
     """
     file_season = filename_season(delete_path)
-    if file_season is None:
+    if file_season is None and not is_episode:
         return None
     keeper_folder, delete_folder = folder_season(keeper_path), folder_season(delete_path)
     if keeper_folder != delete_folder:
         return (f"different season folders (keeper {_season_label(keeper_folder)}, duplicate "
                 f"{_season_label(delete_folder)}): may be a different episode")
+    if file_season is None:
+        return None
     if delete_folder is not None and delete_folder != file_season:
         return (f"season folder {_season_label(delete_folder)} contradicts the file name's "
                 f"S{file_season:02d}: episode identity is ambiguous")

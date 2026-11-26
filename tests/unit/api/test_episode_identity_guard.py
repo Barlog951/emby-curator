@@ -283,3 +283,76 @@ def test_tagged_priority_language_still_decides_normally():
     decision = dd.determine_items_to_delete(["1", "2"], items, ["sk", "cs", "eng"])
     assert decision["keep"]["id"] == "1"
     assert [d["id"] for d in decision["delete"]] == ["2"]
+
+
+# --- episodes whose names carry no SxxEyy ------------------------------------------------
+# "Show 1x01" or "Show - 101" in another season folder is a different episode as far as the
+# folders can tell; the name alone must not let the pair through.
+
+SHOW = "/tv/Show (2001)"
+NO_SXXEYY_PAIRS = [  # (kept, copy to delete)
+    (f"{SHOW}/S01/Show 1x01 - 1080p.mkv", f"{SHOW}/S02/Show 1x01.mkv"),
+    (f"{SHOW}/S01/Show - 101 - 1080p.mkv", f"{SHOW}/S02/Show - 101.mkv"),
+]
+
+
+@pytest.mark.parametrize(("kept", "deleted"), NO_SXXEYY_PAIRS)
+def test_episode_without_sxxeyy_in_another_season_folder_is_refused(kept, deleted):
+    assert "different season folders" in episode_identity_conflict(kept, deleted, is_episode=True)
+
+
+@pytest.mark.parametrize(("kept", "deleted"), NO_SXXEYY_PAIRS)
+def test_non_episode_without_sxxeyy_is_still_not_judged(kept, deleted):
+    assert episode_identity_conflict(kept, deleted) is None
+
+
+def test_episode_without_sxxeyy_in_the_same_season_folder_is_still_a_duplicate():
+    assert episode_identity_conflict(f"{SHOW}/S02/Show 1x01 - 1080p.mkv", f"{SHOW}/S02/Show 1x01.mkv",
+                                     is_episode=True) is None
+    assert episode_identity_conflict(f"{SHOW}/Show - 101 - 1080p.mkv", f"{SHOW}/Show - 101.mkv",
+                                     is_episode=True) is None
+
+
+def test_specials_beside_season_zero_stay_refused():
+    kept, deleted = f"{SHOW}/S00/Show S00E01 - 1080p.mkv", f"{SHOW}/Specials/Show S00E01.mkv"
+    assert "different season folders" in episode_identity_conflict(kept, deleted)
+    assert "different season folders" in episode_identity_conflict(kept, deleted, is_episode=True)
+
+
+class _SameFrames:
+    """A frame check that always says the pictures match."""
+
+    def compare(self, keeper, other):
+        from emby_dedupe.api.content_check import FrameVerdict
+        return FrameVerdict("same", (0.95,) * 5, (0.0,) * 5)
+
+    def covers(self, keeper, other):
+        from emby_dedupe.api.content_check import FrameVerdict
+        return FrameVerdict("same", (0.95,) * 7, (), "covered")
+
+
+def _copy(path, is_episode, seconds=1500):
+    return {"id": path, "path": path, "runtime_ticks": seconds * 10_000_000, "frame_rate": 25.0,
+            "is_episode": is_episode}
+
+
+@pytest.mark.parametrize(("kept", "deleted"), NO_SXXEYY_PAIRS)
+@pytest.mark.parametrize(("keeper_flag", "copy_flag"), [(True, True), (True, False), (False, True)])
+@pytest.mark.parametrize("frames", [None, _SameFrames()], ids=["no-frame-check", "frames-same"])
+def test_dedupe_refuses_a_copy_without_sxxeyy_in_another_season_folder(kept, deleted, keeper_flag, copy_flag, frames):
+    """Equal running times (and, with the frame check, matching pictures) must not be enough."""
+    reason = dd._different_content_reason(_copy(deleted, copy_flag), _copy(kept, keeper_flag), frames)
+    assert reason is not None
+    assert "different season folders" in reason
+
+
+@pytest.mark.parametrize("frames", [None, _SameFrames()], ids=["no-frame-check", "frames-same"])
+def test_dedupe_still_removes_a_copy_without_sxxeyy_in_the_same_season_folder(frames):
+    kept, deleted = f"{SHOW}/S02/Show 1x01 - 1080p.mkv", f"{SHOW}/S02/Show 1x01.mkv"
+    assert dd._different_content_reason(_copy(deleted, True), _copy(kept, True), frames) is None
+
+
+def test_frame_prefetch_skips_a_pair_the_season_rule_refuses():
+    kept, deleted = NO_SXXEYY_PAIRS[0]
+    decision = {"keep": _copy(kept, True), "delete": [_copy(deleted, True)]}
+    assert dd._frame_check_pairs([decision]) == ([], [])

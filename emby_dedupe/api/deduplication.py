@@ -1334,7 +1334,8 @@ def _different_content_reason(item: dict, keeper: dict, frames: FrameChecker | N
     """
     conflict = provider_id_conflict(keeper.get("provider_ids"), item.get("provider_ids"))
     reason = (f"provider-id-conflict ({conflict}): a different title" if conflict else None) or (
-        episode_identity_conflict(keeper.get("path"), item.get("path")) or _unknown_runtime(item, keeper))
+        episode_identity_conflict(keeper.get("path"), item.get("path"), is_episode=_frame_check_wanted(item, keeper))
+        or _unknown_runtime(item, keeper))
     if reason:
         return reason
     mismatch = duration_mismatch(keeper.get("runtime_ticks"), item.get("runtime_ticks"))
@@ -1344,7 +1345,8 @@ def _different_content_reason(item: dict, keeper: dict, frames: FrameChecker | N
 
 
 def _frame_check_wanted(item: dict, keeper: dict) -> bool:
-    """Episodes get the frame check: movies have no siblings to be confused with."""
+    """True when either copy is an episode. Episodes get the frame check and the season
+    folder test: movies have no siblings to be confused with."""
     return bool(keeper.get("is_episode") or item.get("is_episode"))
 
 
@@ -1411,7 +1413,7 @@ def _frame_check_pairs(decisions: list) -> tuple[list[tuple[dict, dict]], list[t
             if not _frame_check_wanted(item, keeper):
                 continue
             if (provider_id_conflict(keeper.get("provider_ids"), item.get("provider_ids"))
-                    or episode_identity_conflict(keeper.get("path"), item.get("path"))
+                    or episode_identity_conflict(keeper.get("path"), item.get("path"), is_episode=True)
                     or _unknown_runtime(item, keeper)):
                 continue
             mismatch = duration_mismatch(keeper.get("runtime_ticks"), item.get("runtime_ticks"))
