@@ -448,12 +448,16 @@ class TestCleanupDeleteGuard:
         assert not safe
         assert reason.startswith("library-incomplete:")
 
-    def test_incomplete_path_list_does_not_affect_a_series_folder(self):
+    def test_incomplete_listing_refuses_a_series_folder_too(self):
+        """A series delete takes the whole folder, so an item the listing misses could go with it."""
         from emby_dedupe.api.deletion_guard import is_cleanup_delete_safe
 
         show = "/Movies/Serials/--- UKONCENE ---/Some Show (2019)"
-        safe, _ = is_cleanup_delete_safe(show, [], [show], delete_is_container=True, paths_complete=False)
-        assert safe
+        safe, reason = is_cleanup_delete_safe(show, [], [show], delete_is_container=True, paths_complete=False,
+                                              owners={}, series_id="1")
+        assert not safe
+        assert reason.startswith("library-incomplete:")
+        assert is_cleanup_delete_safe(show, [], [show], delete_is_container=True, owners={}, series_id="1")[0]
 
 
 

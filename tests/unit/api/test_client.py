@@ -402,6 +402,55 @@ class TestClient:
             paths, complete = fetch_library_paths(Mock(), "http://emby")
             assert complete is False, body
 
+    @patch('emby_dedupe.api.pagination.make_http_request')
+    def test_fetch_library_owners_maps_each_path_to_its_series(self, mock_make_http_request):
+        from emby_dedupe.api.client import fetch_library_owners
+
+        page = Mock()
+        page.json.return_value = {"Items": [
+            {"Path": "/S/Show/S01/Show S01E01.mkv", "Type": "Episode", "SeriesId": 41},
+            {"Path": "/M/A (2001)/A (2001).mkv", "Type": "Movie"},
+            {"Path": "/S/Show/Extra.mkv", "Type": "Episode"},
+            {"Id": "no path"},
+        ], "TotalRecordCount": 4}
+        mock_make_http_request.side_effect = [page]
+        owners, complete = fetch_library_owners(Mock(), "http://emby")
+        assert complete is True
+        assert owners == {"/S/Show/S01/Show S01E01.mkv": "41", "/M/A (2001)/A (2001).mkv": None,
+                          "/S/Show/Extra.mkv": None}
+        assert mock_make_http_request.call_args.kwargs["params"]["Fields"] == "Path,SeriesId"
+
+    @patch('emby_dedupe.api.pagination.make_http_request')
+    def test_fetch_library_owners_gives_a_file_listed_by_two_series_no_owner(self, mock_make_http_request):
+        """Twin Series records list the same file once each; neither may count as its owner."""
+        from emby_dedupe.api.client import fetch_library_owners
+
+        shared = "/S/Twin/S01/Twin S01E01.mkv"
+        page = Mock()
+        page.json.return_value = {"Items": [
+            {"Path": shared, "SeriesId": "805"}, {"Path": shared, "SeriesId": "807"},
+            {"Path": "/S/Solo/S01/Solo S01E01.mkv", "SeriesId": "9"},
+            {"Path": "/S/Solo/S01/Solo S01E01.mkv", "SeriesId": "9"},
+        ], "TotalRecordCount": 4}
+        mock_make_http_request.side_effect = [page]
+        owners, complete = fetch_library_owners(Mock(), "http://emby")
+        assert complete is True
+        assert owners == {shared: None, "/S/Solo/S01/Solo S01E01.mkv": "9"}
+
+    @patch('emby_dedupe.api.pagination.make_http_request')
+    def test_fetch_library_owners_flags_a_short_or_broken_listing(self, mock_make_http_request):
+        from emby_dedupe.api.client import fetch_library_owners
+
+        first = Mock()
+        first.json.return_value = {"Items": [{"Path": "/S/A/S01/A S01E01.mkv", "SeriesId": "1"}],
+                                   "TotalRecordCount": 2}
+        mock_make_http_request.side_effect = [first, httpx.RequestError("page 2 failed")]
+        assert fetch_library_owners(Mock(), "http://emby") == ({"/S/A/S01/A S01E01.mkv": "1"}, False)
+        reply = Mock()
+        reply.json.return_value = {"Items": []}
+        mock_make_http_request.side_effect = [reply]
+        assert fetch_library_owners(Mock(), "http://emby")[1] is False
+
     @patch('emby_dedupe.api.client.make_http_request')
     @patch('emby_dedupe.api.client.ensure_authenticated_for_delete')
     def test_delete_item_success(self, mock_ensure_auth, mock_make_http_request):

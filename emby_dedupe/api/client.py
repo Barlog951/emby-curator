@@ -488,6 +488,60 @@ def fetch_library_paths(client: httpx.Client, base_url: str) -> tuple[list, bool
     return paths, total is not None and total > 0 and received >= total
 
 
+def fetch_library_owners(client: httpx.Client, base_url: str) -> tuple[dict[str, str | None], bool]:
+    """Fetch every Movie/Episode ``Path`` with the Series it belongs to, and say whether the
+    listing is complete.
+
+    A Series delete removes the series' whole folder, so the guard must know that every
+    media item under that folder belongs to the series. ``Path`` is kept verbatim, as in
+    :func:`fetch_library_paths`; completeness follows the same rules.
+
+    Args:
+        client: The httpx client configured for the Emby server.
+        base_url: Base URL of the Emby server.
+
+    Returns:
+        ``(owners, complete)``: each path mapped to its ``SeriesId``, and whether every
+        item arrived. A path maps to None for a Movie, an Episode Emby gives no series, or
+        a file that two items list with different series.
+    """
+    owners: dict[str, str | None] = {}
+    received, total = 0, None
+    url = f"{base_url}/Items"
+    params = {
+        "Limit": str(PAGE_SIZE),
+        "Recursive": "True",
+        "IncludeItemTypes": "Movie,Episode",
+        "Fields": "Path,SeriesId",
+        "IsFolder": "False",
+        "EnableImages": "False",
+    }
+    try:
+        for items, total in paginate_emby_items(
+            client, url, params,
+            error_context="fetch library items and their series for the deletion safety guard",
+            raise_on_error=True,
+        ):
+            received += len(items)
+            for item in items:
+                path = item.get("Path")
+                if not path:
+                    continue
+                series_id = item.get("SeriesId")
+                owner = str(series_id) if series_id else None
+                # Two items for one file (a second Series record for the same folder, or a
+                # folder listed in two libraries) leave no single owner: None refuses.
+                owners[path] = owner if owners.get(path, owner) == owner else None
+    except (httpx.HTTPStatusError, httpx.RequestError, KeyError, ValueError) as exc:
+        logger.warning(
+            "Could not fetch every library item with its series for the deletion safety "
+            "guard (%s); the list is incomplete, so every series delete will be refused.",
+            exc,
+        )
+        return owners, False
+    return owners, total is not None and total > 0 and received >= total
+
+
 def delete_item(
     client: httpx.Client,
     base_url: str,

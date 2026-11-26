@@ -28,16 +28,19 @@ KNOWN = [
     f"{UK}/Some Other Show/S01/Some Other Show S01E01 - 1080p.mkv",
     f"{UK}/Third Show/S02/Third Show S02E05 - 1080p.mkv",
 ]
+# The series each known episode belongs to, as fetch_library_owners returns it.
+SERIES_ID = "101"
+OWNERS = {KNOWN[0]: SERIES_ID, KNOWN[1]: SERIES_ID, KNOWN[2]: "102", KNOWN[3]: "103"}
 
 
 def test_series_delete_is_allowed():
     """The exact 2026-08-18 false positive: this refused, making series cleanup inert."""
     safe, reason = is_cleanup_delete_safe(
-        SERIES, KNOWN, [SERIES], delete_is_container=True
+        SERIES, KNOWN, [SERIES], delete_is_container=True, owners=OWNERS, series_id=SERIES_ID
     )
 
     assert safe, f"series cleanup is inert again: {reason}"
-    assert "only this folder" in reason
+    assert "belongs to this series" in reason
 
 
 def test_every_skipped_series_from_the_live_run_is_now_deletable():
@@ -48,8 +51,10 @@ def test_every_skipped_series_from_the_live_run_is_now_deletable():
         f"{UK}/Hit and Run",
         "/Movies/Serials/--- PREBIEHAJUCE ---/Two Sides of the Abyss",
     ]
+    ids = {live[0]: SERIES_ID}
     refused = [p for p in live
-               if not is_cleanup_delete_safe(p, KNOWN, live, delete_is_container=True)[0]]
+               if not is_cleanup_delete_safe(p, KNOWN, live, delete_is_container=True,
+                                             owners=OWNERS, series_id=ids.get(p, "999"))[0]]
 
     assert not refused, f"still refused: {refused}"
 
@@ -62,7 +67,7 @@ def test_a_library_root_is_never_deletable():
     # "/" is absent here on purpose: it normalises to "" and takes the no-path branch
     # below, not the depth check.
     for root in ("/Movies", "/Movies/Serials", UK):
-        safe, _ = is_cleanup_delete_safe(root, KNOWN, [root], delete_is_container=True)
+        safe, _ = is_cleanup_delete_safe(root, KNOWN, [root], delete_is_container=True, owners=OWNERS)
         assert not safe, f"{root!r} must never be deletable as a container"
 
 
@@ -136,3 +141,57 @@ def test_unknown_delete_path_is_refused_not_waved_through():
     # cleanup path shares the helper, so it must refuse too
     safe, _ = is_cleanup_delete_safe(None, KNOWN, [])
     assert not safe
+
+
+# ---- a series folder holding media of another item --------------------------------
+# Emby files a nested show folder as a season of the outer series and a loose video as one
+# of its episodes, so normally everything under the folder is the series' own. Another
+# item's media there means a second Series item for the folder or an overlapping library.
+
+TWIN_ID = "202"
+
+
+def test_series_folder_holding_a_twin_series_episode_is_refused():
+    owners = {**OWNERS, f"{SERIES}/S01/A Series of Unfortunate Events S01E03 - 1080p.mkv": TWIN_ID}
+    safe, reason = is_cleanup_delete_safe(SERIES, list(owners), [SERIES], delete_is_container=True,
+                                          owners=owners, series_id=SERIES_ID)
+    assert not safe
+    assert reason.startswith("series-folder-shared:")
+
+
+def test_series_folder_holding_a_movie_is_refused():
+    owners = {**OWNERS, f"{SERIES}/Extras/Making Of (2017).mkv": None}
+    safe, reason = is_cleanup_delete_safe(SERIES, list(owners), [SERIES], delete_is_container=True,
+                                          owners=owners, series_id=SERIES_ID)
+    assert not safe
+    assert "Making Of (2017).mkv" in reason
+
+
+def test_series_folder_holding_an_episode_without_a_series_is_refused():
+    owners = dict(OWNERS)
+    owners[KNOWN[1]] = None
+    safe, _ = is_cleanup_delete_safe(SERIES, KNOWN, [SERIES], delete_is_container=True,
+                                     owners=owners, series_id=SERIES_ID)
+    assert not safe
+
+
+def test_series_delete_refuses_an_incomplete_owner_list():
+    safe, reason = is_cleanup_delete_safe(SERIES, KNOWN, [SERIES], delete_is_container=True,
+                                          owners=OWNERS, series_id=SERIES_ID, paths_complete=False)
+    assert not safe
+    assert reason.startswith("library-incomplete:")
+
+
+def test_series_delete_refuses_without_an_owner_list():
+    safe, reason = is_cleanup_delete_safe(SERIES, KNOWN, [SERIES], delete_is_container=True, series_id=SERIES_ID)
+    assert not safe
+    assert reason.startswith("library-incomplete:")
+
+
+def test_a_series_whose_name_extends_another_is_not_inside_it():
+    """'Show' must not claim the episodes of 'Show 2' beside it."""
+    other = f"{SERIES} 2/S01/A Series of Unfortunate Events 2 S01E01.mkv"
+    owners = {**OWNERS, other: TWIN_ID}
+    safe, _ = is_cleanup_delete_safe(SERIES, list(owners), [SERIES], delete_is_container=True,
+                                     owners=owners, series_id=SERIES_ID)
+    assert safe

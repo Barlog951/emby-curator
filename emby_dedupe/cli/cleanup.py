@@ -18,6 +18,7 @@ community rating to be protected.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import httpx
 from tqdm import tqdm
@@ -32,11 +33,12 @@ from emby_dedupe.api.cleanup_pipeline import (
 from emby_dedupe.api.client import (
     check_emby_connection,
     delete_item,
+    fetch_library_owners,
     fetch_library_paths,
     handle_host_and_port,
     logout,
 )
-from emby_dedupe.api.deletion_guard import is_cleanup_delete_safe
+from emby_dedupe.api.deletion_guard import cleanup_delete_reaches, is_cleanup_delete_safe
 from emby_dedupe.api.search import get_all_library_ids, get_library_ids_by_name
 from emby_dedupe.models.cleanup import (
     _DEFAULT_PROTECT_PATH,
@@ -196,6 +198,13 @@ def _perform_deletions(
 ) -> None:
     """Delete cleanup candidates from Emby and record results.
 
+    Every verdict is first planned for a run in which every delete succeeds
+    (:func:`_guard_verdicts`). Deletes then run in an order where a file whose Emby delete
+    would reach another candidate's files goes only after that candidate was deleted
+    (:func:`_issue_order`), and each delete is judged again just before it runs, against
+    the library as it stands (:func:`_recheck`): a candidate whose delete failed, or that
+    was held or refused, is still on disk and counts as a survivor.
+
     Args:
         client: Configured httpx client with auth headers.
         base_url: Emby server base URL.
@@ -212,31 +221,31 @@ def _perform_deletions(
     if username is None or password is None or api_key is None:
         raise ValueError("username, password and api_key are required for deletions")
 
-    # Emby fold-deletes an item's owning directory, so a candidate sharing its folder with
-    # media the run is KEEPING can take that media with it. Fetch every library path once
-    # and gate each delete on the same guard the dedup path uses.
-    known_paths, paths_complete = fetch_library_paths(client, base_url)
     # A series candidate's path is a FOLDER Emby owns as one item, not a media file, so it
     # needs the container rule rather than the file one (which refused 100% of series).
     is_series = label == "series"
-    if not paths_complete and not is_series:
-        logger.warning(
-            "The library path list is incomplete (%d paths), so every %s delete is refused "
-            "this run.", len(known_paths), label,
-        )
+    known_paths, paths_complete, owners = _library_listing(client, base_url, is_series, label)
     verdicts, held = _guard_verdicts(
         candidates, known_paths, delete_is_container=is_series, paths_complete=paths_complete,
+        owners=owners,
     )
+    order, waits, _ = _issue_order(candidates, verdicts, delete_is_container=is_series, held=held)
+    issued = {c.item_id for c in order}
+    run = _DeleteRun(known_paths, owners, is_series, paths_complete, waits)
 
     logger.info(f"Deleting {len(candidates)} {label} candidates...")
-    with tqdm(candidates, desc=f"Deleting {label}", unit=label.rstrip("s")) as progress:
+    queue = [*order, *(c for c in candidates if c.item_id not in issued)]
+    with tqdm(queue, desc=f"Deleting {label}", unit=label.rstrip("s")) as progress:
         for candidate in progress:
             progress.set_postfix_str(candidate.name[:40])
             safe, reason = verdicts[candidate.item_id]
             collection = getattr(candidate, "collection", None)
             if safe and collection in held:
                 safe, reason = False, held[collection]
+            if safe:
+                safe, reason = _issue_check(candidate, run, order, held)
             if not safe:
+                run.status[candidate.item_id] = "skipped"
                 candidate.deletion_result = {"status": "skipped_unsafe", "error": reason}
                 logger.error(
                     "SAFETY GUARD blocked cleanup deletion of %r — %s (path=%r). "
@@ -249,10 +258,135 @@ def _perform_deletions(
                 username=username, password=password, api_key=api_key,
             )
             candidate.deletion_result = result
+            run.record(candidate, result.get("status") == "success")
             logger.info(f"Deleted {candidate.name}: {result.get('status', 'unknown')}")
             if collection and result.get("status") != "success":
                 held[collection] = f"collection kept: deleting {candidate.name!r} failed, the other parts stay"
 
+
+def _library_listing(client: httpx.Client, base_url: str, is_series: bool, label: str):
+    """Fetch the library once for the guard: every media path, whether the listing is
+    complete, and for a series run which series each item belongs to.
+
+    Emby fold-deletes an item's owning directory, so a candidate sharing its folder with
+    media the run is KEEPING can take that media with it; every delete is gated on the same
+    guard the dedup path uses.
+
+    Returns:
+        ``(known_paths, complete, owners)``; ``owners`` is None for a movie run.
+    """
+    owners = None
+    if is_series:
+        owners, complete = fetch_library_owners(client, base_url)
+        known_paths = list(owners)
+    else:
+        known_paths, complete = fetch_library_paths(client, base_url)
+    if not complete:
+        logger.warning(
+            "The library listing is incomplete (%d items), so every %s delete is refused "
+            "this run.", len(known_paths), label,
+        )
+    return known_paths, complete, owners
+
+
+def _issue_check(candidate, run: _DeleteRun, order: list, held: dict) -> tuple[bool, str]:
+    """Re-check a cleared candidate at its turn; a refused collection part holds its collection."""
+    pending = [c.path for c in order
+               if c.item_id not in run.status and getattr(c, "collection", None) not in held]
+    safe, reason = _recheck(candidate, run, pending)
+    collection = getattr(candidate, "collection", None)
+    if not safe and collection:
+        held[collection] = f"collection kept: the re-check refused {candidate.name!r}, the other parts stay"
+    return safe, reason
+
+
+class _DeleteRun:
+    """What one cleanup delete loop knows about the library as its deletes proceed."""
+
+    def __init__(self, known_paths, owners, is_series: bool, paths_complete: bool, waits: dict) -> None:
+        self.known_paths = list(known_paths)
+        self.owners = dict(owners) if owners is not None else None
+        self.is_series = is_series
+        self.paths_complete = paths_complete
+        self.waits = waits
+        self.status: dict[str, str] = {}
+
+    def record(self, candidate, succeeded: bool) -> None:
+        """Note a delete's outcome. A successful one removes the candidate's path, and for a
+        folder everything under it, from the library as later re-checks see it."""
+        self.status[candidate.item_id] = "success" if succeeded else "failed"
+        path = getattr(candidate, "path", None)
+        if not (succeeded and path):
+            return
+        inside = path.rstrip("/") + "/"
+        self.known_paths = [p for p in self.known_paths if p != path and not p.startswith(inside)]
+        if self.owners is not None:
+            self.owners = {p: s for p, s in self.owners.items() if p != path and not p.startswith(inside)}
+
+
+def _recheck(candidate, run: _DeleteRun, pending_paths: list) -> tuple[bool, str]:
+    """Judge a cleared candidate again just before its delete, against what is still on disk.
+
+    Every candidate this delete would reach must already have been deleted: one that
+    failed, was held or was refused is still on disk, and this delete would take its
+    files. The guard then runs on the library as it stands: deleted files are gone, and
+    only candidates still waiting their turn count as going.
+
+    Returns:
+        ``(safe, reason)``; a refusal's reason starts with ``re-check:``.
+    """
+    for other, why in run.waits.get(candidate.item_id, ()):
+        if run.status.get(other.item_id) != "success":
+            return False, f"re-check: {other.name!r} was not deleted, and this delete would reach it ({why})"
+    extra: dict[str, Any] = {"owners": run.owners, "series_id": str(candidate.item_id)} if run.is_series else {}
+    safe, reason = is_cleanup_delete_safe(
+        getattr(candidate, "path", None), run.known_paths, pending_paths,
+        delete_is_container=run.is_series, paths_complete=run.paths_complete, **extra,
+    )
+    return (True, reason) if safe else (False, f"re-check: {reason}")
+
+
+def _issue_order(
+    candidates: list, verdicts: dict, delete_is_container: bool, held=(),
+) -> tuple[list, dict, dict[str, tuple[bool, str]]]:
+    """Order the cleared candidates so each delete runs after every candidate it would reach.
+
+    Emby's delete of one file can take part of another candidate (name-prefix sidecars,
+    subtitles listed under both, or a folder named for the deleted title). That is
+    harmless only once the other candidate is gone, so it is deleted first. Two candidates
+    that would each reach the other can never go in a safe order and are both refused.
+    Series folders hold no other candidate's files and are not ordered.
+
+    Returns:
+        ``(order, waits, blocked)``: the cleared candidates in issue order (input order
+        among equals); for each, the candidates it must wait for with the linking rule;
+        and a refusal for every cleared candidate that can never go.
+    """
+    cleared = [c for c in candidates if verdicts[c.item_id][0] and getattr(c, "collection", None) not in held]
+    waits: dict[str, list] = {}
+    if not delete_is_container:
+        for c in cleared:
+            reach = ((o, cleanup_delete_reaches(c.path, o.path)) for o in cleared if o is not c)
+            waits[c.item_id] = [(o, why) for o, why in reach if why]
+    order: list = []
+    done: set[str] = set()
+    pending = list(cleared)
+    while pending:
+        ready = next((c for c in pending if all(o.item_id in done for o, _ in waits.get(c.item_id, ()))), None)
+        if ready is None:
+            break
+        order.append(ready)
+        done.add(ready.item_id)
+        pending.remove(ready)
+    blocked = {}
+    for c in pending:
+        other, why = next((o, w) for o, w in waits[c.item_id] if o.item_id not in done)
+        blocked[c.item_id] = (
+            False,
+            f"delete-order: this delete would reach {other.name!r} ({why}), and that candidate "
+            "cannot be deleted first, so this one stays",
+        )
+    return order, waits, blocked
 
 
 def _journal_cleanup(candidates: list, series_candidates: list, doit: bool) -> None:
@@ -269,37 +403,57 @@ def _journal_cleanup(candidates: list, series_candidates: list, doit: bool) -> N
 
 def _guard_verdicts(
     candidates: list, known_paths, delete_is_container: bool, paths_complete: bool = True,
+    owners: dict | None = None,
 ) -> tuple[dict[str, tuple[bool, str]], dict[str, str]]:
     """Run the fold-delete guard over every candidate, keeping collections whole.
 
-    A collection goes whole or not at all, so one part the guard refuses holds every
-    part. Held parts then SURVIVE the run, which can make a neighbour's delete unsafe
-    (it would fold their shared folder), so the guard is re-run without them until
-    nothing new is held. ``paths_complete`` False makes the guard refuse every file
-    delete (see :func:`is_cleanup_delete_safe`).
+    The plan assumes every delete that is cleared succeeds. A collection goes whole or not
+    at all, so one part the guard refuses holds every part. A refused candidate and every
+    held part then SURVIVE the run, which can make a neighbour's delete unsafe (it would
+    fold their shared folder or take their sidecars), so the guard is re-run without them
+    until nothing new is refused. A candidate that can never be deleted in a safe order
+    (see :func:`_issue_order`) is refused the same way. ``paths_complete`` False makes the
+    guard refuse every delete (see :func:`is_cleanup_delete_safe`).
 
     Returns:
         ``({item_id: (safe, reason)}, {collection name: reason it is held})``.
     """
     held: dict[str, str] = {}
+    refused: dict[str, tuple[bool, str]] = {}
     while True:
-        going = [c for c in candidates if getattr(c, "collection", None) not in held]
+        going = [c for c in candidates
+                 if c.item_id not in refused and getattr(c, "collection", None) not in held]
         delete_paths = [c.path for c in going if getattr(c, "path", None)]
         verdicts = {
-            c.item_id: is_cleanup_delete_safe(
-                getattr(c, "path", None), known_paths, delete_paths,
-                delete_is_container=delete_is_container, paths_complete=paths_complete,
+            c.item_id: refused.get(c.item_id) or _guard_one(
+                c, known_paths, delete_paths, delete_is_container, paths_complete, owners,
             )
             for c in candidates
         }
-        newly = {
+        verdicts.update(_issue_order(going, verdicts, delete_is_container)[2])
+        stopped = {c.item_id: verdicts[c.item_id] for c in going if not verdicts[c.item_id][0]}
+        if not stopped:
+            return verdicts, held
+        refused |= stopped
+        held |= {
             c.collection: f"collection kept whole: the safety guard holds {c.name!r}"
             for c in going
-            if getattr(c, "collection", None) and not verdicts[c.item_id][0]
+            if c.item_id in stopped and getattr(c, "collection", None) and c.collection not in held
         }
-        if not newly:
-            return verdicts, held
-        held |= {name: reason for name, reason in newly.items() if name not in held}
+
+
+def _guard_one(
+    candidate, known_paths, delete_paths: list, delete_is_container: bool, paths_complete: bool,
+    owners: dict | None,
+) -> tuple[bool, str]:
+    """The guard's verdict for one candidate, with the series ownership data for a series."""
+    extra: dict[str, Any] = (
+        {"owners": owners, "series_id": str(candidate.item_id)} if delete_is_container else {}
+    )
+    return is_cleanup_delete_safe(
+        getattr(candidate, "path", None), known_paths, delete_paths,
+        delete_is_container=delete_is_container, paths_complete=paths_complete, **extra,
+    )
 
 
 def _resolve_library_ids(

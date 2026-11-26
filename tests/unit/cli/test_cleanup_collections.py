@@ -83,8 +83,10 @@ def test_held_collection_is_a_survivor_for_its_neighbours():
     assert verdicts["z"][0] is True
 
 
-def _run_with_real_guard(candidates, paths, complete, label):
+def _run_with_real_guard(candidates, paths, complete, label, owners=None):
+    owners = {p: None for p in paths} if owners is None else owners
     with patch.object(cli, "fetch_library_paths", return_value=(paths, complete)), \
+         patch.object(cli, "fetch_library_owners", return_value=(owners, complete)), \
          patch.object(cli, "delete_item", return_value={"status": "success"}) as deleted:
         cli._perform_deletions(MagicMock(), "http://emby", candidates, "u", "p", "k", label)
     return [call.args[2] for call in deleted.call_args_list]
@@ -105,10 +107,18 @@ def test_complete_library_list_still_deletes_a_movie_alone_in_its_folder():
     assert _run_with_real_guard(candidates, [candidates[0].path], complete=True, label="movies") == ["a"]
 
 
-def test_incomplete_library_list_does_not_hold_series_folders():
-    """A series delete removes exactly its own folder and never reads the path list."""
+def test_incomplete_library_list_holds_series_folders_too():
+    """A series delete removes its whole folder, so an item the listing misses would go with it."""
     show = _cand("s", "Some Show", path="/Movies/Serials/--- UKONCENE ---/Some Show (2019)")
-    assert _run_with_real_guard([show], [], complete=False, label="series") == ["s"]
+    episode = f"{show.path}/S01/Some Show S01E01.mkv"
+    assert _run_with_real_guard([show], [episode], complete=False, label="series", owners={episode: "s"}) == []
+    assert show.deletion_result["error"].startswith("library-incomplete:")
+
+
+def test_complete_library_list_deletes_a_series_that_owns_its_folder():
+    show = _cand("s", "Some Show", path="/Movies/Serials/--- UKONCENE ---/Some Show (2019)")
+    episode = f"{show.path}/S01/Some Show S01E01.mkv"
+    assert _run_with_real_guard([show], [episode], complete=True, label="series", owners={episode: "s"}) == ["s"]
 
 
 def test_console_report_shows_collection_column_and_counts(capsys):

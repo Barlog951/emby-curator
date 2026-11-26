@@ -374,12 +374,22 @@ def collect_delete_paths(decisions) -> list:
 _MIN_CONTAINER_DEPTH = 4
 
 
-def _is_container_delete_safe(dp: str) -> tuple[bool, str]:
+def _is_container_delete_safe(
+    dp: str, owners: dict | None = None, series_id: str | None = None, owners_complete: bool = True,
+) -> tuple[bool, str]:
     """Decide whether deleting a FOLDER-backed item (a Series) is safe.
 
-    Deleting a Series item removes exactly that series' own folder; sibling series in the
-    same container and the container itself are untouched. The only media at risk is
-    what lives inside the series folder, which is what the run intends to delete.
+    Deleting a Series item removes its whole folder, including anything nested in it;
+    sibling series in the same container and the container itself are untouched. Emby
+    files a show folder nested in a series folder as a season of that series, and a loose
+    video in it as one of its episodes, so everything Emby lists under the folder normally
+    belongs to the series being deleted.
+
+    Media of another item can still sit there: a second Series item for the same folder,
+    or a library whose root overlaps the series folder. Every known Movie or Episode under
+    the folder must therefore belong to this series (``owners`` maps each path to its
+    ``SeriesId``, or None for a Movie). A missing or incomplete owner list refuses, as a
+    hidden item would make that test pass wrongly.
 
     The file-based reasoning in :func:`is_cleanup_delete_safe` does not apply: for a
     file, ``dirname(path)`` is the folder Emby may fold-delete; for a series folder it
@@ -394,16 +404,56 @@ def _is_container_delete_safe(dp: str) -> tuple[bool, str]:
             f"({depth} path components, need >= {_MIN_CONTAINER_DEPTH}) — this looks like "
             "a library root, and deleting it would remove the whole library",
         )
+    if owners is None or not owners_complete:
+        return False, (
+            "library-incomplete: the full list of library items and their series is not "
+            "available, so media of another item in this series folder cannot be ruled out"
+        )
+    foreign = next((p for p, owner in owners.items() if _under(p, dp) and owner != series_id), None)
+    if foreign:
+        return False, (
+            f"series-folder-shared: Emby deletes the whole folder {dp!r}, and "
+            f"{posixpath.basename(_norm(foreign))!r} in it belongs to another item"
+        )
     return (
         True,
-        f"series folder ({dp!r}) — Emby removes only this folder; siblings in the same "
-        "container are unaffected",
+        f"series folder ({dp!r}) — everything in it belongs to this series; siblings in "
+        "the same container are unaffected",
     )
+
+
+def cleanup_delete_reaches(delete_path: str | None, other_path: str | None) -> str | None:
+    """Why Emby's delete of the file ``delete_path`` would touch ``other_path``, or None.
+
+    Cleanup deletes several files in one run, and Emby's delete of one can remove part of
+    another candidate: its ``.nfo`` and subtitles through the name-prefix rule, subtitles
+    Emby lists under both files, or the whole file when the folder is named for the
+    deleted title. That is harmless only if the other candidate's own delete succeeds, so
+    the caller deletes ``other_path`` first and this one only after that succeeded.
+
+    Returns:
+        The refusal text of the rule that links them (``title-folder-shared``,
+        ``name-prefix`` or ``sidecar-owner``), or None when the delete cannot reach it.
+    """
+    dp, op = _norm(delete_path), _norm(other_path)
+    if not _is_usable_path(dp) or not _is_usable_path(op) or dp == op:
+        return None
+    ddir = posixpath.dirname(dp)
+    folder = posixpath.basename(ddir)
+    stem = posixpath.splitext(posixpath.basename(dp))[0]
+    if folder and stem.casefold().startswith(folder.casefold()) and _under(op, ddir):
+        return _title_folder_reason(ddir, op)
+    if _prefix_neighbour(dp, [op]):
+        return _prefix_reason(dp, op)
+    if _sidecar_owner(dp, [op]):
+        return _sidecar_owner_reason(dp, op)
+    return None
 
 
 def is_cleanup_delete_safe(
     delete_path: str | None, known_paths, delete_paths=None,
     delete_is_container: bool = False, paths_complete: bool = True,
+    owners: dict | None = None, series_id: str | None = None,
 ) -> tuple[bool, str]:
     """Decide whether deleting ``delete_path`` can destroy media the run is KEEPING.
 
@@ -426,10 +476,13 @@ def is_cleanup_delete_safe(
             is itself a target does not count as a survivor.
         delete_is_container: True when ``delete_path`` is a FOLDER Emby owns as one item
             (a Series) rather than a media file; see :func:`_is_container_delete_safe`.
-        paths_complete: whether ``known_paths`` holds every media path in the library.
-            When False, no file delete is cleared: a survivor the list misses would make
-            "nothing in this folder survives" wrong, and cleanup has no file-only
-            fallback. Folder-backed items do not read the list and are unaffected.
+        paths_complete: whether the library listing (``known_paths``, or ``owners`` for a
+            series) holds every media item. When False, no delete is cleared: an item the
+            list misses would make "nothing in this folder survives" wrong, and cleanup
+            has no file-only fallback.
+        owners: for a series delete, every known Movie/Episode path mapped to its
+            ``SeriesId`` (None for a Movie), as ``fetch_library_owners`` returns it.
+        series_id: for a series delete, the id of the Series item being deleted.
 
     Returns:
         (safe, reason). ``safe`` False means refuse the Emby delete — it would fold-delete
@@ -443,7 +496,7 @@ def is_cleanup_delete_safe(
         return False, "delete path unknown — cannot verify fold safety, refusing"
 
     if delete_is_container:
-        return _is_container_delete_safe(dp)
+        return _is_container_delete_safe(dp, owners, series_id, owners_complete=paths_complete)
 
     if not paths_complete:
         return False, (
