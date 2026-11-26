@@ -251,11 +251,11 @@ def test_remote_script_sweeps_subtitle_sidecars(tmp_path):
 _SHELLS = [sh for sh in ("sh", "bash", "dash") if shutil.which(sh)]
 
 
-def _run_sweep(shell, folder, keeper, delete):
+def _run_sweep(shell, folder, keeper, delete, env=None):
     import subprocess
 
     script = _build_remote_script(str(folder / keeper), str(folder / delete), doit=True)
-    proc = subprocess.run([shell, "-c", script], capture_output=True, text=True)
+    proc = subprocess.run([shell, "-c", script], capture_output=True, text=True, env=env)
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "OK"
     return sorted(p.name for p in folder.iterdir())
@@ -326,6 +326,22 @@ def test_sweep_keeps_a_subtitle_emby_lists_under_the_kept_copy(tmp_path, shell):
     # Emby lists "X.CZ.cs.srt" under "X.mkv" too; deleting "X.CZ.mkv" must leave it.
     _touch(tmp_path, "X.mkv", "X.CZ.mkv", "X.CZ.cs.srt", "X.CZ.nfo")
     left = _run_sweep(shell, tmp_path, "X.mkv", "X.CZ.mkv")
+    assert left == ["X.CZ.cs.srt", "X.CZ.nfo", "X.mkv"]
+
+
+@pytest.mark.parametrize("shell", _SHELLS)
+def test_sweep_keeps_exact_case_owners_when_tr_fails(tmp_path, shell):
+    # The case-folding owner test needs `tr`; the exact-case test must not.
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    stub = bin_dir / "tr"
+    stub.write_text("#!/bin/sh\nexit 1\n")
+    stub.chmod(0o755)
+    media = tmp_path / "media"
+    media.mkdir()
+    _touch(media, "X.mkv", "X.CZ.mkv", "X.CZ.cs.srt", "X.CZ.nfo")
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
+    left = _run_sweep(shell, media, "X.mkv", "X.CZ.mkv", env=env)
     assert left == ["X.CZ.cs.srt", "X.CZ.nfo", "X.mkv"]
 
 

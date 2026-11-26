@@ -419,8 +419,9 @@ def is_cleanup_delete_safe(
     Args:
         delete_path: filesystem path of the item about to be deleted.
         known_paths: every media path in the library (``fetch_library_paths``, whose
-            completeness flag goes in ``paths_complete``). Without full visibility a shared
-            folder can look dedicated and the guard over-refuses.
+            completeness flag goes in ``paths_complete``). A survivor missing from the list
+            would make its folder look as if nothing in it survives, and the guard would
+            clear a delete that fold-deletes it; ``paths_complete=False`` refuses instead.
         delete_paths: every path being deleted in THIS run, so a same-folder sibling that
             is itself a target does not count as a survivor.
         delete_is_container: True when ``delete_path`` is a FOLDER Emby owns as one item
