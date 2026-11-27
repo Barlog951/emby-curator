@@ -36,6 +36,7 @@ from emby_dedupe.utils.logging import logger
 from emby_dedupe.utils.providers import (
     PROVIDER_PRIORITY,
     normalize_provider_ids,
+    normalize_provider_value,
     provider_id_conflict,
 )
 
@@ -93,12 +94,17 @@ def _build_exclusion_map(excluded_ids) -> dict:
     Returns:
         Dictionary with keys 'imdb', 'tmdb', 'tvdb' containing filtered ID lists
     """
-    excluded_ids = excluded_ids or []
+    excluded = [normalize_provider_value(i) for i in excluded_ids or []]
     return {
-        "imdb": [id.lower() for id in excluded_ids if id.lower().startswith("tt")],
-        "tmdb": [id for id in excluded_ids if id.isdigit()],
-        "tvdb": [id for id in excluded_ids if id.isdigit()]
+        "imdb": [i for i in excluded if i.startswith("tt")],
+        "tmdb": [i for i in excluded if i.isdigit()],
+        "tvdb": [i for i in excluded if i.isdigit()]
     }
+
+
+def _requested_ids(group: list) -> set[str]:
+    """The item ids a duplicate group asks Emby for (members may be ids or ``{"id": …}`` dicts)."""
+    return {str(member["id"] if isinstance(member, dict) else member) for member in group}
 
 
 def _check_group_exclusion(items_details, exclusion_map) -> tuple[bool, str | None, dict | None]:
@@ -118,9 +124,9 @@ def _check_group_exclusion(items_details, exclusion_map) -> tuple[bool, str | No
         if provider_ids:
             # Use case-insensitive lookup (Emby API returns inconsistent casing)
             provider_ids_lower = normalize_provider_ids(provider_ids)
-            imdb_id = provider_ids_lower.get("imdb", "").lower()
-            tmdb_id = provider_ids_lower.get("tmdb", "")
-            tvdb_id = provider_ids_lower.get("tvdb", "")
+            imdb_id = normalize_provider_value(provider_ids_lower.get("imdb"))
+            tmdb_id = normalize_provider_value(provider_ids_lower.get("tmdb"))
+            tvdb_id = normalize_provider_value(provider_ids_lower.get("tvdb"))
 
             # Check if this item should be excluded
             if imdb_id and imdb_id in exclusion_map["imdb"]:
@@ -952,15 +958,15 @@ def identify_duplicates(provider_tables: dict, excluded_ids: list = None) -> dic
     """
     from emby_dedupe.utils.logging import logger
 
-    excluded_ids = excluded_ids or []
+    excluded = {normalize_provider_value(i) for i in excluded_ids or []}
     excluded_count = 0
     duplicates: dict = {}
 
     for provider, id_table in provider_tables.items():
         duplicates[provider] = {}
         for pid, items in id_table.items():
-            # Skip this provider ID if it's in the excluded list
-            if pid in excluded_ids:
+            # Skip this provider ID if it's in the excluded list (compared as normalised ids)
+            if normalize_provider_value(pid) in excluded:
                 if len(items) > 1:
                     excluded_count += 1
                     logger.debug(f"Skipping excluded provider ID {pid} with {len(items)} items")
@@ -1281,6 +1287,15 @@ def process_duplicate_groups(
                 progress_bar.update(1)
                 continue
 
+            # A copy Emby did not return could carry an excluded id, so the group is skipped
+            # whole, as on a failed fetch.
+            missing = _requested_ids(group) - {str(i.get("Id")) for i in items_details}
+            if missing:
+                logger.warning(f"Skipping a duplicate group: Emby did not return item(s) {sorted(missing)}. "
+                               "Nothing in it is deleted.")
+                progress_bar.update(1)
+                continue
+
             # Check if group should be excluded
             should_exclude, excluded_provider_id, excluded_item = _check_group_exclusion(items_details, exclusion_map)
 
@@ -1345,8 +1360,9 @@ def _different_content_reason(item: dict, keeper: dict, frames: FrameChecker | N
 
 
 def _frame_check_wanted(item: dict, keeper: dict) -> bool:
-    """True when either copy is an episode. Episodes get the frame check and the season
-    folder test: movies have no siblings to be confused with."""
+    """True when either copy is an episode. Episodes get the season folder test and the
+    ``covers`` proof for a running-time gap; films keep the narrower PAL rule. Pairs of one
+    length get the frame check either way (``_frame_mismatch``)."""
     return bool(keeper.get("is_episode") or item.get("is_episode"))
 
 
@@ -1391,6 +1407,9 @@ def _speedup_exception(item: dict, keeper: dict, frames: FrameChecker, mismatch:
 def _frame_mismatch(item: dict, keeper: dict, frames: FrameChecker | None) -> str | None:
     """The refusal when the frames do not prove the same picture; None when they do.
 
+    Applies to films too: a film misidentified with another film's id, or two films that
+    share only a TVDB id, group as copies, and one length is no proof of one film.
+
     "unavailable" (no ffmpeg, stream unreadable) refuses too: two same-length episodes are
     not proven to be one episode (a "(2)" file may be the second half of a double bill).
     A missed duplicate only costs disk space. Without a frame checker (``frames`` is
@@ -1402,7 +1421,7 @@ def _frame_mismatch(item: dict, keeper: dict, frames: FrameChecker | None) -> st
     zero: copies of one length that line up X seconds apart each hold about X seconds the
     other lacks, at opposite ends.
     """
-    if frames is None or not _frame_check_wanted(item, keeper):
+    if frames is None:
         return None
     verdict = frames.compare(keeper, item)
     if verdict.verdict == "unavailable":
@@ -1416,21 +1435,23 @@ def _frame_mismatch(item: dict, keeper: dict, frames: FrameChecker | None) -> st
 
 
 def _frame_check_pairs(decisions: list) -> tuple[list[tuple[dict, dict]], list[tuple[dict, dict]]]:
-    """Every (keeper, delete) episode pair the frame check will be asked about, for a parallel
-    prefetch: pairs of one length (``compare``) and pairs whose lengths differ (``covers``)."""
+    """Every (keeper, delete) pair the frame check will be asked about, for a parallel prefetch:
+    pairs of one length (``compare``, episodes and films) and pairs whose lengths differ
+    (``covers``: episodes, and films whose gap is a PAL speed-up)."""
     pairs: list[tuple[dict, dict]] = []
     covering: list[tuple[dict, dict]] = []
     for decision in decisions:
         keeper = decision.get("keep") or {}
         for item in decision.get("delete", []):
-            if not _frame_check_wanted(item, keeper):
-                continue
+            episode = _frame_check_wanted(item, keeper)
             if (provider_id_conflict(keeper.get("provider_ids"), item.get("provider_ids"))
-                    or episode_identity_conflict(keeper.get("path"), item.get("path"), is_episode=True)
+                    or episode_identity_conflict(keeper.get("path"), item.get("path"), is_episode=episode)
                     or _unknown_runtime(item, keeper)):
                 continue
-            mismatch = duration_mismatch(keeper.get("runtime_ticks"), item.get("runtime_ticks"))
-            (covering if mismatch else pairs).append((keeper, item))
+            if not duration_mismatch(keeper.get("runtime_ticks"), item.get("runtime_ticks")):
+                pairs.append((keeper, item))
+            elif episode or is_speedup_pair(keeper, item):
+                covering.append((keeper, item))
     return pairs, covering
 
 
@@ -1449,6 +1470,9 @@ UNTAGGED_BEST_COPY_HOLD = "untagged_best_copy_hold"
 # Delete-item key holding the reason a whole group was held for having more copies to
 # delete than a title has versions (set by ``_hold_oversized_groups``).
 OVERSIZED_GROUP_HOLD = "oversized_group_hold"
+# Delete-item key holding the reason a copy is held because its file is another group's kept
+# copy (set by ``_hold_kept_files``, read by ``_refusal_reason``).
+KEPT_FILE_HOLD = "kept_file_hold"
 _ENGLISH_CODES = {"eng": "en", "english": "en"}
 _CLASS_DISPLAY = {"2160p": "4K"}   # the report and log wording of the top class
 
@@ -1551,7 +1575,7 @@ def _refusal_reason(item: dict, keeper: dict, frames: FrameChecker | None = None
     """Every reason the guard keeps both copies: different content first, then a group held
     because its best copy's audio is untagged, then an audio merge, then watch history the
     delete would lose."""
-    return (item.get(OVERSIZED_GROUP_HOLD) or _different_content_reason(item, keeper, frames)
+    return (item.get(OVERSIZED_GROUP_HOLD) or item.get(KEPT_FILE_HOLD) or _different_content_reason(item, keeper, frames)
             or item.get(UNTAGGED_BEST_COPY_HOLD) or merge_audio_first_reason(item, keeper)
             or watched_copy_reason(item, keeper))
 
@@ -1577,6 +1601,24 @@ def _hold_oversized_groups(decisions: list) -> None:
             f"Holding group {(decision.get('keep') or {}).get('path')!r}: {len(items)} copies to delete. "
             "All copies kept."
         )
+
+
+def _hold_kept_files(decisions: list) -> None:
+    """Hold every delete whose file is the kept copy of a decision in this run.
+
+    One file listed under two Emby ids (two libraries over one folder) can land in two
+    groups with opposite keepers; each group would then delete the file the other kept.
+    Paths are compared exactly as Emby reports them. The hold keeps both copies and sets no
+    fold-safe marker, so ``--fold-safe-delete`` leaves the file alone too.
+    """
+    kept = {(decision.get("keep") or {}).get("path") for decision in decisions} - {None, ""}
+    for decision in decisions:
+        for item in decision.get("delete") or []:
+            if item.get("path") in kept:
+                item[KEPT_FILE_HOLD] = ("kept-file: this file is the kept copy of another duplicate group "
+                                        "(one file under two Emby ids)")
+                logger.warning(f"Holding the delete of id={item.get('id')}: {item.get('path')!r} is kept by "
+                               "another group. Both copies kept.")
 
 
 def _refuse_different_content(item: dict, keeper: dict, frames: FrameChecker | None = None) -> str | None:
@@ -1863,6 +1905,8 @@ def process_deletion_and_generate_report(
 
     # A group with more copies to delete than a title has versions is held whole.
     _hold_oversized_groups(decisions)
+    # A file another group keeps is never deleted.
+    _hold_kept_files(decisions)
 
     # The frame check streams from Emby; run all pairs up front, a few at a time.
     if frames is not None:

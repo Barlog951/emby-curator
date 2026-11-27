@@ -21,7 +21,11 @@ from emby_dedupe.utils.constants import (
 from emby_dedupe.utils.exceptions import EmbyServerConnectionError
 from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.logging import logger
-from emby_dedupe.utils.providers import PROVIDER_PRIORITY, normalize_provider_ids
+from emby_dedupe.utils.providers import (
+    PROVIDER_PRIORITY,
+    normalize_provider_ids,
+    normalize_provider_value,
+)
 
 
 @dataclass
@@ -672,8 +676,9 @@ def _process_provider_id(provider, table_name, id_value, provider_tables, item, 
         library_name: Library name.
         ignored_imdb_id: IMDb ID to ignore.
     """
+    id_value = normalize_provider_value(id_value)
     # Skip the IMDb ID if it is the one we're ignoring
-    if provider == "imdb" and id_value == ignored_imdb_id:
+    if provider == "imdb" and id_value == normalize_provider_value(ignored_imdb_id):
         return
 
     if id_value:

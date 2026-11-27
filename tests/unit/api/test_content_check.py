@@ -722,12 +722,13 @@ def test_without_a_frame_checker_same_length_episodes_still_pass():
     assert dd._different_content_reason(_ep("b", 2492, 25), _ep("a", 2461, 25), None) is None
 
 
-def test_movies_skip_the_frame_check():
+def test_movies_of_one_length_get_the_frame_check():
+    """A film linked to another by a wrong id has the same running time often enough."""
     frames = _Frames("different")
     movie_a = {**_ep("a", 7000, 24), "is_episode": False, "path": "/M/A (2001)/a.mkv"}
     movie_b = {**_ep("b", 7010, 24), "is_episode": False, "path": "/M/A (2001) 4K/b.mkv"}
-    assert dd._different_content_reason(movie_b, movie_a, frames) is None
-    assert frames.calls == 0
+    assert "frame-check different" in dd._different_content_reason(movie_b, movie_a, frames)
+    assert frames.calls == 1
 
 
 def test_prefetch_list_holds_only_pairs_the_guard_will_ask_about():

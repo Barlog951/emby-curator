@@ -26,6 +26,16 @@ def normalize_provider_ids(provider_ids: dict[str, Any] | None) -> dict[str, Any
     return {k.lower(): v for k, v in (provider_ids or {}).items()}
 
 
+def normalize_provider_value(value: Any) -> str:
+    """A provider id value in the form every lookup compares: surrounding whitespace
+    removed (``str.strip`` also drops a non-breaking space) and lowercased; "" for None.
+
+    Emby stores ids as entered, so one id can arrive as "TT0120737", "tt0120737" or
+    "tt0120737\u00a0"; grouping and ``--exclude-ids`` must treat these as one id.
+    """
+    return "" if value is None else str(value).strip().lower()
+
+
 IDENTITY_PROVIDERS = ("imdb", "tmdb")  # ids that name exactly one film or episode
 
 
