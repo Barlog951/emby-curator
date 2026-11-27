@@ -7,6 +7,24 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.13] — 2026-11-27
+
+### Fixed
+
+- **`cleanup` stops when a read that protects items fails or comes back incomplete.** A failed request for the user
+  list, a user's play or favourite data, the favourite people, the collections or any paged listing used to be logged
+  and skipped, so the items it would have protected could become candidates. Cleanup now stops before any delete and
+  exits 1. Paged listings must return exactly the number of records Emby reports, and a user list that is empty or has
+  a user without an Id stops it too.
+- **A series someone has paused partway through is kept.** A resumable episode of any user now protects its series.
+- **A collection is kept whole when one of its parts sits outside the scanned libraries.** The collection ids of every
+  movie on the server are now read, so a part known only by its own collection id still protects the collection.
+- **`dedupe` deletes an episode copy only when its frame check proves the whole copy.** All five sample points must
+  match, at a steady offset that stays within max(13 s, 2 % of the deleted copy's running time) of zero, and the kept
+  copy's picture must reach the other copy's picture end, which also refuses a truncated file whose header still
+  reports the full length. Films need the same coverage proof for a PAL speed-up. Saved verdicts now include each
+  file's size, so a file replaced in place is checked again; the first run after the update checks every pair again.
+
 ## [3.4.12] — 2026-11-26
 
 ### Fixed
