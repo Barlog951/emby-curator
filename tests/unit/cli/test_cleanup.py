@@ -221,6 +221,40 @@ class TestRunCleanupCommandWithSeries:
         mock_movie_pipeline.assert_not_called()
         mock_series_pipeline.assert_called_once()
 
+    @patch("emby_dedupe.cli.cleanup._journal_cleanup")
+    @patch("emby_dedupe.cli.cleanup._perform_deletions")
+    @patch("emby_dedupe.cli.cleanup._run_series_cleanup_pipeline")
+    @patch("emby_dedupe.cli.cleanup._run_cleanup_pipeline")
+    @patch("emby_dedupe.cli.cleanup._probe_library_content", return_value=(500, 200))
+    @patch("emby_dedupe.cli.cleanup.get_library_ids_by_name", return_value=["lib_mixed"])
+    @patch("emby_dedupe.cli.cleanup.get_all_library_ids", return_value=[{"id": "lib_mixed", "name": "Mixed"}])
+    @patch("emby_dedupe.cli.cleanup._resolve_primary_user_id", return_value="uid1")
+    @patch("emby_dedupe.cli.cleanup.check_emby_connection")
+    @patch("emby_dedupe.cli.cleanup.make_http_request")
+    @patch("emby_dedupe.cli.cleanup.httpx.Client")
+    def test_failed_read_stops_the_run_before_any_delete(
+        self, mock_client_cls, mock_http, mock_check, mock_resolve, mock_all_libs, mock_lib_ids,
+        mock_probe, mock_movie_pipeline, mock_series_pipeline, mock_delete, mock_journal,
+    ):
+        """A read that fails in the series pipeline stops a --doit run with exit 1, although the
+        movie pipeline already found a candidate: nothing is deleted or journaled."""
+        from emby_dedupe.cli.cleanup import run_cleanup_command
+        from emby_dedupe.models.cleanup import CleanupCandidate
+        from emby_dedupe.utils.exceptions import EmbyReadError
+
+        mock_http.return_value = _make_response({"Id": "server1"})
+        candidate = CleanupCandidate("m1", "Film", 2000, 1.0, None, 6.0, 5.0, "HD", 1, "/m/film.mkv")
+        mock_movie_pipeline.return_value = ([candidate], {"final_candidates": 1}, [])
+        mock_series_pipeline.side_effect = EmbyReadError("could not read the series UserData of user u1: boom")
+
+        args = self._minimal_args(library=["Mixed"], doit=True, password="pw")
+        with pytest.raises(SystemExit) as stop:
+            run_cleanup_command(args)
+
+        assert stop.value.code == 1
+        mock_delete.assert_not_called()
+        mock_journal.assert_not_called()
+
     @patch("emby_dedupe.cli.cleanup._run_series_cleanup_pipeline")
     @patch("emby_dedupe.cli.cleanup._run_cleanup_pipeline")
     @patch("emby_dedupe.cli.cleanup._probe_library_content", return_value=(500, 200))

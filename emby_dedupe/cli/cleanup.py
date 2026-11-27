@@ -53,6 +53,7 @@ from emby_dedupe.reports.cleanup import (
     _save_cleanup_html_report,
     prefetch_cleanup_posters,
 )
+from emby_dedupe.utils.exceptions import EmbyReadError
 from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.logging import logger
 
@@ -693,6 +694,10 @@ def run_cleanup_command(args) -> None:
             no_open=getattr(args, "no_open", False),
             doit=doit,
         )
+    except EmbyReadError as e:
+        # The pipelines finish before any delete is sent, so nothing was deleted.
+        logger.error(f"Cleanup stopped before deleting anything: {e}")
+        raise SystemExit(1) from e
     except Exception as e:
         logger.error(f"Cleanup command failed: {e}")
         raise

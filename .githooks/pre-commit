@@ -60,7 +60,7 @@ fi
 check=".claude/skills/dedupe-delete-safety/scripts/check.py"
 if [ -f "$check" ] && [ -x .venv/bin/python ]; then
   staged="$(git diff --cached --name-only --no-renames)"
-  delete_path='^emby_dedupe/api/(deletion_guard|fold_safe_delete|deduplication|client|content_check)\.py$|^emby_dedupe/cli/(app|main|cleanup)\.py$|^emby_dedupe/utils/providers\.py$'
+  delete_path='^emby_dedupe/api/(deletion_guard|fold_safe_delete|deduplication|client|content_check|cleanup_pipeline|pagination)\.py$|^emby_dedupe/cli/(app|main|cleanup)\.py$|^emby_dedupe/(utils/providers|models/cleanup)\.py$'
   mode=""
   if printf '%s\n' "$staged" | grep -Eq "$delete_path"; then
     mode="--gate"

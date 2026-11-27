@@ -36,6 +36,7 @@ from emby_dedupe.api.cleanup_pipeline import (
     _fetch_all_library_movies,
     _fetch_all_library_series,
     _fetch_all_users,
+    _fetch_server_movies,
     _fetch_tmdb_collections,
     _get_movie_actor_names,
     _group_collections,
@@ -50,6 +51,7 @@ from emby_dedupe.api.cleanup_pipeline import (
     _run_series_cleanup_pipeline,
 )
 from emby_dedupe.models.cleanup import CleanupConfig, SeriesCleanupCandidate
+from emby_dedupe.utils.exceptions import EmbyReadError
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -517,12 +519,11 @@ class TestCheckPlayAndInterestBatch:
         assert played == set()
         assert interested == set()
 
-    def test_empty_users_returns_empty_sets(self):
-        """No users → no API calls, empty sets returned."""
+    def test_empty_users_with_candidates_stops_the_run(self):
+        """Candidates but no users to check them against: nothing can be shown unplayed."""
         client = MagicMock()
-        played, interested = _check_play_and_interest_batch(client, "http://emby", [], ["m1"])
-        assert played == set()
-        assert interested == set()
+        with pytest.raises(EmbyReadError, match="no Emby users"):
+            _check_play_and_interest_batch(client, "http://emby", [], ["m1"])
 
 
 # ---------------------------------------------------------------------------
@@ -538,10 +539,12 @@ class TestRunCleanupPipeline:
     def _make_client(self):
         return MagicMock()
 
-    def _pipeline(self, movies, config=None, played_ids=None, interested_ids=None, actors=None, collections=None):
+    def _pipeline(self, movies, config=None, played_ids=None, interested_ids=None, actors=None, collections=None,
+                  server_movies=None):
         """
         Helper: run pipeline with mocked API calls returning the given movies list.
-        Returns (candidates, stats).
+        ``server_movies`` is the server-wide movie list (every library); it defaults to
+        the scanned movies. Returns (candidates, stats).
         """
         config = config or CleanupConfig()
         played_ids = played_ids or set()
@@ -553,7 +556,9 @@ class TestRunCleanupPipeline:
              patch("emby_dedupe.api.cleanup_pipeline._build_favorite_actors_set", return_value=actors), \
              patch("emby_dedupe.api.cleanup_pipeline._fetch_all_users", return_value=[]), \
              patch("emby_dedupe.api.cleanup_pipeline._check_play_and_interest_batch", return_value=(played_ids, interested_ids)), \
-             patch("emby_dedupe.api.cleanup_pipeline._fetch_tmdb_collections", return_value=collections or {}):
+             patch("emby_dedupe.api.cleanup_pipeline._fetch_tmdb_collections", return_value=collections or {}), \
+             patch("emby_dedupe.api.cleanup_pipeline._fetch_server_movies",
+                   return_value=movies if server_movies is None else server_movies):
             return _run_cleanup_pipeline(client, self.BASE_URL, config, ["lib1"], "uid1")
 
     def test_age_filter_removes_too_young(self):
@@ -688,6 +693,22 @@ class TestRunCleanupPipeline:
         candidates, stats, *_ = self._pipeline([here], collections={"10": ("Saga", ["here", "elsewhere"])})
         assert candidates == []
         assert stats["collection_protected"] == 1
+
+    def test_part_known_only_by_its_own_collection_id_outside_the_scan_keeps_the_collection(self):
+        """A film in an unscanned library, tied to the collection only by its own TmdbCollection id
+        (no BoxSet lists it), keeps the scanned part."""
+        here = _make_movie(item_id="here", rating=1.0, provider_ids={"TmdbCollection": "77"})
+        elsewhere = {"Id": "elsewhere", "ProviderIds": {"TmdbCollection": "77"}}
+        candidates, stats, *_ = self._pipeline([here], server_movies=[here, elsewhere])
+        assert candidates == []
+        assert stats["collection_protected"] == 1
+
+    def test_lone_film_with_a_collection_id_is_still_judged(self):
+        """Control: with no other film carrying its collection id, the film is judged alone."""
+        here = _make_movie(item_id="here", rating=1.0, provider_ids={"TmdbCollection": "77"})
+        candidates, stats, *_ = self._pipeline([here], server_movies=[here, {"Id": "other", "ProviderIds": {}}])
+        assert [c.item_id for c in candidates] == ["here"]
+        assert stats["collection_protected"] == 0
 
     def test_collection_parts_are_listed_together(self):
         lone = _make_movie(item_id="z", name="Standalone", date_created=_date_years_ago(9), rating=1.0)
@@ -991,9 +1012,10 @@ class TestBuildLastEpisodeAddedMap:
         assert len(result) == 1
         assert "s1" in result
 
+    @patch("emby_dedupe.api.cleanup_pipeline.PAGE_SIZE", 2)
     @patch("emby_dedupe.api.pagination.make_http_request")
     def test_pagination(self, mock_req):
-        """Handles paginated responses correctly."""
+        """Handles paginated responses correctly (pages of 2, the last one shorter)."""
         # First page: 2 items, total 3
         page1 = _make_response({
             "Items": [
@@ -1025,6 +1047,14 @@ class TestCheckSeriesPlayAndFavorites:
     """Tests for _check_series_play_and_favorites."""
 
     USERS = [{"Id": "u1", "Name": "User1"}, {"Id": "u2", "Name": "User2"}]
+
+    @pytest.fixture(autouse=True)
+    def _no_resume_points(self):
+        """The resumable-episode walk (through the paginator) finds nothing unless a test says so."""
+        with patch("emby_dedupe.api.pagination.make_http_request",
+                   return_value=_make_response({"Items": [], "TotalRecordCount": 0})) as walk:
+            self.resume_walk = walk
+            yield
 
     def _series_items_response(self, items):
         return _make_response({"Items": items})
@@ -1093,12 +1123,41 @@ class TestCheckSeriesPlayAndFavorites:
         assert played == set()
         assert fav == set()
 
-    def test_empty_users_returns_empty(self):
-        """No users → empty sets."""
+    def test_empty_users_with_candidates_stops_the_run(self):
+        """Candidates but no users to check them against: the run stops."""
         client = MagicMock()
-        played, fav = _check_series_play_and_favorites(client, "http://emby", [], ["s1"])
-        assert played == set()
+        with pytest.raises(EmbyReadError, match="no Emby users"):
+            _check_series_play_and_favorites(client, "http://emby", [], ["s1"])
+
+    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    def test_resume_point_on_an_episode_protects_the_series(self, mock_req):
+        """A user 20% into one episode, nothing finished: the series UserData shows nothing, the series stays."""
+        mock_req.return_value = self._series_items_response([
+            {"Id": "s5", "RecursiveItemCount": 6,
+             "UserData": {"Played": False, "IsFavorite": False, "UnplayedItemCount": 6, "PlaybackPositionTicks": 0}},
+        ])
+        self.resume_walk.return_value = _make_response({
+            "Items": [{"Id": "e1", "SeriesId": "s5"}, {"Id": "e9", "SeriesId": "not-a-candidate"}],
+            "TotalRecordCount": 2,
+        })
+        played, fav = _check_series_play_and_favorites(MagicMock(), "http://emby", self.USERS, ["s5"])
+        assert played == {"s5"}
         assert fav == set()
+        params = self.resume_walk.call_args.kwargs["params"]
+        assert self.resume_walk.call_args[0][2] == "http://emby/Users/u2/Items"
+        assert params["IncludeItemTypes"] == "Episode"
+        assert params["Filters"] == "IsResumable"
+        assert params["Recursive"] == "true"
+        assert params["Fields"] == "SeriesId"
+
+    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    def test_resume_read_failure_stops_the_run(self, mock_req):
+        """A user's resumable episodes cannot be read: the run stops instead of guessing."""
+        mock_req.return_value = self._series_items_response([])
+        self.resume_walk.side_effect = httpx.RequestError("boom")
+        client = MagicMock()
+        with pytest.raises(EmbyReadError, match="resumable episodes of user u1"):
+            _check_series_play_and_favorites(client, "http://emby", self.USERS, ["s1"])
 
     @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
     def test_chunk_size_50(self, mock_req):
@@ -1502,39 +1561,52 @@ class TestPaginatedFetchLibrary:
         assert mock_req.call_count == 2
 
     @patch("emby_dedupe.api.pagination.make_http_request")
-    def test_request_error_returns_partial_results(self, mock_req):
-        """An HTTP error on a later page stops pagination but keeps earlier items."""
+    def test_error_on_a_later_page_stops_the_run(self, mock_req):
+        """An HTTP error after the first page: the partial listing is not used."""
         page1 = _make_response({"Items": [{"Id": "m1"}], "TotalRecordCount": 5})
         mock_req.side_effect = [page1, httpx.RequestError("boom")]
         client = MagicMock()
-        items = _paginated_fetch_library(
-            client, self.ENDPOINT, {"Limit": "1"},
-            "lib1", "Movies", "Fetching", "movie",
-        )
-        assert [i["Id"] for i in items] == ["m1"]
+        with pytest.raises(EmbyReadError, match="fetch from library lib1"):
+            _paginated_fetch_library(
+                client, self.ENDPOINT, {"Limit": "1"},
+                "lib1", "Movies", "Fetching", "movie",
+            )
 
     @patch("emby_dedupe.api.pagination.make_http_request")
-    def test_error_on_first_page_returns_empty(self, mock_req):
-        """An HTTP error on the first page returns an empty list, no crash."""
+    def test_error_on_first_page_stops_the_run(self, mock_req):
+        """An HTTP error on the first page stops the run."""
         mock_req.side_effect = httpx.RequestError("server down")
         client = MagicMock()
-        items = _paginated_fetch_library(
-            client, self.ENDPOINT, {"Limit": "100"},
-            "lib1", "Movies", "Fetching", "movie",
-        )
-        assert items == []
+        with pytest.raises(EmbyReadError):
+            _paginated_fetch_library(
+                client, self.ENDPOINT, {"Limit": "100"},
+                "lib1", "Movies", "Fetching", "movie",
+            )
 
     @patch("emby_dedupe.api.pagination.make_http_request")
-    def test_empty_page_with_nonzero_total_stops(self, mock_req):
-        """An empty page with TotalRecordCount > 0 must not loop forever."""
+    def test_empty_page_with_nonzero_total_stops_the_run(self, mock_req):
+        """An empty page while TotalRecordCount promises 5: one request, then the run stops."""
         mock_req.return_value = _make_response({"Items": [], "TotalRecordCount": 5})
         client = MagicMock()
-        items = _paginated_fetch_library(
-            client, self.ENDPOINT, {"Limit": "100"},
-            "lib1", "Movies", "Fetching", "movie",
-        )
-        assert items == []
+        with pytest.raises(EmbyReadError, match="read 0 records, Emby reported 5"):
+            _paginated_fetch_library(
+                client, self.ENDPOINT, {"Limit": "100"},
+                "lib1", "Movies", "Fetching", "movie",
+            )
         assert mock_req.call_count == 1
+
+    @patch("emby_dedupe.api.pagination.make_http_request")
+    def test_total_one_below_the_truth_stops_the_run(self, mock_req):
+        """A total that is one too low: the walk reads past it, finds the extra record and stops the run."""
+        page1 = _make_response({"Items": [{"Id": "m1"}, {"Id": "m2"}], "TotalRecordCount": 2})
+        page2 = _make_response({"Items": [{"Id": "m3"}], "TotalRecordCount": 2})
+        mock_req.side_effect = [page1, page2]
+        client = MagicMock()
+        with pytest.raises(EmbyReadError, match="read 3 records, Emby reported 2"):
+            _paginated_fetch_library(
+                client, self.ENDPOINT, {"Limit": "2"},
+                "lib1", "Movies", "Fetching", "movie",
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1623,14 +1695,37 @@ class TestFetchAllUsers:
         assert mock_req.call_args[0][2] == "http://emby/Users"
 
     @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
-    def test_request_error_returns_empty_list(self, mock_req):
-        """HTTP failure logs an error and returns an empty list."""
+    def test_request_error_stops_the_run(self, mock_req):
+        """HTTP failure on /Users: no user's play data is known, so the run stops."""
         mock_req.side_effect = httpx.RequestError("server down")
         client = MagicMock()
-        with patch("emby_dedupe.api.cleanup_pipeline.logger") as mock_logger:
-            result = _fetch_all_users(client, "http://emby")
-            assert result == []
-            mock_logger.error.assert_called_once()
+        with pytest.raises(EmbyReadError, match="user list"):
+            _fetch_all_users(client, "http://emby")
+
+    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    def test_empty_user_list_stops_the_run(self, mock_req):
+        """A successful but empty /Users answer stops the run too."""
+        mock_req.return_value = _make_response([])
+        client = MagicMock()
+        with pytest.raises(EmbyReadError, match="empty"):
+            _fetch_all_users(client, "http://emby")
+
+    @pytest.mark.parametrize(
+        "users",
+        [
+            [{"Name": "Bob"}, {"Id": "u2", "Name": "Alice"}],
+            [{"Id": "", "Name": "Bob"}, {"Id": "u2", "Name": "Alice"}],
+            [{"Name": "Bob"}, {"Id": None, "Name": "Alice"}],
+        ],
+        ids=["one-missing", "one-empty", "all-missing"],
+    )
+    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    def test_user_without_id_stops_the_run(self, mock_req, users):
+        """A listed user without an Id cannot be checked, so the run stops."""
+        mock_req.return_value = _make_response(users)
+        client = MagicMock()
+        with pytest.raises(EmbyReadError, match="without an Id"):
+            _fetch_all_users(client, "http://emby")
 
 
 # ---------------------------------------------------------------------------
@@ -1731,15 +1826,15 @@ class TestCollectCommunityFavoritePeople:
         mock_req.assert_not_called()
 
     @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
-    def test_request_error_for_one_user_continues(self, mock_req):
-        """A failing user is skipped with a warning; remaining users still counted."""
+    def test_request_error_for_one_user_stops_the_run(self, mock_req):
+        """One user's favourite people cannot be read: the run stops instead of skipping them."""
         mock_req.side_effect = [
             httpx.RequestError("boom"),
             _make_response({"Items": [{"Name": "Gary Sinise"}]}),
         ]
         client = MagicMock()
-        result = _collect_community_favorite_people(client, "http://emby", self.USERS)
-        assert result == {"Gary Sinise"}
+        with pytest.raises(EmbyReadError, match="favourite people of user u1"):
+            _collect_community_favorite_people(client, "http://emby", self.USERS)
 
     @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
     def test_people_without_name_ignored(self, mock_req):
@@ -1801,6 +1896,7 @@ class TestCountActorsInItems:
 class TestBuildTopActorsFromWatchHistory:
     """Tests for _build_top_actors_from_watch_history (fallback path)."""
 
+    @patch("emby_dedupe.api.cleanup_pipeline.PAGE_SIZE", 2)
     @patch("emby_dedupe.api.pagination.make_http_request")
     def test_collects_actors_across_pages(self, mock_req):
         """Actor names are accumulated over multiple paginated responses."""
@@ -1832,17 +1928,18 @@ class TestBuildTopActorsFromWatchHistory:
         assert params["Filters"] == "IsPlayed"
         assert params["IncludeItemTypes"] == "Movie"
 
+    @patch("emby_dedupe.api.cleanup_pipeline.PAGE_SIZE", 1)
     @patch("emby_dedupe.api.pagination.make_http_request")
-    def test_request_error_returns_partial(self, mock_req):
-        """An error on a later page keeps the actors counted so far."""
+    def test_request_error_stops_the_run(self, mock_req):
+        """An error on a later page: a partial actor count is not used."""
         page1 = _make_response({
             "Items": [{"People": [{"Name": "Tom Hanks", "Type": "Actor"}]}],
             "TotalRecordCount": 5,
         })
         mock_req.side_effect = [page1, httpx.RequestError("boom")]
         client = MagicMock()
-        result = _build_top_actors_from_watch_history(client, "http://emby", "uid1")
-        assert result == {"Tom Hanks"}
+        with pytest.raises(EmbyReadError, match="played movies"):
+            _build_top_actors_from_watch_history(client, "http://emby", "uid1")
 
     @patch("emby_dedupe.api.pagination.make_http_request")
     def test_limits_to_top_50_actors(self, mock_req):
@@ -1927,15 +2024,14 @@ class TestCheckPlayAndInterestBatchErrors:
     """Error and skip paths for _check_play_and_interest_batch."""
 
     @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
-    def test_request_error_for_user_yields_empty_sets(self, mock_req):
-        """HTTP failure for a user is logged and skipped — no protection added."""
+    def test_request_error_for_user_stops_the_run(self, mock_req):
+        """HTTP failure for a user: their plays are unknown, so the run stops."""
         mock_req.side_effect = httpx.RequestError("boom")
         client = MagicMock()
-        played, interested = _check_play_and_interest_batch(
-            client, "http://emby", [{"Id": "u1", "Name": "User1"}], ["m1"]
-        )
-        assert played == set()
-        assert interested == set()
+        with pytest.raises(EmbyReadError, match="UserData of user u1"):
+            _check_play_and_interest_batch(
+                client, "http://emby", [{"Id": "u1", "Name": "User1"}], ["m1"]
+            )
 
     @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
     def test_user_without_id_skipped(self, mock_req):
@@ -1950,19 +2046,19 @@ class TestCheckPlayAndInterestBatchErrors:
         assert mock_req.call_count == 1
 
     @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
-    def test_error_in_one_chunk_continues_with_next(self, mock_req):
-        """A failed chunk does not abort the remaining chunks for the same user."""
+    def test_error_in_one_chunk_stops_the_run(self, mock_req):
+        """A failed chunk stops the run; the next chunk is not read."""
         mock_req.side_effect = [
             httpx.RequestError("boom"),
             _make_response({"Items": [{"Id": "m120", "UserData": {"Played": True}}]}),
         ]
         client = MagicMock()
         candidate_ids = [f"m{i}" for i in range(150)]  # 2 chunks of 100/50
-        played, _ = _check_play_and_interest_batch(
-            client, "http://emby", [{"Id": "u1", "Name": "User1"}], candidate_ids
-        )
-        assert "m120" in played
-        assert mock_req.call_count == 2
+        with pytest.raises(EmbyReadError):
+            _check_play_and_interest_batch(
+                client, "http://emby", [{"Id": "u1", "Name": "User1"}], candidate_ids
+            )
+        assert mock_req.call_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1974,15 +2070,14 @@ class TestCheckSeriesPlayAndFavoritesErrors:
     """Error and skip paths for _check_series_play_and_favorites."""
 
     @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
-    def test_request_error_yields_empty_sets(self, mock_req):
-        """HTTP failure for a user is logged and skipped — no protection added."""
+    def test_request_error_stops_the_run(self, mock_req):
+        """HTTP failure for a user's series UserData stops the run."""
         mock_req.side_effect = httpx.RequestError("boom")
         client = MagicMock()
-        played, fav = _check_series_play_and_favorites(
-            client, "http://emby", [{"Id": "u1", "Name": "User1"}], ["s1"]
-        )
-        assert played == set()
-        assert fav == set()
+        with pytest.raises(EmbyReadError, match="series UserData of user u1"):
+            _check_series_play_and_favorites(
+                client, "http://emby", [{"Id": "u1", "Name": "User1"}], ["s1"]
+            )
 
     @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
     def test_user_without_id_skipped(self, mock_req):
@@ -2005,12 +2100,27 @@ class TestBuildLastEpisodeAddedMapErrors:
     """Error-path tests for _build_last_episode_added_map."""
 
     @patch("emby_dedupe.api.pagination.make_http_request")
-    def test_request_error_returns_empty_map(self, mock_req):
-        """HTTP failure while fetching episodes returns an empty staleness map."""
+    def test_request_error_stops_the_run(self, mock_req):
+        """HTTP failure while fetching episodes: an empty map would make every series look stale."""
         mock_req.side_effect = httpx.RequestError("boom")
         client = MagicMock()
-        result = _build_last_episode_added_map(client, "http://emby", ["lib1"])
-        assert result == {}
+        with pytest.raises(EmbyReadError, match="episodes from library lib1"):
+            _build_last_episode_added_map(client, "http://emby", ["lib1"])
+
+    @patch("emby_dedupe.api.cleanup_pipeline.PAGE_SIZE", 2)
+    @patch("emby_dedupe.api.pagination.make_http_request")
+    def test_short_episode_listing_stops_the_run(self, mock_req):
+        """A newer episode beyond a too-low total is found, and the mismatch stops the run."""
+        mock_req.side_effect = [
+            _make_response({"Items": [{"SeriesId": "s1", "DateCreated": "2015-01-01T00:00:00Z"},
+                                      {"SeriesId": "s1", "DateCreated": "2016-01-01T00:00:00Z"}],
+                            "TotalRecordCount": 2}),
+            _make_response({"Items": [{"SeriesId": "s1", "DateCreated": "2026-01-01T00:00:00Z"}],
+                            "TotalRecordCount": 2}),
+        ]
+        client = MagicMock()
+        with pytest.raises(EmbyReadError, match="read 3 records, Emby reported 2"):
+            _build_last_episode_added_map(client, "http://emby", ["lib1"])
 
 
 # ---------------------------------------------------------------------------
@@ -2160,6 +2270,48 @@ class TestCollectionGrouping:
             result = _fetch_tmdb_collections(MagicMock(), "http://emby")
         assert result == {"10": ("Saga Collection", ["m1", "m2"])}
         assert all(call.kwargs["params"].get("ParentId") != "b2" for call in req.call_args_list)
+
+
+class TestServerWideCollectionReads:
+    """The server-wide movie list and the BoxSet reads fail closed."""
+
+    @patch("emby_dedupe.api.cleanup_pipeline.PAGE_SIZE", 2)
+    @patch("emby_dedupe.api.pagination.make_http_request")
+    def test_server_movies_read_every_library(self, mock_req):
+        mock_req.side_effect = [
+            _make_response({"Items": [{"Id": "a"}, {"Id": "b"}], "TotalRecordCount": 3}),
+            _make_response({"Items": [{"Id": "c"}], "TotalRecordCount": 3}),
+        ]
+        movies = _fetch_server_movies(MagicMock(), "http://emby")
+        assert [m["Id"] for m in movies] == ["a", "b", "c"]
+        assert mock_req.call_args[0][2] == "http://emby/Items"
+        params = mock_req.call_args.kwargs["params"]
+        assert "ParentId" not in params
+        assert params["IncludeItemTypes"] == "Movie"
+        assert params["Recursive"] == "true"
+        assert params["Fields"] == "ProviderIds"
+
+    @patch("emby_dedupe.api.pagination.make_http_request")
+    def test_server_movies_read_failure_stops_the_run(self, mock_req):
+        mock_req.side_effect = httpx.RequestError("boom")
+        client = MagicMock()
+        with pytest.raises(EmbyReadError, match="collection ids of every movie"):
+            _fetch_server_movies(client, "http://emby")
+
+    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    def test_boxset_read_failure_stops_the_run(self, mock_req):
+        mock_req.side_effect = httpx.HTTPStatusError("503", request=MagicMock(), response=MagicMock())
+        client = MagicMock()
+        with pytest.raises(EmbyReadError, match="read the collections"):
+            _fetch_tmdb_collections(client, "http://emby")
+
+    @patch("emby_dedupe.api.cleanup_pipeline.make_http_request")
+    def test_boxset_member_read_failure_stops_the_run(self, mock_req):
+        boxsets = _make_response({"Items": [{"Id": "b1", "Name": "Saga", "ProviderIds": {"Tmdb": "10"}}]})
+        mock_req.side_effect = [boxsets, httpx.RequestError("boom")]
+        client = MagicMock()
+        with pytest.raises(EmbyReadError, match="members of collection b1"):
+            _fetch_tmdb_collections(client, "http://emby")
 
 
 class TestComputeDaysUntilCandidate:

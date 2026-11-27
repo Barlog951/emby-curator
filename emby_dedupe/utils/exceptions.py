@@ -6,6 +6,7 @@ one base instead of string-matching messages):
 
     EmbyDedupeError
     ├── EmbyServerConnectionError
+    ├── EmbyReadError
     └── EmbyConfigError (also a ValueError — existing ``except ValueError`` keeps working)
         └── EmbyConfigMissingError (also a FileNotFoundError — consumers that catch
             FileNotFoundError around EmbyChecker.from_config() get the right branch)
@@ -20,6 +21,14 @@ class EmbyServerConnectionError(EmbyDedupeError):
     """
     Exception raised when there is an issue connecting to the Emby server.
     This could be due to invalid credentials, network issues, or server problems.
+    """
+
+
+class EmbyReadError(EmbyDedupeError):
+    """A read from Emby failed or returned fewer records than it reported.
+
+    Raised where a partial answer must not be used as if it were complete, such as
+    the reads whose results protect items from cleanup.
     """
 
 

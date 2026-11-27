@@ -25,8 +25,13 @@ from emby_dedupe.models.cleanup import (
 )
 from emby_dedupe.models.disjoint_set import DisjointSet
 from emby_dedupe.utils.constants import PAGE_SIZE
+from emby_dedupe.utils.exceptions import EmbyReadError
 from emby_dedupe.utils.http import make_http_request
 from emby_dedupe.utils.logging import logger
+
+# Every read whose answer can protect an item is all-or-nothing: a failed or short read
+# raises EmbyReadError, which stops the cleanup run before anything is deleted, because
+# a missing answer would otherwise look like "nobody watched or kept this".
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -194,6 +199,14 @@ def _movie_collection_id(provider_ids: dict) -> str | None:
     return None
 
 
+def _read_items(client: httpx.Client, endpoint: str, params: dict, what: str) -> list[dict]:
+    """GET one unpaged Items list, raising :class:`EmbyReadError` if it fails."""
+    try:
+        return make_http_request(client, "GET", endpoint, params=params).json().get("Items", [])
+    except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+        raise EmbyReadError(f"could not {what}: {e}") from e
+
+
 def _fetch_tmdb_collections(client: httpx.Client, base_url: str) -> dict[str, tuple[str, list[str]]]:
     """Fetch every TMDb collection Emby knows, with the ids of the movies it owns.
 
@@ -205,23 +218,45 @@ def _fetch_tmdb_collections(client: httpx.Client, base_url: str) -> dict[str, tu
 
     Returns:
         ``{"<tmdb collection id>": (collection name, [movie ids])}``.
+
+    Raises:
+        EmbyReadError: The BoxSet list or one BoxSet's members could not be read.
     """
-    boxsets = make_http_request(
-        client, "GET", f"{base_url}/Items",
-        params={"Recursive": "true", "IncludeItemTypes": "BoxSet", "Fields": "ProviderIds"},
-    ).json().get("Items", [])
+    boxsets = _read_items(
+        client, f"{base_url}/Items", {"Recursive": "true", "IncludeItemTypes": "BoxSet", "Fields": "ProviderIds"},
+        "read the collections",
+    )
     collections: dict[str, tuple[str, list[str]]] = {}
     for boxset in tqdm(boxsets, desc="Reading collections", unit="collection", leave=False):
         tmdb = {k.lower(): v for k, v in (boxset.get("ProviderIds") or {}).items()}.get("tmdb")
         if not tmdb:
             continue
-        members = make_http_request(
-            client, "GET", f"{base_url}/Items",
-            params={"ParentId": boxset["Id"], "IncludeItemTypes": "Movie", "Recursive": "true"},
-        ).json().get("Items", [])
+        members = _read_items(
+            client, f"{base_url}/Items", {"ParentId": boxset["Id"], "IncludeItemTypes": "Movie", "Recursive": "true"},
+            f"read the members of collection {boxset['Id']}",
+        )
         name, ids = collections.get(str(tmdb), (boxset.get("Name", ""), []))
         collections[str(tmdb)] = (name, ids + [m["Id"] for m in members if m.get("Id")])
     return collections
+
+
+def _fetch_server_movies(client: httpx.Client, base_url: str) -> list[dict]:
+    """Fetch every movie on the server with its ProviderIds, in every library.
+
+    A film in a library the run does not scan can belong to a scanned film's collection
+    through its own ``TmdbCollection`` id alone, with no BoxSet listing it. Folding these
+    ids into the collection groups keeps such a collection whole.
+
+    Raises:
+        EmbyReadError: The movie list could not be read completely.
+    """
+    movies: list[dict] = []
+    params = {"Recursive": "true", "IncludeItemTypes": "Movie", "Fields": "ProviderIds", "Limit": str(PAGE_SIZE)}
+    for page_items, _total in paginate_emby_items(
+        client, f"{base_url}/Items", params, error_context="fetch the collection ids of every movie", complete=True
+    ):
+        movies.extend(page_items)
+    return movies
 
 
 def _group_collections(
@@ -232,7 +267,8 @@ def _group_collections(
     A movie in two collections links them, so the groups are the connected components.
 
     Args:
-        movies: Scanned movie dicts (their own TmdbCollection id is folded in too).
+        movies: Movie dicts whose own TmdbCollection id is folded in too: the scanned
+            movies and every movie on the server (:func:`_fetch_server_movies`).
         tmdb_collections: Output of :func:`_fetch_tmdb_collections`.
 
     Returns:
@@ -368,6 +404,9 @@ def _paginated_fetch_library(
 
     Returns:
         List of items tagged with _library_name and _library_id.
+
+    Raises:
+        EmbyReadError: A page failed or the library was not read completely.
     """
     items: list[dict] = []
     params = {**base_params, "ParentId": lib_id}
@@ -375,7 +414,7 @@ def _paginated_fetch_library(
     progress: tqdm | None = None
     try:
         for page_items, total in paginate_emby_items(
-            client, endpoint, params, error_context=f"fetch from library {lib_id}"
+            client, endpoint, params, error_context=f"fetch from library {lib_id}", complete=True
         ):
             if progress is None:
                 progress = tqdm(total=total, desc=f"{progress_label} '{lib_name}'", unit=progress_unit)
@@ -488,14 +527,22 @@ def _fetch_all_users(client: httpx.Client, base_url: str) -> list[dict]:
         base_url: Emby server base URL.
 
     Returns:
-        List of user dicts; empty list on error.
+        List of user dicts.
+
+    Raises:
+        EmbyReadError: The user list could not be read, is empty, or lists a user without
+            an Id. Every user's play and favourite data protects items, so cleanup cannot
+            run without it, and a user without an Id cannot be checked.
     """
     try:
-        response = make_http_request(client, "GET", f"{base_url}/Users")
-        return response.json()
-    except (httpx.HTTPStatusError, httpx.RequestError) as e:
-        logger.error(f"Failed to fetch users: {e}")
-        return []
+        users = make_http_request(client, "GET", f"{base_url}/Users").json()
+    except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+        raise EmbyReadError(f"could not read the Emby user list: {e}") from e
+    if not users:
+        raise EmbyReadError("the Emby user list came back empty")
+    if any(not user.get("Id") for user in users):
+        raise EmbyReadError("the Emby user list has a user without an Id")
+    return users
 
 
 def _fetch_all_library_movies(
@@ -554,6 +601,9 @@ def _collect_community_favorite_people(
 
     Returns:
         Set of actor names favorited by at least one user.
+
+    Raises:
+        EmbyReadError: One user's favourite people could not be read.
     """
     all_names: set[str] = set()
     users_with_fav_people = 0
@@ -580,8 +630,8 @@ def _collect_community_favorite_people(
                     all_names |= names
                     users_with_fav_people += 1
                     progress.set_postfix_str(user.get("Name", uid))
-            except (httpx.HTTPStatusError, httpx.RequestError) as e:
-                logger.warning(f"Could not fetch favorite people for user {uid}: {e}")
+            except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+                raise EmbyReadError(f"could not read the favourite people of user {uid}: {e}") from e
 
     if all_names:
         print(f"Protecting movies with {len(all_names)} favorited people ({users_with_fav_people} users contributed).")
@@ -634,7 +684,7 @@ def _build_top_actors_from_watch_history(
     try:
         for page_items, total in paginate_emby_items(
             client, endpoint, params,
-            error_context="fetch played movies for actor counting",
+            error_context="fetch played movies for actor counting", complete=True,
         ):
             if progress is None:
                 progress = tqdm(total=total, desc=f"Building top-{_FALLBACK_TOP_N} actors from watch history", unit="movie")
@@ -730,6 +780,9 @@ def _check_user_item_status(
     Shared body of the movie (played/interested) and series (played/favorited) per-user
     checks: they differ only in the IncludeItemTypes/Fields params, the warn wording and
     the classifier that reads each item's UserData into the two sets.
+
+    Raises:
+        EmbyReadError: A batch could not be read for this user.
     """
     for i in range(0, len(candidate_ids), chunk_size):
         chunk = candidate_ids[i : i + chunk_size]
@@ -741,9 +794,8 @@ def _check_user_item_status(
         try:
             response = make_http_request(client, "GET", endpoint, params=params)
             items = response.json().get("Items", [])
-        except (httpx.HTTPStatusError, httpx.RequestError) as e:
-            logger.warning(f"Failed to batch-check {warn_label} for user {uid}: {e}")
-            continue
+        except (httpx.HTTPStatusError, httpx.RequestError, ValueError) as e:
+            raise EmbyReadError(f"could not read the {warn_label} of user {uid}: {e}") from e
 
         classifier(items, played_ids, second_ids)
 
@@ -768,9 +820,14 @@ def _check_play_batch_for_users(
     Returns:
         Tuple of (played_ids, second_ids) — items protected by any user having played
         (first set) or shown interest/favorited (second set).
+
+    Raises:
+        EmbyReadError: There are candidates but no users to check them against.
     """
-    if not candidate_ids or not users:
+    if not candidate_ids:
         return set(), set()
+    if not users:
+        raise EmbyReadError("no Emby users to check play status against")
 
     played_ids: set[str] = set()
     second_ids: set[str] = set()
@@ -912,13 +969,17 @@ def _fetch_library_episodes(
         base_params: Base query parameters for episode fetch.
         lib_id: Library ID to scan.
         episode_map: Mutable mapping updated in place with latest DateCreated per SeriesId.
+
+    Raises:
+        EmbyReadError: A page failed or the episodes were not read completely; a missing
+            newer episode would make its series look staler than it is.
     """
     params = {**base_params, "ParentId": lib_id}
     progress: tqdm | None = None
 
     try:
         for page_items, total in paginate_emby_items(
-            client, endpoint, params, error_context=f"fetch episodes from library {lib_id}"
+            client, endpoint, params, error_context=f"fetch episodes from library {lib_id}", complete=True
         ):
             if progress is None:
                 progress = tqdm(total=total, desc="Fetching episodes for staleness", unit="ep")
@@ -1006,6 +1067,45 @@ def _check_user_series_status(
         item_types="Series", fields="UserData,RecursiveItemCount",
         warn_label="series UserData", classifier=_classify_series_items,
     )
+    _add_resumed_series(client, endpoint, uid, candidate_ids, played_ids)
+
+
+def _add_resumed_series(
+    client: httpx.Client,
+    endpoint: str,
+    uid: str,
+    candidate_ids: list[str],
+    played_ids: set[str],
+) -> None:
+    """Count a candidate series as played when this user has a resume point on any episode.
+
+    The series' own UserData does not show a partly watched episode (UnplayedItemCount
+    stays at the total and PlaybackPositionTicks at 0), so the user's resumable episodes
+    are read and their series are protected, as a resume point protects a film.
+
+    Args:
+        client: Configured httpx client with auth headers.
+        endpoint: The user's ``/Users/{uid}/Items`` endpoint.
+        uid: Emby user ID (for the error message).
+        candidate_ids: Candidate series IDs.
+        played_ids: Mutable set of played series IDs (updated in place).
+
+    Raises:
+        EmbyReadError: The resumable episodes could not be read completely.
+    """
+    wanted = set(candidate_ids)
+    params = {
+        "IncludeItemTypes": "Episode",
+        "Filters": "IsResumable",
+        "Recursive": "true",
+        "Fields": "SeriesId",
+        "Limit": str(PAGE_SIZE),
+    }
+    for page_items, _total in paginate_emby_items(
+        client, endpoint, params, error_context=f"fetch resumable episodes of user {uid}", complete=True
+    ):
+        resumed_series_ids = {sid for ep in page_items if (sid := ep.get("SeriesId")) in wanted}
+        played_ids.update(resumed_series_ids)
 
 
 def _check_series_play_and_favorites(
@@ -1017,7 +1117,8 @@ def _check_series_play_and_favorites(
     """Batch-check play status and favorites for TV series across all users.
 
     A series is considered played if Played=True OR UnplayedItemCount < RecursiveItemCount
-    for any user (partial watch counts). Candidates are chunked into 50-item groups.
+    for any user (partial watch counts), or if any user has a resume point on one of its
+    episodes. Candidates are chunked into 50-item groups.
 
     Returns:
         Tuple of (played_ids, favorited_ids).
@@ -1332,7 +1433,8 @@ def _run_cleanup_pipeline(
 
     # 7. Collections go whole or not at all; parts outside this run's scan protect them
     print("Reading collections...")
-    groups = _group_collections(all_movies, _fetch_tmdb_collections(client, base_url))
+    server_movies = _fetch_server_movies(client, base_url)
+    groups = _group_collections([*all_movies, *server_movies], _fetch_tmdb_collections(client, base_url))
     candidates = _apply_collection_rule(candidates, groups, stats)
     stats["final_candidates"] = len(candidates)
 
