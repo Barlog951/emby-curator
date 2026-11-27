@@ -7,6 +7,20 @@ by Troy Kelly (inactive since May 2024), distributed under the Apache License 2.
 
 ## [Unreleased]
 
+## [3.4.14] — 2026-11-27
+
+### Fixed
+
+- **`dedupe` deletes a film copy of the same length only when its frame check proves the same film.** A film
+  misidentified with another film's id, or two films that share only a TVDB id, used to be grouped and deleted on the
+  ids and an equal running time alone. With the frame check on, film pairs now need the same proof as episode pairs.
+- **A file another duplicate group keeps is never deleted.** One file listed under two Emby ids could land in two groups
+  with opposite keepers, and each group would delete the file the other kept. Such a delete is now held, and both
+  copies stay.
+- **`--exclude-ids` can no longer be bypassed.** A group is skipped when Emby's answer leaves out one of its copies, since
+  that copy may carry the excluded id. Provider ids are compared without surrounding whitespace (a non-breaking space
+  included) and without regard to case.
+
 ## [3.4.13] — 2026-11-27
 
 ### Fixed
