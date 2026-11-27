@@ -32,9 +32,12 @@ from emby_dedupe.api.content_check import (
 TICKS = 10_000_000
 
 
+SIZE = 1_500_000_000
+
+
 def _ep(item_id, seconds, fps, path="/S/NCIS/S19/x.mkv"):
     return {"id": item_id, "runtime_ticks": int(seconds * TICKS), "frame_rate": fps,
-            "is_episode": True, "path": path}
+            "is_episode": True, "path": path, "quality_description": {"size": SIZE}}
 
 
 # --- speed-up detection --------------------------------------------------------------------
@@ -58,8 +61,16 @@ def test_speedup_needs_the_shorter_copy_at_25_fps():
 
 # --- voting and matching ---------------------------------------------------------------------
 
-def test_vote_tolerates_one_cut_scene():
-    assert classify([0.9, 0.95, 0.3, 0.88, 0.92]) == "same"
+def test_one_missed_point_keeps_both_copies():
+    """The miss may be the only place where the copy to delete has a scene of its own."""
+    assert classify([0.9, 0.95, 0.3, 0.88, 0.92]) == "unsure"
+    assert classify([0.9, 0.95, 0.9, 0.88, 0.2]) == "unsure"
+    assert classify([0.9, 0.95, 0.6, 0.88, 0.92]) == "same"
+
+
+def test_three_matched_points_are_not_enough_for_same():
+    """A copy whose first ~45 % is other content can match the last three points."""
+    assert classify([0.2, 0.22, 0.9, 0.9, 0.9]) == "unsure"
 
 
 def test_vote_needs_most_points_to_miss_for_different():
@@ -119,23 +130,110 @@ def test_without_ffmpeg_the_check_is_unavailable():
 
 def test_compare_votes_over_points_and_caches():
     checker = FrameChecker("http://emby", "key", ffmpeg_path="ffmpeg")
-    points = [(0.9, -3.0), (0.95, -3.5), (0.2, None), (0.9, -4.0), (0.92, -4.5)]
-    with patch.object(checker, "_score_point", side_effect=points) as point:
+    points = [(0.9, -3.0), (0.95, -3.5), (0.7, -3.8), (0.9, -4.0), (0.92, -4.5)]
+    with patch.object(checker, "_score_point", side_effect=points) as point, \
+         patch.object(checker, "_reaches_end", return_value=True) as end:
         verdict = checker.compare(_ep("a", 2400, 25), _ep("b", 2500, 24))
         again = checker.compare(_ep("a", 2400, 25), _ep("b", 2500, 24))
     assert verdict.verdict == "same"
     assert again is verdict
-    assert point.call_count == 4  # the third matched point wins the vote; the fifth is not read
-    assert verdict.offsets == (-3.0, -3.5, -4.0)
+    assert point.call_count == 5  # every point is read, so the drift covers the whole episode
+    assert end.call_count == 1
+    assert verdict.offsets == (-3.0, -3.5, -3.8, -4.0, -4.5)
     assert verdict.steady
+
+
+def _ends(kept_end, other_end):
+    """A fake ``_keyframes`` whose last frame is ``kept_end`` for item "k" and ``other_end`` for the rest."""
+    calls = []
+
+    def frames(item, start, seconds, dense=False):
+        calls.append((item["id"], round(start, 1), round(seconds, 1)))
+        last = kept_end if item["id"] == "k" else other_end
+        return [] if last is None else _keyframes([(1, max(start, last - 3)), (2, last)])
+    return frames, calls
+
+
+def _same_checker(kind="compare"):
+    checker = FrameChecker("http://emby", "key", ffmpeg_path="ffmpeg")
+    target = "_covers" if kind == "cover" else "_compare"
+    return checker, patch.object(checker, target, return_value=FrameVerdict("same", (0.9,) * 5, (-1.0,) * 5))
+
+
+def test_a_truncated_kept_copy_is_not_same():
+    """A truncated file keeps its header's running time; the sample points stop before the end."""
+    checker, same = _same_checker()
+    frames, calls = _ends(560.0, 598.0)  # cut 40 s before the end of a 10-minute episode
+    with same, patch.object(checker, "_keyframes", side_effect=frames):
+        verdict = checker.compare(_ep("k", 600, 25), _ep("o", 600, 25))
+    assert verdict.verdict == "unavailable"
+    assert "does not reach the end" in verdict.note
+    assert calls == [("k", 360.0, 240.0), ("o", 360.0, 240.0)]  # the last 4 minutes of each copy
+
+
+def test_a_dub_that_outlasts_the_picture_is_not_a_truncation():
+    """4K copies with a muxed CZ track: the running time is the audio's, the picture ends
+    33-167 s earlier, as it does in the other copy."""
+    checker, same = _same_checker()
+    frames, _ = _ends(2532.0, 2536.0)
+    with same, patch.object(checker, "_keyframes", side_effect=frames):
+        assert checker.compare(_ep("k", 2700, 25), _ep("o", 2650, 25)).verdict == "same"
+
+
+def test_the_end_limit_is_2_percent_of_the_copy_to_delete_in_its_own_seconds():
+    """PAL: kept 25 fps (2417 s), deleted 23.976 fps (2536 s); 2 % of 2536 s = 50.7 s."""
+    keeper, other = _ep("k", 2417, 25.0), _ep("o", 2536, 23.976)
+    ratio = 2536 / 2417
+    for kept_end, verdict in (((2530 - 50.0) / ratio, "same"), ((2530 - 52.0) / ratio, "unavailable")):
+        checker, same = _same_checker("cover")
+        frames, _ = _ends(kept_end, 2530.0)
+        with same, patch.object(checker, "_keyframes", side_effect=frames):
+            assert checker.covers(keeper, other).verdict == verdict
+
+
+def test_an_unreadable_end_on_either_copy_is_not_same():
+    for kept_end, other_end in ((None, 598.0), (598.0, None)):
+        checker, same = _same_checker()
+        frames, _ = _ends(kept_end, other_end)
+        with same, patch.object(checker, "_keyframes", side_effect=frames):
+            assert checker.compare(_ep("k", 600, 25), _ep("o", 600, 25)).verdict == "unavailable"
+
+
+def test_covers_needs_the_kept_picture_to_reach_the_end_too():
+    """The last cover sample stops 75 s before the end of the copy to delete."""
+    checker, same = _same_checker("cover")
+    frames, _ = _ends(2300.0, 2530.0)  # 2300 s of the kept copy = 2413 s of the deleted one
+    with same, patch.object(checker, "_keyframes", side_effect=frames):
+        verdict = checker.covers(_ep("k", 2417, 25.0), _ep("o", 2536, 23.976))
+    assert verdict.verdict == "unavailable"
+
+
+def test_an_unproven_end_is_never_saved(tmp_path):
+    checker = _cached_checker(tmp_path)
+    with patch.object(checker, "_compare", return_value=FrameVerdict("same", (0.9,) * 5, (-1.0,) * 5)), \
+         patch.object(checker, "_reaches_end", return_value=False):
+        checker.compare(_ep("k", 600, 25), _ep("o", 600, 25))
+    again = _cached_checker(tmp_path)
+    with patch.object(again, "_compare", return_value=FrameVerdict("different", (0.1, 0.0))) as measured:
+        again.compare(_ep("k", 600, 25), _ep("o", 600, 25))
+    measured.assert_called_once()
+
+
+def test_no_end_read_when_the_vote_is_not_same():
+    checker = FrameChecker("http://emby", "key", ffmpeg_path="ffmpeg")
+    with patch.object(checker, "_score_point", side_effect=[(0.9, -1.0)] * 3 + [(0.2, None)] * 2), \
+         patch.object(checker, "_reaches_end") as end:
+        assert checker.compare(_ep("a", 2400, 25), _ep("b", 2400, 25)).verdict == "unsure"
+    end.assert_not_called()
 
 
 def test_matched_offset_moves_the_next_window_and_a_miss_does_not():
     checker = FrameChecker("http://emby", "key", ffmpeg_path="ffmpeg")
     points = [(0.9, -20.0), (0.1, 40.0), (0.9, -42.0), (0.9, -65.0), (0.9, -85.0)]
-    with patch.object(checker, "_score_point", side_effect=points) as point:
+    with patch.object(checker, "_score_point", side_effect=points) as point, \
+         patch.object(checker, "_reaches_end", return_value=True):
         checker.compare(_ep("a", 2400, 25), _ep("b", 2500, 24))
-    assert [c.args[4] for c in point.call_args_list] == [None, -20.0, -20.0, -42.0]
+    assert [c.args[4] for c in point.call_args_list] == [None, -20.0, -20.0, -42.0, -65.0]
 
 
 def test_a_known_offset_searches_narrow_first_and_falls_back_to_the_full_window():
@@ -290,6 +388,7 @@ def test_prefetch_shows_a_progress_bar_and_caches_every_pair():
     checker = FrameChecker("http://emby", "k", ffmpeg_path="ffmpeg")
     pairs = [(_ep(f"k{n}", 2400, 25), _ep(f"o{n}", 2400, 25)) for n in range(3)]
     with patch.object(checker, "_compare", return_value=FrameVerdict("same", (0.9,) * 3)), \
+         patch.object(checker, "_reaches_end", return_value=True), \
          patch("emby_dedupe.api.content_check.tqdm", wraps=__import__("tqdm").tqdm) as bar:
         checker.prefetch(pairs)
     assert bar.call_args.kwargs["total"] == 3
@@ -332,7 +431,10 @@ def test_a_replaced_file_or_a_new_method_version_is_checked_again(tmp_path):
     keeper, other = {**_ep("k", 2400, 25), "path": "/a.mkv"}, {**_ep("o", 2500, 24), "path": "/b.mkv"}
     renamed = {**other, "path": "/b2.mkv"}
     reprobed = {**other, "runtime_ticks": other["runtime_ticks"] + TICKS}
-    assert len({cache_key(keeper, other), cache_key(keeper, renamed), cache_key(keeper, reprobed)}) == 3
+    replaced = {**other, "quality_description": {"size": SIZE + 1}}  # same name and length, new file
+    keys = {cache_key(keeper, other), cache_key(keeper, renamed), cache_key(keeper, reprobed),
+            cache_key(keeper, replaced)}
+    assert len(keys) == 4
     first = _cached_checker(tmp_path)
     with patch.object(first, "_compare", return_value=FrameVerdict("same", (0.9,) * 3, (-3.0, -3.1, -3.2))):
         first.compare(keeper, other)
@@ -341,6 +443,34 @@ def test_a_replaced_file_or_a_new_method_version_is_checked_again(tmp_path):
         with patch.object(newer, "_compare", return_value=FrameVerdict("same")) as measured:
             newer.compare(keeper, other)
     measured.assert_called_once()
+
+
+def test_a_file_replaced_in_place_is_checked_again(tmp_path):
+    keeper, other = _ep("k", 2400, 25), _ep("o", 2400, 25)
+    first = _cached_checker(tmp_path)
+    with patch.object(first, "_compare", return_value=FrameVerdict("same", (0.9,) * 5, (-1.0,) * 5)):
+        first.compare(keeper, other)
+    replaced = {**other, "quality_description": {"size": SIZE - 4096}}
+    second = _cached_checker(tmp_path)
+    with patch.object(second, "_compare", return_value=FrameVerdict("different", (0.1, 0.0))) as measured:
+        assert second.compare(keeper, replaced).verdict == "different"
+    measured.assert_called_once()
+
+
+def test_without_both_file_sizes_no_verdict_is_saved_or_reused(tmp_path):
+    keeper, other = _ep("k", 2400, 25), _ep("o", 2400, 25)
+    first = _cached_checker(tmp_path)
+    with patch.object(first, "_compare", return_value=FrameVerdict("same", (0.9,) * 5, (-1.0,) * 5)):
+        first.compare(keeper, other)
+    unsized = {**other, "quality_description": {}}
+    second = _cached_checker(tmp_path)
+    with patch.object(second, "_compare", return_value=FrameVerdict("unsure", (0.4,))) as measured:
+        second.compare(keeper, unsized)
+    measured.assert_called_once()
+    third = _cached_checker(tmp_path)
+    with patch.object(third, "_compare", return_value=FrameVerdict("different", (0.1, 0.0))) as again:
+        third.compare(keeper, unsized)
+    again.assert_called_once()  # the unsized pair's verdict was not written either
 
 
 def test_an_unreadable_cache_starts_fresh(tmp_path):
@@ -392,27 +522,74 @@ def _film(item_id, seconds, fps, path="/M/A (2001)/a.mkv"):
     return {**_ep(item_id, seconds, fps, path), "is_episode": False}
 
 
-def test_speedup_is_removed_only_when_frames_match():
+def test_speedup_is_removed_only_when_the_kept_copy_holds_all_of_it():
     sk, cz = _film("sk", 2423, 25.0), _film("cz", 2423 * 1.0427, 23.976)
-    assert dd._different_content_reason(cz, sk, _Frames("same")) is None
-    refused = dd._different_content_reason(cz, sk, _Frames("unsure"))
+    frames = _Frames("same")
+    assert dd._different_content_reason(cz, sk, frames) is None
+    assert frames.cover_calls == 1
+    assert frames.calls == 0  # films use covers, not the vote
+    refused = dd._different_content_reason(cz, sk, _Frames("unsure", covered="unsure"))
     assert "duration-mismatch" in refused
     assert "PAL speed-up not confirmed" in refused
     assert "duration-mismatch" in dd._different_content_reason(cz, sk, None)
+
+
+def test_a_film_whose_kept_copy_lacks_a_scene_is_not_a_speedup():
+    """Most points match at one offset, but one scene of the copy to delete is not in the
+    kept copy (it has another of the same length): covers finds the step off the line."""
+    sk, cz = _film("sk", 2423, 25.0), _film("cz", 2423 * 1.0427, 23.976)
+    refused = dd._different_content_reason(cz, sk, _Frames("same", STEADY, covered="unsure"))
+    assert "PAL speed-up not confirmed" in refused
+    assert "does not hold all of it" in refused
 
 
 def test_matching_pictures_with_a_drifting_offset_are_not_a_speedup():
     """NCIS S05E15: the SD avi shows the same pictures but runs ~110 s longer at the same
     speed; the runtime ratio only happens to fit 25/24, so the avi is kept."""
     avi, sk = _film("avi", 2423 * 1.0443, 23.976), _film("sk", 2423, 25.0)
-    refused = dd._different_content_reason(avi, sk, _Frames("same", DRIFTING))
+    refused = dd._different_content_reason(avi, sk, _Frames("same", DRIFTING, covered="unsure"))
     assert "duration-mismatch" in refused
-    assert "offset drifts" in refused
+    assert "PAL speed-up not confirmed" in refused
 
 
 def test_drift_needs_enough_matched_points():
     assert not FrameVerdict("same", (0.9, 0.9, 0.1, 0.1, 0.1), (-3.0, -3.5)).steady
+    assert not FrameVerdict("same", (0.9, 0.9, 0.9, 0.1, 0.1), (-3.0, -3.5, -4.1)).steady
+    assert not FrameVerdict("same", (0.9, 0.9, 0.9, 0.9, 0.1), (-3.0, -3.5, -4.1, -4.6)).steady
     assert FrameVerdict("same", (0.9,) * 5, STEADY).steady
+
+
+def test_same_length_episodes_whose_offset_drifts_are_kept():
+    """Within 2 % of each other, yet one copy holds an extra scene: the offset grows."""
+    refused = dd._different_content_reason(_ep("b", 2492, 25), _ep("a", 2461, 25), _Frames("same", DRIFTING))
+    assert refused is not None
+    assert "offset drifts" in refused
+
+
+def test_same_length_episodes_at_a_steady_offset_pass():
+    assert dd._different_content_reason(_ep("b", 2492, 25), _ep("a", 2461, 25), _Frames("same", STEADY)) is None
+
+
+def test_same_length_episodes_lined_up_far_apart_are_kept():
+    """Equal lengths, a steady offset of -80 s: the kept copy lacks an 80 s recap the other
+    has, and has 80 s more at the end. Limit for a 2700 s copy: 2 % = 54 s."""
+    far = (-80.0, -80.4, -79.8, -80.1, -80.2)
+    refused = dd._different_content_reason(_ep("b", 2700, 25), _ep("a", 2700, 25), _Frames("same", far))
+    assert refused is not None
+    assert "-80s apart" in refused
+
+
+def test_the_offset_limit_follows_the_copy_to_delete():
+    near, beyond = (-50.0,) * 5, (-58.0,) * 5
+    assert dd._different_content_reason(_ep("b", 2700, 25), _ep("a", 2700, 25), _Frames("same", near)) is None
+    assert dd._different_content_reason(_ep("b", 2700, 25), _ep("a", 2700, 25), _Frames("same", beyond)) is not None
+    short = (15.0,) * 5  # a 10-minute episode: the 13 s floor binds
+    assert dd._different_content_reason(_ep("b", 600, 25), _ep("a", 600, 25), _Frames("same", short)) is not None
+
+
+def test_a_verdict_without_matched_points_has_no_finite_offset():
+    assert FrameVerdict("same").offset == float("inf")
+    assert FrameVerdict("same", (0.9,) * 5, (-3.0, -4.0, -5.0, -6.0)).offset == -4.5
 
 
 def test_a_film_runtime_gap_that_is_not_a_speedup_never_asks_the_frames():
@@ -516,6 +693,7 @@ def test_cover_and_compare_verdicts_are_saved_apart(tmp_path):
     checker = _cached_checker(tmp_path)
     keeper, other = _ep("k", 2417, 25.0), _ep("o", 2536, 23.976)
     with patch.object(checker, "_compare", return_value=FrameVerdict("same")), \
+         patch.object(checker, "_reaches_end", return_value=True), \
          patch.object(checker, "_covers", return_value=FrameVerdict("unsure", (), (), "61s at the start")):
         assert checker.compare(keeper, other).verdict == "same"
         assert checker.covers(keeper, other).verdict == "unsure"
@@ -572,6 +750,7 @@ def test_prefetch_runs_covers_for_pairs_whose_lengths_differ(tmp_path):
     checker = _cached_checker(tmp_path)
     same_len, gap = (_ep("k1", 2461, 25), _ep("d1", 2470, 25)), (_ep("k2", 2417, 25.0), _ep("d2", 2536, 23.976))
     with patch.object(checker, "_compare", return_value=FrameVerdict("same")) as compare, \
+         patch.object(checker, "_reaches_end", return_value=True), \
          patch.object(checker, "_covers", return_value=FrameVerdict("same", (), (), "covered")) as covers:
         checker.prefetch([same_len], [gap])
         assert checker.covers(*gap).verdict == "same"
@@ -631,6 +810,7 @@ def test_prefetch_opens_one_shared_connection_before_the_workers():
     order = []
     with patch("emby_dedupe.api.content_check.subprocess.run",
                side_effect=lambda cmd, **kw: order.append(cmd) or MagicMock(returncode=0)), \
+         patch.object(checker, "_reaches_end", return_value=True), \
          patch.object(checker, "_compare", side_effect=lambda *a: order.append("pair") or FrameVerdict("same", (0.9,) * 3)):
         checker.prefetch([(_ep("k", 2400, 25), _ep("o", 2400, 25))])
     assert order[0][-1] == "true"

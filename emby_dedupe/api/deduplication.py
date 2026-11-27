@@ -12,7 +12,7 @@ import httpx
 from tqdm import tqdm
 
 from emby_dedupe.api.client import delete_item, fetch_items_details
-from emby_dedupe.api.content_check import FrameChecker, is_speedup_pair
+from emby_dedupe.api.content_check import FrameChecker, is_speedup_pair, loss_limit, runtime_seconds
 from emby_dedupe.api.deletion_guard import (
     collect_delete_paths,
     collect_known_paths,
@@ -1330,7 +1330,7 @@ def _different_content_reason(item: dict, keeper: dict, frames: FrameChecker | N
     The exception to the running-time rule needs the frame check: for an episode, proof
     that the kept copy holds every part of the copy to delete (a PAL speed-up, or a kept
     copy that is longer); for a movie, only a PAL speed-up (25 fps vs 23.976/24, 4.2 %
-    shorter) the frames confirm.
+    shorter) with the same proof.
     """
     conflict = provider_id_conflict(keeper.get("provider_ids"), item.get("provider_ids"))
     reason = (f"provider-id-conflict ({conflict}): a different title" if conflict else None) or (
@@ -1356,7 +1356,8 @@ def _runtime_gap_exception(item: dict, keeper: dict, frames: FrameChecker | None
     Episodes: the kept copy must hold every part of the copy to delete
     (``FrameChecker.covers``), which admits speed-ups slightly off the PAL ratio and a
     shorter copy, and keeps a copy with a TV lead-in or a second episode inside.
-    Movies keep the narrower PAL rule: two cuts of one film are both kept.
+    Movies keep the narrower PAL rule (the gap must be a PAL speed-up, two cuts of one
+    film are both kept) and need the same proof.
     """
     if frames is None:
         return mismatch
@@ -1370,20 +1371,21 @@ def _runtime_gap_exception(item: dict, keeper: dict, frames: FrameChecker | None
 
 
 def _speedup_exception(item: dict, keeper: dict, frames: FrameChecker, mismatch: str) -> str | None:
-    """None when the running-time gap is a PAL speed-up the frames confirm, else the refusal.
+    """None when the running-time gap is a PAL speed-up and the kept copy holds all of the
+    copy to delete, else the refusal.
 
-    The frames must match and line up at a steady offset: a copy that matches picture for
-    picture but drifts from point to point is longer at the same speed, not sped up, and
-    the extra minutes may be scenes the kept copy lacks.
+    The running times must differ by exactly a PAL speed-up, and ``FrameChecker.covers``
+    must find every sampled part of the copy to delete in the kept copy on one line at the
+    speed the frame rates give. Matching pictures alone are not enough: a kept copy that
+    lacks one scene and has another of the same length elsewhere still matches most points.
     """
     if not is_speedup_pair(keeper, item):
         return mismatch
-    verdict = frames.compare(keeper, item)
-    if verdict.verdict == "same" and verdict.steady:
-        logger.info(f"PAL speed-up confirmed by frames for id={item.get('id')} ({verdict.describe()}).")
+    cover = frames.covers(keeper, item)
+    if cover.verdict == "same":
+        logger.info(f"PAL speed-up confirmed by frames for id={item.get('id')} ({cover.describe()}).")
         return None
-    why = "pictures match but the offset drifts" if verdict.verdict == "same" else "frames do not match"
-    return f"{mismatch}; PAL speed-up not confirmed ({why}): {verdict.describe()}"
+    return f"{mismatch}; PAL speed-up not confirmed (the kept copy does not hold all of it): {cover.describe()}"
 
 
 def _frame_mismatch(item: dict, keeper: dict, frames: FrameChecker | None) -> str | None:
@@ -1393,12 +1395,23 @@ def _frame_mismatch(item: dict, keeper: dict, frames: FrameChecker | None) -> st
     not proven to be one episode (a "(2)" file may be the second half of a double bill).
     A missed duplicate only costs disk space. Without a frame checker (``frames`` is
     None) the check is skipped.
+
+    Matching pictures must also line up at a steady offset: two copies within 2 % of
+    each other can still differ by an extra scene or a lead-in, which shows as an offset
+    that grows from point to point. And that offset must stay within ``loss_limit`` of
+    zero: copies of one length that line up X seconds apart each hold about X seconds the
+    other lacks, at opposite ends.
     """
     if frames is None or not _frame_check_wanted(item, keeper):
         return None
     verdict = frames.compare(keeper, item)
     if verdict.verdict == "unavailable":
         return f"{verdict.describe()}: the same picture is not proven, so both copies stay"
+    if verdict.verdict == "same" and not verdict.steady:
+        return f"{verdict.describe()}: the pictures match but the offset drifts, so one copy may hold a part the other lacks"
+    if verdict.verdict == "same" and abs(verdict.offset) > loss_limit(runtime_seconds(item)):
+        return (f"{verdict.describe()}: the pictures match {verdict.offset:+.0f}s apart, so each copy may hold "
+                "a part the other lacks")
     return verdict.describe() if verdict.verdict in ("different", "unsure") else None
 
 

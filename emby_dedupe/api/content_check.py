@@ -24,6 +24,10 @@ part of the copy that would be deleted also in the kept copy? It samples the cop
 delete from its first to its last minute, needs every point found in the kept copy on one
 straight line, at the speed the two frame rates predict, with almost nothing left over at
 the edges. Only then is nothing lost by the delete.
+
+A truncated file keeps the running time of its header, so neither check says "same" until
+the kept copy's picture is read to within ``loss_limit`` of where the other copy's picture
+ends; otherwise the check is "unavailable", which keeps both copies.
 """
 
 from __future__ import annotations
@@ -59,7 +63,7 @@ NARROW_WINDOW_SECONDS = 20.0  # search this far either side of the expected spot
 TWIN_CORRELATION = 0.6  # a keyframe has a twin at or above this correlation
 OFFSET_TOLERANCE_SECONDS = 2.0  # twins this close agree on one offset (keyframes ~3 s apart)
 MATCH_SCORE = 0.5  # a point matches when half of its keyframes agree on one offset
-MATCHES_FOR_SAME = 3  # of the 5 points
+MATCHES_FOR_SAME = 5  # of the 5 points: one missed point keeps both copies
 MISS_SCORE = 0.3  # a point clearly misses below this
 MISSES_FOR_DIFFERENT = 4  # of the 5 points
 EARLY_MISS_SCORE = 0.15  # two points this low settle "different" without the rest
@@ -68,6 +72,11 @@ COVER_HEAD_SECONDS = 45.0  # "covers" samples the copy to delete from this far i
 COVER_TAIL_SECONDS = 75.0  # ...to this far before its end, plus every SAMPLE_POINTS point
 COVER_LINE_TOLERANCE_SECONDS = 3.0  # a point this far off the straight line = a cut or extra scene
 COVER_EDGE_EXTRA_SECONDS = 10.0  # unaccounted seconds allowed at the edges (studio logos, black)
+LOSS_LIMIT_SECONDS = 13.0  # a delete may lose at most this much of the copy it deletes...
+LOSS_LIMIT_SHARE = 0.02  # ...or this share of that copy's running time, whichever is larger
+# Each copy's picture end is looked for this far before its reported end: a running time
+# is the longest stream's, and a dub muxed from another release can outlast the picture.
+END_SEARCH_SECONDS = 240.0
 MIN_KEYFRAMES = 2
 WINDOW_FPS = 4  # the other copy is sampled this densely, so every keyframe has a near twin
 FFMPEG_TIMEOUT_SECONDS = 120
@@ -77,11 +86,12 @@ PARALLEL_PAIRS = 4  # streaming from Emby over the network
 PARALLEL_PAIRS_ON_HOST = 8
 # Saved verdicts are keyed by this: bump it whenever the method or a threshold changes,
 # so every pair is checked again under the new rules.
-CHECK_VERSION = 5
+CHECK_VERSION = 6
 ENV_CACHE_FILE = "DEDUPE_FRAME_CHECK_CACHE"
 CACHE_KEEP_DAYS = 180  # a saved verdict not used for this long is dropped
 _DEFAULT_CACHE = Path.home() / ".emby-dedupe" / "frame-check-cache.json"
 _SAVED_VERDICTS = frozenset({"same", "different", "unsure"})
+_END_SHORT = "the kept copy's picture does not reach the end of the copy to delete"
 SSH_OPTIONS = ("-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
                "-o", "ControlMaster=auto", "-o", "ControlPath=~/.ssh/emby-curator-%r@%h:%p",
                "-o", "ControlPersist=120")
@@ -117,8 +127,13 @@ class FrameVerdict:
         return max(self.offsets) - min(self.offsets) if len(self.offsets) >= 2 else None
 
     @property
+    def offset(self) -> float:
+        """Median offset of the matched points, in seconds (infinite when no point matched)."""
+        return statistics.median(self.offsets) if self.offsets else float("inf")
+
+    @property
     def steady(self) -> bool:
-        """True when most points matched at nearly one offset, as a pure speed-up does.
+        """True when every point matched at nearly one offset, as a clean copy or a pure speed-up does.
 
         A copy that is longer for another reason (an extra scene, a different cut) shows
         its offset growing from point to point even when every picture matches.
@@ -137,6 +152,17 @@ class FrameVerdict:
 
 def _in(value: float | None, bounds: tuple[float, float]) -> bool:
     return value is not None and bounds[0] <= value <= bounds[1]
+
+
+def runtime_seconds(item: dict) -> float:
+    """The item's running time in seconds (0 when unknown)."""
+    return (item.get("runtime_ticks") or 0) / _TICKS_PER_SECOND
+
+
+def loss_limit(seconds: float) -> float:
+    """Seconds of a copy running ``seconds`` that a delete may lose: the larger of
+    ``LOSS_LIMIT_SECONDS`` and ``LOSS_LIMIT_SHARE`` of its running time."""
+    return max(LOSS_LIMIT_SECONDS, LOSS_LIMIT_SHARE * seconds)
 
 
 def is_speedup_pair(keeper: dict, other: dict) -> bool:
@@ -215,10 +241,10 @@ def coverage_verdict(points: list[tuple[float, float]], other_seconds: float, ke
 
 
 def classify(scores: list[float]) -> Verdict:
-    """Majority vote over the sample points.
+    """Vote over the sample points.
 
-    One point may miss where a version is cut (a TV edit, an ad break), so "same" needs
-    most points to match and "different" needs most points to miss; anything between is
+    "same" needs every point to match: a missed point may be the one place where only the
+    copy to delete has a scene. "different" needs most points to miss; anything between is
     "unsure" and is treated like "different" by dedupe (the pair is kept).
     """
     if sum(s >= MATCH_SCORE for s in scores) >= MATCHES_FOR_SAME:
@@ -293,14 +319,26 @@ def cache_path() -> Path:
     return Path(os.environ.get(ENV_CACHE_FILE) or _DEFAULT_CACHE)
 
 
-def cache_key(keeper: dict, other: dict, kind: str = "compare") -> str:
-    """The saved-verdict key: method version, check kind, then id, path and running time of both copies.
+def file_size(item: dict) -> int:
+    """The file size Emby reports for the item, in bytes (0 when unknown)."""
+    return int((item.get("quality_description") or {}).get("size") or 0)
 
-    A replaced or renamed file, or a re-probed running time, makes a new key, so a saved
-    verdict is only ever reused for exactly the files it was measured on.
+
+def sizes_known(keeper: dict, other: dict) -> bool:
+    """True when both file sizes are known, which a saved verdict needs (see ``cache_key``)."""
+    return bool(file_size(keeper) and file_size(other))
+
+
+def cache_key(keeper: dict, other: dict, kind: str = "compare") -> str:
+    """The saved-verdict key: method version, check kind, then id, path, running time and
+    file size of both copies.
+
+    A renamed file, a re-probed running time or a file replaced in place under the same
+    name and length makes a new key, so a saved verdict is only ever reused for exactly the
+    files it was measured on. Without both sizes no verdict is saved or reused.
     """
     def part(item: dict) -> str:
-        return f"{item.get('id')}|{item.get('path') or ''}|{item.get('runtime_ticks') or ''}"
+        return f"{item.get('id')}|{item.get('path') or ''}|{item.get('runtime_ticks') or ''}|{file_size(item)}"
     kind_part = "" if kind == "compare" else f"{kind}|"
     return f"v{CHECK_VERSION}|{kind_part}{part(keeper)}|{part(other)}"
 
@@ -464,7 +502,7 @@ class FrameChecker:
     def _known(self, keeper: dict, other: dict, kind: str = "compare") -> FrameVerdict | None:
         """The verdict already measured for this pair, this run or a saved earlier one."""
         verdict = self._cache.get((kind, str(keeper.get("id")), str(other.get("id"))))
-        if verdict is None and self._cache_file:
+        if verdict is None and self._cache_file and sizes_known(keeper, other):
             entry = self._saved.get(cache_key(keeper, other, kind))
             if entry:
                 entry["used"] = datetime.now(UTC).replace(microsecond=0).isoformat()
@@ -475,7 +513,7 @@ class FrameChecker:
 
     def _remember(self, keeper: dict, other: dict, verdict: FrameVerdict, kind: str = "compare") -> None:
         self._cache[(kind, str(keeper.get("id")), str(other.get("id")))] = verdict
-        if self._cache_file and verdict.verdict in _SAVED_VERDICTS:  # never "unavailable"
+        if self._cache_file and verdict.verdict in _SAVED_VERDICTS and sizes_known(keeper, other):  # never "unavailable"
             now = datetime.now(UTC).replace(microsecond=0).isoformat()
             self._saved[cache_key(keeper, other, kind)] = {
                 "verdict": verdict.verdict, "scores": list(verdict.scores), "offsets": list(verdict.offsets),
@@ -503,7 +541,11 @@ class FrameChecker:
         return verdict
 
     def _run(self, kind: str, keeper: dict, other: dict) -> FrameVerdict:
-        return self._covers(keeper, other) if kind == "cover" else self._compare(keeper, other)
+        """Run the check; "same" also needs the kept copy's picture to reach the other's end."""
+        verdict = self._covers(keeper, other) if kind == "cover" else self._compare(keeper, other)
+        if verdict.verdict == "same" and not self._reaches_end(keeper, other):
+            return FrameVerdict("unavailable", verdict.scores, verdict.offsets, _END_SHORT)
+        return verdict
 
     def prefetch(self, pairs: list[tuple[dict, dict]], covering: list[tuple[dict, dict]] | None = None) -> None:
         """Check many pairs up front, a few at a time (ffmpeg runs as separate processes).
@@ -566,7 +608,34 @@ class FrameChecker:
                 break
         return result
 
+    def _picture_end(self, item: dict) -> float | None:
+        """Time of the item's last keyframe within ``END_SEARCH_SECONDS`` of its reported end
+        (None when nothing there can be read)."""
+        seconds = (item.get("runtime_ticks") or 0) / _TICKS_PER_SECOND
+        frames = self._keyframes(item, seconds - END_SEARCH_SECONDS, END_SEARCH_SECONDS)
+        return max(at for at, _ in frames) if frames else None
+
+    def _reaches_end(self, keeper: dict, other: dict) -> bool:
+        """True when the kept copy's picture runs to within ``loss_limit`` of where the
+        other copy's picture ends (both mapped by their running-time ratio).
+
+        A truncated file keeps the running time its header states, and the sample points
+        stop well before the end, so only a read at the end tells it from a complete copy.
+        The two picture ends are compared rather than each copy's reported end, because a
+        running time may be the length of an audio track that outlasts the picture.
+        """
+        kept_end, other_end = self._picture_end(keeper), self._picture_end(other)
+        if kept_end is None or other_end is None:
+            return False
+        ratio = other["runtime_ticks"] / keeper["runtime_ticks"]  # other-copy seconds per kept-copy second
+        return kept_end * ratio >= other_end - loss_limit(other["runtime_ticks"] / _TICKS_PER_SECOND)
+
     def _compare(self, keeper: dict, other: dict) -> FrameVerdict:
+        """Vote over all sample points.
+
+        Every point is read even once the vote is won: the offset drift that tells an extra
+        scene from a clean copy needs them all.
+        """
         keeper_ticks, other_ticks = keeper.get("runtime_ticks"), other.get("runtime_ticks")
         if not (self.available and keeper.get("id") and other.get("id") and keeper_ticks and other_ticks):
             return FrameVerdict("unavailable")
@@ -586,8 +655,6 @@ class FrameChecker:
                 shift = offset
             if len(scores) == 2 and max(scores) < EARLY_MISS_SCORE:  # two clearly foreign points settle it
                 return FrameVerdict("different", tuple(scores), tuple(offsets))
-            if len(offsets) == MATCHES_FOR_SAME:  # the vote is won; the rest cannot change it
-                return FrameVerdict("same", tuple(scores), tuple(offsets))
         return FrameVerdict(classify(scores), tuple(scores), tuple(offsets))
 
     def _covers(self, keeper: dict, other: dict) -> FrameVerdict:
